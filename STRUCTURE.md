@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-18T06:31:35-04:00
+Structure-Version: 2026-08-18T07:05:00-04:00
 
 # Memory structure
 
@@ -196,10 +196,32 @@ across trees. If it does:
   in the body:
   `**Origin:** <agent>, first authored <ISO timestamp>`. This keeps
   attribution once the two sides stop being literal copies of each other.
+- **Add a link-staleness timestamp.** Alongside the provenance signature,
+  copy the source node's current `modified:` value into the stub:
+  `**Linked-modified:** <ISO timestamp>`. This is the snapshot the stub's
+  delta was written against — see Detecting source drift below.
 - Each agent owns and writes only its own memory tree. Other agents' trees are
   read-only context. Add markers to the current agent's source nodes and
   linked stubs to the current agent's linking nodes; never edit the other
   agent's files to complete both sides in one session.
+
+**Detecting source drift.** A linking stub's delta is only valid against the
+source content it was written from — the source can change afterward with no
+signal on the linking side unless this is checked. **Every time a linking
+stub is read as context** (not only when it's first written), compare its
+`Linked-modified:` timestamp against the source node's current `modified:`
+field before relying on either:
+
+- Match — the source hasn't changed since the stub was written; proceed
+  normally.
+- Mismatch — the source changed since the link was made. Read the source
+  node's current content, reconcile the stub's delta against what actually
+  changed (it may now be redundant, contradicted, or still additive), and
+  update both the delta and the stub's `Linked-modified:` timestamp to the
+  source's current `modified:` value before continuing.
+
+This check belongs to the agent that owns the linking stub — it never edits
+the source node to perform it, only its own stub.
 
 **Marking information blocks.** A marker exists so a linking stub can anchor
 its contribution to one specific sub-part of a `shared` source node — use one
