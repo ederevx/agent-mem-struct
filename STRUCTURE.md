@@ -35,10 +35,18 @@ a copy:**
 Current agent homes are `~/.claude` and `~/.codex` (Claude's project-scoped
 memory directory remains under `~/.claude/projects/-home-ederevx/memory`).
 
-If either is ever missing (fresh machine, moved config), recreate it:
+If either is ever missing (fresh machine, moved config), recreate it —
+**each agent recreates only its own two symlinks**, per the "own tree only"
+rule below; never run the other agent's lines yourself:
+
+Claude:
 ```
 ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.claude/STRUCTURE.md
 ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.claude/projects/-home-ederevx/memory/STRUCTURE.md
+```
+
+Codex:
+```
 ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.codex/STRUCTURE.md
 ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.codex/memory/STRUCTURE.md
 ```
