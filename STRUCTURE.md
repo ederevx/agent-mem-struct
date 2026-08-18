@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-18T14:10:00-04:00
+Structure-Version: 2026-08-18T16:00:00-04:00
 
 # Memory structure
 
@@ -71,15 +71,18 @@ is plain, un-versioned files on disk.
   disconnected copy.
 - **`.shared/`** — the one physically common directory every agent's
   `shared/` symlink resolves to (see Local vs shared below),
-  `~/agent-mem-struct/.shared/`. It is its own separate git repository,
-  **local-only — no remote.** It happens to sit inside the same directory
-  tree as the public `STRUCTURE.md` clone but is excluded from that repo via
-  `.gitignore` and must never be pushed there or anywhere else. Commit
-  changes to it directly, from within `.shared/`, right after editing.
+  `~/agent-mem-struct/.shared/`. It is its own separate git repository with
+  its own **private** remote, `github.com/ederevx/dot-shared`. It happens to
+  sit inside the same directory tree as the public `STRUCTURE.md` clone but
+  is excluded from that repo via `.gitignore` and must never be committed or
+  pushed there — only to its own `dot-shared` remote. **Every change under
+  `.shared/` must be committed and pushed from within `.shared/`, to that
+  remote, before the turn that made it ends.**
 
-Both follow [[feedback-commit-convention]] for authorship/trailers (human
-author, `Assisted-by`/`Signed-off-by` trailers, no `Co-authored-by`). Squash
-into one commit per logical change; no fixup/followup commits.
+Both follow each agent's own commit-attribution convention for
+authorship/trailers (human author, `Assisted-by`/`Signed-off-by` trailers, no
+`Co-authored-by`). Squash into one commit per logical change; no
+fixup/followup commits.
 
 `local/` (each agent's own private half) is never added to either repo.
 

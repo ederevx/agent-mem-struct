@@ -4,6 +4,36 @@ Delta history for `STRUCTURE.md`. Each entry documents *what changed and
 why*, so `STRUCTURE.md` itself only needs to describe the current model, not
 narrate how it got there.
 
+## 2026-08-18T16:00:00-04:00 — `.shared/` gets a private remote; commit-and-push made mandatory
+
+An audit pass over the freshly-split trees found an edit sitting
+uncommitted in `.shared/` from a prior session — the "commit right after
+editing" rule existed only in `STRUCTURE.md`'s version-control section,
+nowhere an agent actually reads before touching a node, so it went
+unfollowed. Also found four references inside shared kernel nodes pointing
+at `[[feedback-commit-convention]]` and similar `[[...]]` names that the
+split had moved into Claude's private `local/` — unresolvable to any other
+agent.
+
+- `.shared/` now has its own **private** remote, `github.com/ederevx/dot-shared`
+  (previously local-only, no remote). Every edit under `.shared/` must now be
+  committed **and pushed** to that remote before the turn ends, not just
+  committed.
+- Moved the commit-after-edit rule into `.shared/conventions/memory_change_protocol.md`
+  — the file both agents actually read as part of the mandatory node-edit
+  protocol — with explicit per-agent trailer guidance and a narrow-staging
+  warning (another agent's uncommitted work may already be sitting in the
+  same working tree; never `git add -A` blindly).
+- Fixed the four broken `[[feedback-commit-convention]]`-family links inside
+  shared kernel nodes by replacing the specific cross-boundary link name
+  with generic prose ("the agent's own commit-attribution convention") —
+  each agent keeps a differently-named copy of that convention in its own
+  `local/`, so a shared node can reference the concept but not a specific
+  agent's private node.
+- One pre-existing dead link, `[[local-coding-model]]` in
+  `submemory/msm8998-kernel/nodes/lineage_419_port.md` (`.shared/`, not this
+  repo), predates this migration and was left as-is rather than guessed at.
+
 ## 2026-08-18T14:10:00-04:00 — local/shared split, drop linking protocol
 
 Replaced the single-tree-with-`visibility`-flags model with a physical
