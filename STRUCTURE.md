@@ -1,3 +1,5 @@
+Structure-Version: 2026-08-18T06:24:27-04:00
+
 # Memory structure
 
 Meta-doc for the memory tree itself. Not part of routine recall — consult and
@@ -5,6 +7,34 @@ update this only when the *structure* changes (new submemory, reclassifying
 a memory, adding a group). Routine work reads `MEMORY.md` files, not this.
 
 ## Version control
+
+### Applied-version handshake
+
+The first line of this file is the canonical `Structure-Version:` timestamp.
+It is mandatory state, not prose: **every edit to `STRUCTURE.md` must replace
+it with the current ISO 8601 timestamp in the same commit**. Never change the
+structure without changing this timestamp.
+
+Every agent keeps an exact copy of that first line as the first line of its
+own root memory index (`memory/MEMORY.md`). This records the newest structural
+version that agent has actually read and applied to its private tree. At the
+start of memory review, before relying on the tree, the agent must read and
+compare the first line of canonical `STRUCTURE.md` with the first line of its
+root `MEMORY.md`:
+
+- If they match, structural state is current.
+- If they differ, do not merely copy the timestamp. Locate the commit carrying
+  the root's recorded version, then review every later `STRUCTURE.md` change
+  with repository history (for example `git log -p <applied>..HEAD --
+  STRUCTURE.md`). Apply every relevant migration to the agent's own tree in
+  chronological order.
+- Only after all intervening changes are understood, applied, and validated
+  may the agent replace its root index's first line with the canonical line.
+- If the recorded version cannot be found in history, review the complete
+  `STRUCTURE.md` history before applying the current specification.
+
+Agents update only their own root `MEMORY.md`; another agent's stale timestamp
+is a signal for that agent, never permission to edit its tree.
 
 **Only this file is under version control** — the rest of the memory tree
 (`conventions/`, `nodes/`, `submemory/`) is plain, un-versioned files on
