@@ -99,6 +99,7 @@ metadata:
   node_type: memory
   type: feedback|project|user|reference
   originAgent: Claude|Codex # immutable creator/owner of this node identity
+  visibility: shared|private # read permission the other agent must follow
   originSessionId: ...
   modified: ISO-timestamp
 ---
@@ -119,6 +120,30 @@ metadata:
   first appeared, then add the field when that node is next touched.
 - `modified:` records edits, not ownership. It must never be used to choose a
   source owner.
+
+## Node visibility
+
+Every leaf node carries `visibility: shared|private`. This is a **read
+permission the other agent must follow**, not a filesystem access control —
+trees stay mutually read-only-as-context regardless of this field. What it
+governs is whether a node is *meant* to be linked to, cited, or relied on by
+the other agent at all.
+
+- `shared` — the node may be linked to, referenced, or built on by the other
+  agent (see Cross-agent node linking below). Use this for anything with a
+  real equivalent or stake on the other side — shared projects, infra both
+  agents touch, facts either side might need.
+- `private` — personal to the owning agent: workflow habits, tool-use
+  preferences, output-style rules, or anything with no equivalent meaning for
+  the other agent. The other agent must not link to it, cite it, or treat it
+  as cross-agent context — skip it when scanning for something to link,
+  even though the file remains physically readable. This is what lets each
+  agent keep memories that are only for itself.
+- Unmarked legacy nodes are treated as `shared` by default (the pre-existing,
+  ungated behavior) until the file is next touched and the field is added
+  explicitly — same retrofit timing as `originAgent`.
+- Only the owning agent sets or changes its own nodes' `visibility`; the
+  other agent never edits this field on a node it doesn't own.
 
 ## Cross-agent node linking
 
@@ -146,10 +171,10 @@ across trees. If it does:
   linked stubs to the current agent's linking nodes; never edit the other
   agent's files to complete both sides in one session.
 
-**Marking information blocks.** Any block (a fact, a rule, a finding —
-roughly a paragraph or bullet cluster) that plausibly could be the target of
-a link like the above — from Codex now, or another agent later — gets a
-simple numbered marker, indented as its own block:
+**Marking information blocks.** A marker exists so a linking stub can anchor
+its contribution to one specific sub-part of a `shared` source node — use one
+when this side is amending or adding something that belongs against that
+exact block, not the whole file:
 
 ```
 1: ***
@@ -161,10 +186,12 @@ simple numbered marker, indented as its own block:
   the file takes the next unused number, regardless of where in the file it
   ends up. Never renumber or reuse a number for different content later.
 - Reference a marked block from elsewhere as `file.md#1`.
-- Not every block needs one. Only mark blocks with real cross-agent linking
-  value (shared projects/topics). Purely Claude-side workflow preferences
-  (tool choices, output style, etc.) with no equivalent on the other side
-  don't need markers just for the sake of it.
+- If nothing needs sub-part precision — the linking stub is just "see this
+  whole file," with no delta anchored to one block — skip the marker. The
+  plain path in the link is what makes the source accessible to the other
+  agent either way; the marker only sharpens *where* on top of that.
+- Never add a marker to a `private` node — nothing on the other side should
+  ever anchor to it, since it isn't meant to be linked at all.
 
 **Node ownership is fixed when its metadata is first created.** The agent
 that created the node metadata is the permanent source owner, even if another
