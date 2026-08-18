@@ -1,10 +1,31 @@
-Structure-Version: 2026-08-18T07:45:00-04:00
+Structure-Version: 2026-08-18T08:00:20-04:00
 
 # Memory structure
 
 Meta-doc for the memory tree itself. Not part of routine recall — consult and
 update this only when the *structure* changes (new submemory, reclassifying
 a memory, adding a group). Routine work reads `MEMORY.md` files, not this.
+
+## Structure-change preflight
+
+Before changing a memory tree's structure, schema, or governing protocol,
+read this canonical file in full and complete the applied-version handshake
+below before writing any affected memory file. A structural change includes:
+
+- adding, removing, moving, or reclassifying a memory leaf or group;
+- changing a group index, scope, or hierarchy;
+- changing leaf frontmatter/schema or a rule that governs how memory is read
+  or edited; and
+- changing an agent instruction that governs that memory tree.
+
+Then read the affected group's `MEMORY.md`, its relevant `conventions/` and
+`nodes/` indexes, and the target files that will be changed. For additions,
+also perform the cross-agent and classification checks below. Do not infer the
+tree model from a partial index or a version marker alone.
+
+**Why:** memory-tree edits can silently violate rules that are not visible in
+the routine recall index. This preflight makes the canonical model and each
+affected local layer explicit prerequisites.
 
 ## Version control
 
@@ -170,6 +191,7 @@ existing frontmatter format:
 ---
 name: kebab-case-slug        # must be dash-case, matches [[link]] targets
 description: "one line"
+requires_read: []            # required for files under nodes/ only
 metadata:
   node_type: memory
   type: feedback|project|user|reference
@@ -195,6 +217,12 @@ metadata:
   first appeared, then add the field when that node is next touched.
 - `modified:` records edits, not ownership. It must never be used to choose a
   source owner.
+- Every leaf file under `nodes/` must declare a top-level `requires_read:`
+  YAML list. Before changing that node, read its parent `nodes/MEMORY.md`, the
+  existing target node when present, and every memory path in this list. For a
+  new node, read every path that will be placed in its initial list before
+  creating it. An unavailable required path blocks the change. Paths are
+  relative to the node unless absolute and must point to memory files.
 
 ## Node visibility
 
