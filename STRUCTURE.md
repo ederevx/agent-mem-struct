@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-18T06:24:27-04:00
+Structure-Version: 2026-08-18T06:31:35-04:00
 
 # Memory structure
 
@@ -278,3 +278,7 @@ the rule itself, a one-line **Why:**, a short **How to apply:**. Push
 incident forensics, dates, and blow-by-blow narrative into `nodes/`
 instead of padding the convention; link to it with `[[name]]` if the
 detail is worth preserving at all.
+
+---
+
+© 2026 Edrick Sinsuan. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE). This notice must be preserved in every copy, fork, or derivative of this file.
