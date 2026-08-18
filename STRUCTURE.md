@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-18T07:20:00-04:00
+Structure-Version: 2026-08-18T07:35:00-04:00
 
 # Memory structure
 
@@ -35,6 +35,43 @@ root `MEMORY.md`:
 
 Agents update only their own root `MEMORY.md`; another agent's stale timestamp
 is a signal for that agent, never permission to edit its tree.
+
+### Tree-version tracking
+
+Separate from the `Structure-Version:` handshake above (which tracks edits to
+this shared file), every agent's root `MEMORY.md` also carries a
+`Tree-Version:` line — a per-agent ISO 8601 timestamp that agent alone owns
+and bumps. Unlike `Structure-Version:`, it is never copied from or compared
+against a canonical value; it is a fact about that one agent's own tree.
+
+- **Mandatory: bump it whenever a node or submemory is added** anywhere in
+  the agent's own tree — a new leaf file under any `conventions/` or `nodes/`
+  dir, or a new `submemory/<name>/` group. The addition and the bump happen
+  in the same edit.
+- **Never bump it for anything else.** Editing an existing node's content,
+  updating that node's own `modified:` field, or renaming/reclassifying a
+  node without adding one all leave `Tree-Version:` untouched — it tracks
+  the tree's *shape*, not its content. Per-node content changes are what
+  each node's own `modified:` field and the Detecting source drift check
+  (below) are for.
+
+**Why:** the other agent's tree is read-only context, but re-walking it on
+every task just to find newly-added nodes is wasteful. A single timestamp
+lets an agent tell, cheaply, whether the other tree's shape has changed
+since it last looked — orthogonal to, and much coarser than, the per-node
+`modified:`/`Linked-modified:` comparison used once a specific node is
+already linked.
+
+**How to apply:** each agent records, somewhere in its own tree, the last
+`Tree-Version:` value it has observed for each other agent it tracks. Before
+treating "no new nodes to link" as still true for another agent's tree,
+re-read that agent's current `Tree-Version:`:
+
+- Match — nothing has been added since the last scan; no rescan needed.
+- Mismatch — one or more nodes or submemories were added since. Walk that
+  tree for anything `shared` and not yet linked (see Cross-agent node
+  linking below), create the necessary linking stubs, then update the
+  recorded value to the observed `Tree-Version:`.
 
 **Only this file is under version control** — the rest of the memory tree
 (`conventions/`, `nodes/`, `submemory/`) is plain, un-versioned files on
@@ -272,6 +309,8 @@ a marker target whenever one exists.
    `conventions/MEMORY.md` or `nodes/MEMORY.md` index. Never add leaf
    content directly to a group-level `MEMORY.md` (root, or a submemory's own
    `MEMORY.md`) — those stay link-only to conventions/nodes/submemories.
+5. Bump this agent's root `MEMORY.md` `Tree-Version:` line (see
+   Tree-version tracking above) — a new leaf node was just added.
 
 ## Adding a new submemory group
 
@@ -283,6 +322,8 @@ a marker target whenever one exists.
    it (even if empty to start).
 4. Add one line for it under the parent's **Submemories:** list.
 5. Update the tree snapshot above.
+6. Bump this agent's root `MEMORY.md` `Tree-Version:` line (see
+   Tree-version tracking above) — a new submemory was just added.
 
 ## Keeping conventions concise
 
