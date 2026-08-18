@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-18T07:05:00-04:00
+Structure-Version: 2026-08-18T07:20:00-04:00
 
 # Memory structure
 
@@ -38,8 +38,8 @@ is a signal for that agent, never permission to edit its tree.
 
 **Only this file is under version control** — the rest of the memory tree
 (`conventions/`, `nodes/`, `submemory/`) is plain, un-versioned files on
-disk. This file's canonical copy lives in its own private repository,
-`github.com/ederevx/agent-mem-struct` (private, ssh remote), cloned at
+disk. This file's canonical copy lives in its own repository,
+`github.com/ederevx/agent-mem-struct`, cloned at
 `~/agent-mem-struct/STRUCTURE.md`. **Every change to this file must be
 committed and pushed from that clone before the turn that made it ends** —
 edit the clone (or a symlink resolving to it), never a disconnected copy.
@@ -47,14 +47,13 @@ Follow [[feedback-commit-convention]] for authorship/trailers (human author,
 `Assisted-by`/`Signed-off-by` trailers, no `Co-authored-by`) same as any other
 repo. Squash into one commit per logical change; no fixup/followup commits.
 
-The user notifies the agent directly when changes have landed from elsewhere
-(e.g. Codex pushed an edit) — there is no separate polling/sync step to run
-unprompted.
+The user notifies the agent directly when changes have landed from
+elsewhere — there is no separate polling/sync step to run unprompted.
 
 **Why only this file, and why its own repo:** this doc is the one part of
 memory meant to be shared/contributed-to across agents (see Cross-agent node
-linking below) — Codex CLI can clone `agent-mem-struct` and contribute to the
-same file too. The rest of the memory tree is agent-private and has no
+linking below) — any agent can clone `agent-mem-struct` and contribute to
+the same file too. The rest of the memory tree is agent-private and has no
 business in a shared repo.
 
 **Discoverability — two symlinks per agent, all resolving to the clone, never
@@ -62,23 +61,15 @@ a copy:**
 - `<agent-home>/memory/STRUCTURE.md` → `~/agent-mem-struct/STRUCTURE.md`
 - `<agent-home>/STRUCTURE.md` → `~/agent-mem-struct/STRUCTURE.md`
 
-Current agent homes are `~/.claude` and `~/.codex` (Claude's project-scoped
-memory directory remains under `~/.claude/projects/-home-ederevx/memory`).
+`<agent-home>` and the exact root of an agent's memory tree are that agent's
+own configuration, not recorded here. If either symlink is ever missing
+(fresh machine, moved config), recreate it — **each agent recreates only its
+own two symlinks**, per the "own tree only" rule below; never create or
+touch another agent's symlinks:
 
-If either is ever missing (fresh machine, moved config), recreate it —
-**each agent recreates only its own two symlinks**, per the "own tree only"
-rule below; never run the other agent's lines yourself:
-
-Claude:
 ```
-ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.claude/STRUCTURE.md
-ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.claude/projects/-home-ederevx/memory/STRUCTURE.md
-```
-
-Codex:
-```
-ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.codex/STRUCTURE.md
-ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.codex/memory/STRUCTURE.md
+ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/STRUCTURE.md
+ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/memory/STRUCTURE.md
 ```
 
 ## Model
@@ -128,7 +119,7 @@ description: "one line"
 metadata:
   node_type: memory
   type: feedback|project|user|reference
-  originAgent: Claude|Codex # immutable creator/owner of this node identity
+  originAgent: <agent-name> # immutable creator/owner of this node identity
   visibility: shared|private # read permission the other agent must follow
   originSessionId: ...
   modified: ISO-timestamp
@@ -177,10 +168,10 @@ the other agent at all.
 
 ## Cross-agent node linking
 
-This machine currently runs Claude Code and Codex CLI, each with its own
-memory tree. Both use this same recursive group model and the same
-`conventions/`, `nodes/`, and `submemory/` names. Other agents may appear
-later; this protocol is agent-neutral.
+Each agent on this machine keeps its own memory tree, using this same
+recursive group model and the same `conventions/`, `nodes/`, and
+`submemory/` names. This protocol is agent-neutral — it does not name or
+assume any specific set of agents.
 
 **Before writing a new node, check whether the other agent already has one
 covering the same topic** — grep its tree by subject, not just by filename;
