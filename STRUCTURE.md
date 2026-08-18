@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-18T07:35:00-04:00
+Structure-Version: 2026-08-18T07:45:00-04:00
 
 # Memory structure
 
@@ -62,16 +62,33 @@ since it last looked — orthogonal to, and much coarser than, the per-node
 `modified:`/`Linked-modified:` comparison used once a specific node is
 already linked.
 
-**How to apply:** each agent records, somewhere in its own tree, the last
-`Tree-Version:` value it has observed for each other agent it tracks. Before
-treating "no new nodes to link" as still true for another agent's tree,
-re-read that agent's current `Tree-Version:`:
+**How to apply:** each agent records the last `Tree-Version:` it has observed
+for every other agent it tracks as one `Tracked-Tree-Version:` line per
+tracked agent, directly below its own `Tree-Version:` line in its own root
+`MEMORY.md`:
+
+```
+Structure-Version: <ISO timestamp>
+Tree-Version: <ISO timestamp>
+Tracked-Tree-Version: <other-agent-name>=<ISO timestamp observed>
+Tracked-Tree-Version: <other-agent-name>=<ISO timestamp observed>
+```
+
+One line per agent tracked; add a new line the first time an agent starts
+tracking another one. Before treating "no new nodes to link" as still true
+for a given tracked agent, re-read that agent's current `Tree-Version:` and
+compare it against the matching `Tracked-Tree-Version:` line:
 
 - Match — nothing has been added since the last scan; no rescan needed.
-- Mismatch — one or more nodes or submemories were added since. Walk that
-  tree for anything `shared` and not yet linked (see Cross-agent node
-  linking below), create the necessary linking stubs, then update the
-  recorded value to the observed `Tree-Version:`.
+- Mismatch (including no recorded line yet, or the other agent's tree
+  having no `Tree-Version:` at all — both count as never having scanned it)
+  — one or more nodes or submemories may have been added. Walk that tree for
+  anything `shared` and not yet linked (see Cross-agent node linking below),
+  create the necessary linking stubs, then set the `Tracked-Tree-Version:`
+  line to the observed `Tree-Version:` (adding the line if it didn't exist).
+- An agent only ever writes its own `Tracked-Tree-Version:` lines, about
+  other agents' trees, in its own root `MEMORY.md` — never in another
+  agent's tree, and never its own `Tree-Version:` line via this path.
 
 **Only this file is under version control** — the rest of the memory tree
 (`conventions/`, `nodes/`, `submemory/`) is plain, un-versioned files on
