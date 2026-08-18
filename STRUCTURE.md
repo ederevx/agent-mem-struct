@@ -27,16 +27,20 @@ linking below) — Codex CLI can clone `agent-mem-struct` and contribute to the
 same file too. The rest of the memory tree is agent-private and has no
 business in a shared repo.
 
-**Discoverability — two symlinks, both resolving to the clone, never a copy:**
-- `memory/STRUCTURE.md` (this file's path inside the memory tree) →
-  `~/agent-mem-struct/STRUCTURE.md`
-- `~/.claude/STRUCTURE.md` (root of this agent's main folder) →
-  `~/agent-mem-struct/STRUCTURE.md`
+**Discoverability — two symlinks per agent, all resolving to the clone, never
+a copy:**
+- `<agent-home>/memory/STRUCTURE.md` → `~/agent-mem-struct/STRUCTURE.md`
+- `<agent-home>/STRUCTURE.md` → `~/agent-mem-struct/STRUCTURE.md`
+
+Current agent homes are `~/.claude` and `~/.codex` (Claude's project-scoped
+memory directory remains under `~/.claude/projects/-home-ederevx/memory`).
 
 If either is ever missing (fresh machine, moved config), recreate it:
 ```
 ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.claude/STRUCTURE.md
 ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.claude/projects/-home-ederevx/memory/STRUCTURE.md
+ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.codex/STRUCTURE.md
+ln -sf ~/agent-mem-struct/STRUCTURE.md ~/.codex/memory/STRUCTURE.md
 ```
 
 ## Model
@@ -103,11 +107,10 @@ metadata:
 
 ## Cross-agent node linking
 
-This machine also runs Codex CLI, a separate agent with its own memory tree
-at `~/.codex/memory/` (see [[codex-memory-readonly]]) — same recursive group
-model, `activity/` where this tree uses `nodes/`. Other agents may show up
-later; this rule is written generically, but today "the other agent" means
-Codex.
+This machine currently runs Claude Code and Codex CLI, each with its own
+memory tree. Both use this same recursive group model and the same
+`conventions/`, `nodes/`, and `submemory/` names. Other agents may appear
+later; this protocol is agent-neutral.
 
 **Before writing a new node, check whether the other agent already has one
 covering the same topic** — grep its tree by subject, not just by filename;
@@ -123,11 +126,10 @@ across trees. If it does:
   authored the content first, and record it in the body:
   `**Origin:** <agent>, first authored <ISO timestamp>`. This keeps
   attribution once the two sides stop being literal copies of each other.
-- This tree can only be the *linking* side for Codex's tree — `~/.codex/memory/`
-  is read-only from here ([[codex-memory-readonly]]), so markers/stubs can't
-  be added to Codex's files from this session. Getting Codex to adopt matching
-  markers on its side is a cross-agent sync for the user to make happen, not
-  something to attempt by editing `~/.codex/`.
+- Each agent owns and writes only its own memory tree. Other agents' trees are
+  read-only context. Add markers to the current agent's source nodes and
+  linked stubs to the current agent's linking nodes; never edit the other
+  agent's files to complete both sides in one session.
 
 **Marking information blocks.** Any block (a fact, a rule, a finding —
 roughly a paragraph or bullet cluster) that plausibly could be the target of
@@ -149,13 +151,10 @@ simple numbered marker, indented as its own block:
   (tool choices, output style, etc.) with no equivalent on the other side
   don't need markers just for the sake of it.
 
-**2026-08-17:** every existing node under `submemory/msm8998-kernel/` and
-`submemory/vps-infra/` turned out to already duplicate a Codex node (matching
-`name:`/`originSessionId:`; in the diverged cases Codex's version was the
-fuller original and this side held an independently-condensed subset with no
-real delta). **Not converted yet** — don't link to a Codex node that hasn't
-adopted the marker convention itself. See [[codex-link-conversion-todo]] for
-the pending list and the per-session check.
+When duplicate nodes predate this protocol, the fuller or earlier-authored
+copy becomes the source. Mark its linkable blocks first; the other agent can
+then replace its duplicate with a provenance-bearing linked stub. Never link
+to an unmarked block when a precise block target is required.
 
 ## Classifying a new memory
 
