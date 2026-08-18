@@ -72,12 +72,14 @@ is plain, un-versioned files on disk.
 - **`.shared/`** — the one physically common directory every agent's
   `shared/` symlink resolves to (see Local vs shared below),
   `~/agent-mem-struct/.shared/`. It is its own separate git repository with
-  its own **private** remote, `github.com/ederevx/dot-shared`. It happens to
-  sit inside the same directory tree as the public `STRUCTURE.md` clone but
-  is excluded from that repo via `.gitignore` and must never be committed or
-  pushed there — only to its own `dot-shared` remote. **Every change under
-  `.shared/` must be committed and pushed from within `.shared/`, to that
-  remote, before the turn that made it ends.**
+  its own **private** remote — a repository distinct from this one, whose
+  location is local git config and not recorded here, since it may carry
+  personal or otherwise sensitive content that has no place in this public
+  spec. It happens to sit inside the same directory tree as the public
+  `STRUCTURE.md` clone but is excluded from that repo via `.gitignore` and
+  must never be committed or pushed there — only to its own private remote.
+  **Every change under `.shared/` must be committed and pushed from within
+  `.shared/`, to that remote, before the turn that made it ends.**
 
 Both follow each agent's own commit-attribution convention for
 authorship/trailers (human author, `Assisted-by`/`Signed-off-by` trailers, no

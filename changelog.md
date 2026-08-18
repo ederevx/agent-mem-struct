@@ -15,10 +15,11 @@ at `[[feedback-commit-convention]]` and similar `[[...]]` names that the
 split had moved into Claude's private `local/` — unresolvable to any other
 agent.
 
-- `.shared/` now has its own **private** remote, `github.com/ederevx/dot-shared`
-  (previously local-only, no remote). Every edit under `.shared/` must now be
-  committed **and pushed** to that remote before the turn ends, not just
-  committed.
+- `.shared/` now has its own **private** remote (previously local-only, no
+  remote) — a repository distinct from this one, its location deliberately
+  not recorded here since it may carry personal or sensitive content. Every
+  edit under `.shared/` must now be committed **and pushed** to that remote
+  before the turn ends, not just committed.
 - Moved the commit-after-edit rule into `.shared/conventions/memory_change_protocol.md`
   — the file both agents actually read as part of the mandatory node-edit
   protocol — with explicit per-agent trailer guidance and a narrow-staging
