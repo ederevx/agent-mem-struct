@@ -90,6 +90,7 @@ description: "one line"
 metadata:
   node_type: memory
   type: feedback|project|user|reference
+  originAgent: Claude|Codex # immutable creator/owner of this node identity
   originSessionId: ...
   modified: ISO-timestamp
 ---
@@ -104,6 +105,12 @@ metadata:
   user/reference) — that's orthogonal to *where* the file lives. Placement
   (conventions vs nodes vs which submemory) is about scope and
   mandatory-vs-on-demand read policy, not about this type field.
+- `originAgent:` records the agent that first created this node's metadata and
+  is immutable. Set it on every new node. For legacy nodes without the field,
+  infer ownership from the tree/session where `name:` and `originSessionId`
+  first appeared, then add the field when that node is next touched.
+- `modified:` records edits, not ownership. It must never be used to choose a
+  source owner.
 
 ## Cross-agent node linking
 
@@ -121,9 +128,9 @@ across trees. If it does:
   that points at the other tree's file (its path, plus `#<marker>` once that
   file has one — see below) and adds *only* what this side knows that isn't
   already said there. If there's nothing new, the stub is just the pointer.
-- **Add a provenance signature.** Compare timestamps between the two sides'
-  versions (`modified:`, or whichever is earlier) to work out which agent
-  authored the content first, and record it in the body:
+- **Add a provenance signature.** Determine which agent first created the
+  node's metadata (`name:` plus its original `originSessionId`) and record it
+  in the body:
   `**Origin:** <agent>, first authored <ISO timestamp>`. This keeps
   attribution once the two sides stop being literal copies of each other.
 - Each agent owns and writes only its own memory tree. Other agents' trees are
@@ -151,10 +158,21 @@ simple numbered marker, indented as its own block:
   (tool choices, output style, etc.) with no equivalent on the other side
   don't need markers just for the sake of it.
 
-When duplicate nodes predate this protocol, the fuller or earlier-authored
-copy becomes the source. Mark its linkable blocks first; the other agent can
-then replace its duplicate with a provenance-bearing linked stub. Never link
-to an unmarked block when a precise block target is required.
+**Node ownership is fixed when its metadata is first created.** The agent
+that created the node metadata is the permanent source owner, even if another
+agent later copies it, expands it, has an older-looking `modified:` value, or
+holds a fuller version. Every agent that adds information after that creation
+is a linking side: it must point to the source owner's node and keep only its
+own genuinely new delta in the stub. It must never replace, re-home, or claim
+the source metadata. A later edit cannot transfer ownership; only the user can
+explicitly reassign it.
+
+When duplicate nodes predate this protocol, identify the metadata creator
+from the originating tree/session, mark the source owner's linkable blocks,
+and replace all later copies with provenance-bearing linked stubs. Never use
+fullness or `modified:` timestamps to choose ownership. A stub may point to
+the source file without `#<marker>` until the source owner adds a marker; use
+a marker target whenever one exists.
 
 ## Classifying a new memory
 
