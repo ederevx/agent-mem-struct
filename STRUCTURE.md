@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-19T16:33:35-04:00
+Structure-Version: 2026-08-19T16:43:00-04:00
 
 # Memory structure
 
@@ -179,11 +179,12 @@ metadata:
 - Filename doesn't need to match `name:`; keep filenames short/descriptive,
   drop old flat-memory prefixes (`feedback_`, `project_`, etc.) — the
   directory already encodes that via conventions/ vs nodes/.
-- Every leaf memory file is limited to **500 words total**, including
-  frontmatter. Split longer material at topical boundaries into a project or
-  topic directory, give every part its own topical `name:`, and connect parts
-  with explicit previous/next `[[links]]`. A directory's `MEMORY.md` is an
-  index and is not a leaf, but should remain concise.
+- Split project records by distinct **subject and activity performed**, not by
+  an arbitrary length threshold. Each leaf should be coherent on its own;
+  keep one subject/activity together even when it is long, and start a new
+  topical leaf when the subject or activity changes. Connect the resulting
+  project/topic sequence with explicit previous/next `[[links]]`. A
+  directory's `MEMORY.md` remains a concise index of those topical leaves.
 - Leaf `name:` values describe the topic itself, not storage taxonomy. Do not
   prefix them with `project-`, `feedback-`, `reference-`, or the parent
   directory name merely to encode location. Add a short subject qualifier
