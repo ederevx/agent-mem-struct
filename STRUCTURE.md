@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-18T16:00:00-04:00
+Structure-Version: 2026-08-19T16:29:08-04:00
 
 # Memory structure
 
@@ -163,6 +163,10 @@ metadata:
   type: feedback|project|user|reference
   originAgent: <agent-name> # immutable creator/owner of this node identity
   originSessionId: ...
+  topics: [kebab-case-topic]
+  log:                    # optional; chronological state/event summaries
+    - date: YYYY-MM-DD
+      event: "concise durable event"
   modified: ISO-timestamp
 ---
 ```
@@ -183,6 +187,18 @@ metadata:
   backfill the field when the node is next touched.
 - `modified:` records edits, not ownership — never use it to choose a source
   owner.
+- `topics:` is the canonical topical classification for a leaf. Use one or
+  more stable, kebab-case subject labels ordered from primary to secondary.
+  Physical groups still express scope and mandatory-read boundaries; topics
+  organize related material within that scope. Indexes should group links by
+  primary topic when a directory contains more than one topic, and crosslinks
+  may connect related nodes across groups without duplicating their content.
+- `log:` is optional metadata for dated, durable state transitions or incident
+  outcomes that fall under the leaf's topic. Each entry has a `date` and a
+  concise `event`; keep entries oldest-to-newest. Put the searchable event
+  summary here and retain only non-duplicative explanation, current state, and
+  actionable detail in the body. Do not use `log` for edit history (that is
+  `modified`) or for a blow-by-blow transcript.
 - Every leaf file under `nodes/` must declare a top-level `requires_read:`
   YAML list (`[]` if none). Before changing a node: read its parent
   `nodes/MEMORY.md`, the existing target node if present, and every path in
