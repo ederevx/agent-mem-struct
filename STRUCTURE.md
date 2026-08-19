@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-19T16:29:08-04:00
+Structure-Version: 2026-08-19T16:33:35-04:00
 
 # Memory structure
 
@@ -107,10 +107,13 @@ directory holding up to three things:
   nodes node, and submemories. Never inlines memory content directly.
 - `conventions/` — standing rules scoped to this group and everything under
   it. **Mandatory**: read `conventions/MEMORY.md` (and skim its listed
-  files) before acting on anything in this group's scope.
+  files) before acting on anything in this group's scope. Related rules may
+  be collected in a topic directory with its own `MEMORY.md` index.
 - `nodes/` — findings, facts, decisions, incident logs scoped to this group.
   **On-demand**: read only when the current task actually touches it. A
-  standing rule found here belongs in `conventions/` instead.
+  standing rule found here belongs in `conventions/` instead. Each ongoing
+  project gets a kebab-case directory with its own `MEMORY.md`; topical files
+  inside it form a linked chain when one file cannot hold the project record.
 - `submemory/<name>/` — child groups, each recursively the same shape (own
   `conventions/`, `nodes/`, optionally further `submemory/`). Only for a
   genuinely distinct body of ongoing work with its own scope — not every
@@ -176,6 +179,15 @@ metadata:
 - Filename doesn't need to match `name:`; keep filenames short/descriptive,
   drop old flat-memory prefixes (`feedback_`, `project_`, etc.) — the
   directory already encodes that via conventions/ vs nodes/.
+- Every leaf memory file is limited to **500 words total**, including
+  frontmatter. Split longer material at topical boundaries into a project or
+  topic directory, give every part its own topical `name:`, and connect parts
+  with explicit previous/next `[[links]]`. A directory's `MEMORY.md` is an
+  index and is not a leaf, but should remain concise.
+- Leaf `name:` values describe the topic itself, not storage taxonomy. Do not
+  prefix them with `project-`, `feedback-`, `reference-`, or the parent
+  directory name merely to encode location. Add a short subject qualifier
+  only when required to keep names globally unique.
 - `type:` still reflects the original taxonomy (feedback/project/user/
   reference), orthogonal to *where* the file lives. Placement (local vs
   shared, conventions vs nodes, which submemory) is about privacy, scope,
