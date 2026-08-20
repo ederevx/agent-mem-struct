@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-20T15:57:00-04:00
+Structure-Version: 2026-08-20T16:13:00-04:00
 
 # Memory structure
 
@@ -20,9 +20,9 @@ shared). Never infer the tree model from a partial index or version marker
 alone.
 
 For work inside a `nodes/` topic/project directory, also read that directory's
-`MEMORY.md`. If the target is archived or is being archived, read the relevant
-`archive/MEMORY.md` as well. Follow every `requires_read` dependency before
-changing a leaf.
+`MEMORY.md`. If the target is archived or is being archived, read the direct
+parent collection's `archive/MEMORY.md` as well. Follow every `requires_read`
+dependency before changing a leaf.
 
 **Why:** a routine recall index is not a complete model of the tree; this
 preflight makes the canonical model and each affected layer explicit
@@ -136,9 +136,10 @@ directory holding up to three things:
   standing rule found here belongs in `conventions/` instead. Each ongoing
   project gets a kebab-case directory with its own `MEMORY.md`; topical files
   inside it form a linked chain when one file cannot hold the project record.
-  Any `nodes/` collection may contain an `archive/` directory for historically
-  useful knowledge that is no longer current; an archive always has its own
-  `MEMORY.md` index and remains on-demand.
+  Every active node collection may own one direct `archive/` child for
+  historically useful knowledge that is no longer current; the archive is
+  always exactly one directory level below the active collection it belongs
+  to and always has its own `MEMORY.md` index.
 - `submemory/<name>/` — child groups, each recursively the same shape (own
   `conventions/`, `nodes/`, optionally further `submemory/`). Only for a
   genuinely distinct body of ongoing work with its own scope — not every
@@ -288,28 +289,50 @@ metadata:
   a blow-by-blow transcript.
 - Every leaf file under `nodes/`, active or archived, must declare a top-level
   `requires_read:` YAML list (`[]` if none). Before changing a node: read its
-  parent `nodes/MEMORY.md` (and `archive/MEMORY.md` when applicable), the
-  existing target node if present, and every path in its `requires_read`
-  list; for a new node, read every path going into its initial list before
-  creating it. An unavailable required path blocks the change. Paths are
-  relative to the node unless absolute, and must point to memory files.
+  parent `nodes/MEMORY.md` (and the direct parent collection's
+  `archive/MEMORY.md` when applicable), the existing target node if present,
+  and every path in its `requires_read` list; for a new node, read every path
+  going into its initial list before creating it. An unavailable required path
+  blocks the change. Paths are relative to the node unless absolute, and must
+  point to memory files.
 
 ## Archive directories and indexes
 
-Any directory acting as a `nodes/` collection may contain an `archive/`
-child. This includes a group's top-level `nodes/` and a nested project/topic
-node directory. Use the nearest coherent archive so historical material stays
-with the active subject it explains.
+Archive placement is mechanical. Every active node collection — the group's
+`nodes/` directory or a nested active project/topic directory with its own
+`MEMORY.md` — may own at most one `archive/` directory **directly beneath that
+collection**. Historical knowledge must be placed in the archive owned by the
+same collection that directly indexes the active knowledge it supersedes.
+
+Given an active leaf at:
+
+```
+A/B/current.md
+```
+
+its archival knowledge belongs at:
+
+```
+A/B/archive/<historical-memory>.md
+```
+
+not in an ancestor's archive and not in a deeper arbitrary archive. If active
+knowledge lives in `nodes/project/`, use `nodes/project/archive/`; if it lives
+directly in `nodes/`, use `nodes/archive/`. This keeps every archive exactly
+one structural level deeper than its current memory collection and removes an
+agent placement decision.
 
 Whenever `archive/` exists, `archive/MEMORY.md` is mandatory. It is a concise,
-link-only index whose opening text states that its entries are historical and
-non-authoritative for current truth. Keep archived entries separate from
-active entries; do not intermingle both in one undifferentiated index.
+link-only index whose opening text states that its entries are historical,
+belong to the parent active collection, and are non-authoritative for current
+truth. Keep archived entries separate from active entries; do not intermingle
+both in one undifferentiated index. The parent active `MEMORY.md` links its
+archive under a separate **Archive** heading.
 
-A parent `nodes/MEMORY.md` should expose the distinction, for example by
-listing active nodes normally and linking the archive under a separate
-**Archive** heading. Topic/project `MEMORY.md` files should do the equivalent
-when they own an archive.
+An archive is terminal historical storage: **never create `archive/archive/`**
+and do not treat an archive as another active collection eligible to own its
+own archive. Later edits to archived knowledge are ordinary revisions; Git
+preserves those revisions.
 
 ## Archiving a node
 
@@ -325,9 +348,11 @@ When archiving:
    dependencies.
 2. Decide whether the former state has durable reasoning value; if not, let
    ordinary Git/edit history carry it.
-3. Preserve the coherent historically-useful content in the nearest relevant
-   `archive/` collection. Do not mechanically snapshot a whole file when only
-   one obsolete portion matters.
+3. Identify the active collection whose `MEMORY.md` directly indexes the
+   knowledge being superseded, and preserve the coherent historical content in
+   that collection's direct `archive/`. Do not choose an ancestor archive or
+   create an extra nesting level. Do not mechanically snapshot a whole file
+   when only one obsolete portion matters.
 4. Set `metadata.lifecycle: archived` and add a brief visible body statement
    such as `**Archived because:** ...` explaining why it is no longer current
    and why it remains useful.
@@ -362,16 +387,19 @@ otherwise materially improve future reasoning.
 4. **Active vs archived**: new knowledge that is currently authoritative is
    `active`. Create archival knowledge only when intentionally preserving a
    non-current semantic state with future reasoning value; ordinary new facts
-   do not start archived.
+   do not start archived. Archived knowledge goes only in the direct
+   `archive/` of the active collection that owns the corresponding current
+   knowledge.
 5. If it doesn't fit any existing submemory's scope and isn't global to its
    half, that's a signal a new `submemory/<name>/` group may be warranted —
    but only for a real distinct ongoing effort, not a one-off fact.
 6. Write the leaf file, then add one line to the relevant group's
    `conventions/MEMORY.md` or active `nodes/MEMORY.md` index. Archived leaves
-   belong in the applicable `archive/MEMORY.md`, with the parent index linking
-   the archive separately. Never add leaf content directly to a group-level
-   `MEMORY.md` (`local/MEMORY.md`, `shared/MEMORY.md`, or a submemory's own
-   `MEMORY.md`) — those stay link-only.
+   belong in that active collection's direct `archive/MEMORY.md`, with the
+   active parent index linking the archive separately. Never add leaf content
+   directly to a group-level `MEMORY.md` (`local/MEMORY.md`,
+   `shared/MEMORY.md`, or a submemory's own `MEMORY.md`) — those stay
+   link-only.
 7. If the file was written under `shared/`, commit (and push) it there (see
    What is under version control above) before the turn ends.
 

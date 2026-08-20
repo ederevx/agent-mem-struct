@@ -4,6 +4,33 @@ Delta history for `STRUCTURE.md`. Each entry documents *what changed and
 why*, so `STRUCTURE.md` itself only needs to describe the current model, not
 narrate how it got there.
 
+## 2026-08-20T16:13:00-04:00 — make archive placement a direct-parent invariant
+
+The initial archive lifecycle allowed any active node collection to own an
+archive but told agents to use the "nearest coherent" one. That still left a
+classification decision whenever both a broader `nodes/archive/` and a nested
+project/topic archive were plausible. Historical knowledge could therefore
+drift away from the exact active memory collection whose truth it superseded.
+
+- Made archive placement mechanical: the active collection whose `MEMORY.md`
+  directly indexes the current knowledge owns its archive as a direct
+  `archive/` child.
+- Defined the path rule as `A/B/current.md` →
+  `A/B/archive/<historical-memory>.md`; nested project/topic memories use their
+  own direct archive rather than an ancestor's.
+- Kept `archive/MEMORY.md` mandatory and required the active parent index to
+  expose it separately so historical entries never look equally authoritative.
+- Made archives terminal historical collections: `archive/archive/` is
+  forbidden. Later revisions to archived content belong to Git rather than
+  another archival layer.
+- Updated the archiving procedure and classification rules so archive location
+  no longer depends on an agent judging which archive is "nearest" or most
+  coherent.
+
+This refines placement only; the active-vs-archived authority model,
+`lifecycle`, optional `superseded_by`, and on-demand retrieval semantics remain
+unchanged.
+
 ## 2026-08-20T15:57:00-04:00 — add active/archive lifecycle for node knowledge
 
 The node model could preserve edit timestamps and concise chronological
