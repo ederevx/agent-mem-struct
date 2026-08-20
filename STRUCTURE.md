@@ -124,6 +124,19 @@ The tree is a recursive hierarchy of **memory groups**. Each group may contain:
 - **`submemory/<name>/`** — child groups with the same shape, used only for a
   genuinely distinct ongoing body of work with its own scope.
 
+### Read policy
+
+**Conventions are mandatory.** Before acting in a scoped group, the agent must
+read that group's applicable `MEMORY.md` chain and obey every convention
+introduced along the path. Do not skip conventions because the immediate task
+looks unrelated; their scope is what makes them mandatory.
+
+**Nodes are on-demand.** Do not load all node leaves by default. Read the
+relevant node index and only the active nodes, prerequisites, or archive
+material the current task actually needs. A node linked from a convention for
+extra rationale remains on-demand; the convention itself must contain all
+behavior required to obey it.
+
 There is no separate convention storage. A standing rule that must shape every
 task in a group lives inline in that group's `MEMORY.md`; optional explanation
 or evidence belongs in `nodes/`.
