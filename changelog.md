@@ -4,6 +4,49 @@ Delta history for `STRUCTURE.md`. Each entry documents *what changed and
 why*, so `STRUCTURE.md` itself only needs to describe the current model, not
 narrate how it got there.
 
+## 2026-08-20T16:14:00-04:00 — inline mandatory conventions into group `MEMORY.md`
+
+Conventions were mandatory for every task in a group's scope but lived behind
+a group index, `conventions/MEMORY.md`, and one or more convention leaves.
+That indirection offered no legitimate retrieval selectivity: an agent still
+had to read all applicable rules, while every extra traversal added tool-call
+cost and another opportunity to stop before required context was loaded.
+
+- Removed the `conventions/` directory from the recursive group model.
+- Made each scoped group `MEMORY.md` the mandatory scope manifest containing
+  its **Scope**, concise conventions introduced at that scope, navigation to
+  `nodes/MEMORY.md`, and its child submemories.
+- Made convention inheritance an explicit read algorithm: before acting in a
+  target group, read every group `MEMORY.md` from the relevant half-root down
+  to the target. Descendants do not duplicate inherited rules; a narrower
+  descendant override must say explicitly that it overrides the ancestor.
+- Made convention conciseness a hard requirement because every task in scope
+  pays that context cost. A convention must still be operationally complete
+  without following links: rule, optional short rationale, and only the
+  execution detail needed to obey it.
+- Defined optional explanatory links from conventions to **active nodes** for
+  detailed current rationale, evidence, examples, and edge-case analysis.
+  Create such a node when the depth is worth preserving and no suitable node
+  exists; the node remains on-demand and never becomes mandatory merely
+  because the convention links it.
+- Separated current justification from historical evolution. Active rationale
+  nodes explain why a rule is justified now; superseded rationale, former
+  rules, rejected alternatives, and investigation history belong in the
+  corresponding direct archive when worth retaining.
+- Restricted leaf frontmatter to actual `nodes/` leaves; group `MEMORY.md`
+  files are scope manifests, not leaf memories.
+- Added an explicit migration procedure for existing trees: inline concise
+  rules, move worthwhile current detail into active nodes, archive worthwhile
+  non-current reasoning separately, remove obsolete convention indexes/leaves,
+  and delete each migrated `conventions/` directory only after validation.
+- Updated the README to describe the current model rather than the removed
+  convention-directory and older linking/marker concepts.
+
+The architectural intent is that mandatory information is structurally present
+at the scope entry point, while optional current and historical knowledge stay
+behind node retrieval. This reduces procedural failure modes without inflating
+mandatory context with explanatory history.
+
 ## 2026-08-20T16:13:00-04:00 — make archive placement a direct-parent invariant
 
 The initial archive lifecycle allowed any active node collection to own an
