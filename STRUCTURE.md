@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-20T16:34:00-04:00
+Structure-Version: 2026-08-20T19:43:49-04:00
 
 # Memory structure
 
@@ -9,7 +9,8 @@ files and on-demand nodes, not this file.
 ## Structure-change preflight
 
 Before changing the tree's structure, schema, governing protocol, group scope,
-inline conventions, indexes, node-placement rules, or agent instructions that
+inline mandatory conventions, indexes, node-placement rules, or agent
+instructions that
 govern memory:
 
 1. Read this file in full and complete the applied-version handshake below.
@@ -116,8 +117,8 @@ part of this shared specification.
 The tree is a recursive hierarchy of **memory groups**. Each group may contain:
 
 - **`MEMORY.md`** — mandatory scope manifest: **Scope**, concise
-  **Conventions introduced at this scope**, navigation to `nodes/MEMORY.md`,
-  and **Submemories**.
+  **Mandatory conventions introduced at this scope**, navigation to
+  `nodes/MEMORY.md`, and **Submemories**.
 - **`nodes/`** — current on-demand facts, findings, decisions, project records,
   rationale, incident detail, and other knowledge. Project/topic collections
   may use their own `MEMORY.md` routing index.
@@ -126,20 +127,20 @@ The tree is a recursive hierarchy of **memory groups**. Each group may contain:
 
 ### Read policy
 
-**Conventions are mandatory.** Before acting in a scoped group, the agent must
-read that group's applicable `MEMORY.md` chain and obey every convention
-introduced along the path. Do not skip conventions because the immediate task
-looks unrelated; their scope is what makes them mandatory.
+**Mandatory conventions must always be read.** Before acting in a scoped group,
+the agent must read that group's applicable `MEMORY.md` chain and obey every
+mandatory convention introduced along the path. Do not skip them because the
+immediate task looks unrelated; their scope is what makes them mandatory.
 
 **Nodes are on-demand.** Do not load all node leaves by default. Read the
 relevant node index and only the active nodes, prerequisites, or archive
-material the current task actually needs. A node linked from a convention for
-extra rationale remains on-demand; the convention itself must contain all
-behavior required to obey it.
+material the current task actually needs. A node linked from a mandatory
+convention for extra rationale remains on-demand; the mandatory convention
+itself must contain all behavior required to obey it.
 
-There is no separate convention storage. A standing rule that must shape every
-task in a group lives inline in that group's `MEMORY.md`; optional explanation
-or evidence belongs in `nodes/`.
+There is no separate mandatory-convention storage. A standing rule that must
+shape every task in a group lives inline in that group's `MEMORY.md`; optional
+explanation or evidence belongs in `nodes/`.
 
 An active node collection may own one direct `archive/` child for historically
 useful knowledge that is no longer current. The archive is always exactly one
@@ -150,7 +151,7 @@ The actual current tree is transient filesystem state (`find memory -name
 MEMORY.md` or `tree memory`); this file documents durable shape and rules, not
 a snapshot.
 
-### Group `MEMORY.md` and convention inheritance
+### Group `MEMORY.md` and mandatory-convention inheritance
 
 Every scoped group `MEMORY.md` has these roles:
 
@@ -159,7 +160,7 @@ Every scoped group `MEMORY.md` has these roles:
 
 **Scope:** ...
 
-## Conventions
+## Mandatory conventions
 
 <mandatory rules introduced here, or (none)>
 
@@ -174,17 +175,17 @@ Every scoped group `MEMORY.md` has these roles:
 
 Before acting in a scoped group, read the full group `MEMORY.md` chain from
 the relevant half-root down through every ancestor to the target group, in
-that order. Effective mandatory context is the ordered union of conventions
-introduced along that path.
+that order. Effective mandatory context is the ordered union of mandatory
+conventions introduced along that path.
 
-A child group contains only conventions introduced, narrowed, or overridden
-there. Never duplicate inherited conventions into descendants. A descendant
-may override an ancestor inside its narrower scope, but must state the override
-explicitly.
+A child group contains only mandatory conventions introduced, narrowed, or
+overridden there. Never duplicate inherited mandatory conventions into
+descendants. A descendant may override an ancestor inside its narrower scope,
+but must state the override explicitly.
 
 Reading a group's `MEMORY.md` must be enough to obey every rule introduced by
-that group. Links from a convention may provide optional depth, but must never
-hide required behavior.
+that group. Links from a mandatory convention may provide optional depth, but
+must never hide required behavior.
 
 ### Current vs archival knowledge
 
@@ -384,9 +385,10 @@ future reasoning.
 2. **Scope:** choose the narrowest existing group whose scope actually covers
    the knowledge.
 3. **Mandatory convention vs node:** standing behavior goes inline under the
-   group's **Conventions**; facts/findings/decisions/projects/rationale and
-   other on-demand material go in `nodes/`. If something is both, inline only
-   the concise operational rule and link an active rationale node for detail.
+   group's **Mandatory conventions**; facts/findings/decisions/projects,
+   rationale, and other on-demand material go in `nodes/`. If something is
+   both, inline only the concise operational rule and link an active rationale
+   node for detail.
 4. **Current vs archived:** new knowledge is active by default. Create archive
    content only when intentionally preserving a non-current semantic state.
 5. If no existing group fits and the knowledge represents a distinct ongoing
@@ -399,29 +401,31 @@ future reasoning.
 ## Adding a new submemory group
 
 1. `mkdir -p <local|shared>/submemory/<name>/nodes`
-2. Write `submemory/<name>/MEMORY.md` with **Scope**, inline **Conventions**
-   (`(none)` if empty), `[[nodes/MEMORY.md]]`, and **Submemories**
-   (`(none)` if empty). Do not copy ancestor conventions.
+2. Write `submemory/<name>/MEMORY.md` with **Scope**, inline
+   **Mandatory conventions** (`(none)` if empty), `[[nodes/MEMORY.md]]`, and
+   **Submemories**
+   (`(none)` if empty). Do not copy ancestor mandatory conventions.
 3. Write `nodes/MEMORY.md` as a concise routing-index stub.
 4. Add the child under the parent's **Submemories** list.
 5. Create no archive until historical content actually exists.
 6. If shared, commit and push before the turn ends.
 
-## Keeping inline conventions concise
+## Keeping mandatory conventions concise
 
-Inline conventions are mandatory context for every task in scope, so
-**conciseness is mandatory**. A convention contains:
+Inline mandatory conventions are required context for every task in scope, so
+**conciseness is mandatory**. A mandatory convention contains:
 
 - the rule;
 - at most a short **Why:** when useful; and
 - only the minimum **How to apply:** detail required to obey it.
 
-A convention must remain operationally complete without following any link.
-Never hide required behavior in an on-demand rationale node.
+A mandatory convention must remain operationally complete without following
+any link. Never hide required behavior in an on-demand rationale node.
 
 If deeper explanation is useful, link an active node and create one when no
-suitable node exists. That node may hold current rationale, evidence, examples,
-edge cases, or application guidance. The link remains optional depth.
+suitable node exists. That node may hold current rationale, evidence,
+examples, edge cases, or application guidance. The link remains optional
+depth.
 
 Keep current justification separate from historical evolution. An active
 rationale node explains why the rule is justified now. Superseded rationale,
