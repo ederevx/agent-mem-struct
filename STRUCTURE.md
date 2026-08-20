@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-20T16:13:00-04:00
+Structure-Version: 2026-08-20T16:14:00-04:00
 
 # Memory structure
 
@@ -9,15 +9,17 @@ a memory, adding a group). Routine work reads `MEMORY.md` files, not this.
 ## Structure-change preflight
 
 Before changing a memory tree's structure, schema, or governing protocol —
-adding/removing/moving/reclassifying a leaf or group; changing a group
-index, scope, or hierarchy; changing leaf frontmatter/schema or a rule that
-governs how memory is read or edited; or changing an agent instruction that
-governs the tree — read this file in full and complete the applied-version
-handshake below before writing any affected memory file. Then read the
-affected group's `MEMORY.md`, its `conventions/`/`nodes/` indexes, and the
-target files. For additions, also decide local vs shared first (see Local vs
-shared). Never infer the tree model from a partial index or version marker
-alone.
+adding/removing/moving/reclassifying a leaf or group; changing a group index,
+scope, hierarchy, or inline convention; changing leaf frontmatter/schema or a
+rule that governs how memory is read or edited; or changing an agent
+instruction that governs the tree — read this file in full and complete the
+applied-version handshake below before writing any affected memory file.
+
+Then read every applicable group `MEMORY.md` from the relevant half-root
+(`local/` or `shared/`) down to the affected group, followed by that group's
+`nodes/MEMORY.md` and the target files. For additions, also decide local vs
+shared first (see Local vs shared). Never infer the tree model from a partial
+index or version marker alone.
 
 For work inside a `nodes/` topic/project directory, also read that directory's
 `MEMORY.md`. If the target is archived or is being archived, read the direct
@@ -125,34 +127,75 @@ own configuration, not recorded here.
 The tree is a recursive hierarchy of **memory groups**. Each group is a
 directory holding up to three things:
 
-- `MEMORY.md` — the group's index. **Links only** — to its conventions node,
-  nodes node, and submemories. Never inlines memory content directly.
-- `conventions/` — standing rules scoped to this group and everything under
-  it. **Mandatory**: read `conventions/MEMORY.md` (and skim its listed
-  files) before acting on anything in this group's scope. Related rules may
-  be collected in a topic directory with its own `MEMORY.md` index.
-- `nodes/` — findings, facts, decisions, incident logs scoped to this group.
-  **On-demand**: read only when the current task actually touches it. A
-  standing rule found here belongs in `conventions/` instead. Each ongoing
-  project gets a kebab-case directory with its own `MEMORY.md`; topical files
-  inside it form a linked chain when one file cannot hold the project record.
-  Every active node collection may own one direct `archive/` child for
-  historically useful knowledge that is no longer current; the archive is
-  always exactly one directory level below the active collection it belongs
-  to and always has its own `MEMORY.md` index.
+- `MEMORY.md` — the group's mandatory scope manifest. It contains the group's
+  **Scope**, all concise **Conventions introduced at this scope**, navigation
+  to its `nodes/MEMORY.md`, and its **Submemories**. It is not a leaf memory
+  file and does not use leaf frontmatter.
+- `nodes/` — findings, facts, decisions, incident logs, current rationale, and
+  other on-demand knowledge scoped to this group. Read only when the current
+  task actually touches it. Each ongoing project may use a kebab-case
+  directory with its own `MEMORY.md`; topical files inside it form a linked
+  chain when one file cannot coherently hold the project record. Every active
+  node collection may own one direct `archive/` child for historically useful
+  knowledge that is no longer current; the archive is always exactly one
+  directory level below the active collection it belongs to and always has its
+  own `MEMORY.md` index.
 - `submemory/<name>/` — child groups, each recursively the same shape (own
-  `conventions/`, `nodes/`, optionally further `submemory/`). Only for a
-  genuinely distinct body of ongoing work with its own scope — not every
-  small fact.
+  `MEMORY.md`, `nodes/`, optionally further `submemory/`). Only for a genuinely
+  distinct body of ongoing work with its own scope — not every small fact.
 
-Every leaf file and every group is a **node** in this tree — hence
-`node_type: memory` in the frontmatter below, and the `nodes/` directory
-name for the on-demand half of a group.
+There is no separate `conventions/` storage layer. A standing rule that must
+shape every task in a group's scope lives inline in that group's `MEMORY.md`.
+On-demand explanation or evidence belongs in `nodes/` instead.
+
+Every leaf file under `nodes/` and every group is a **node** in this tree —
+hence `node_type: memory` in leaf frontmatter and the `nodes/` directory name
+for the on-demand half of a group.
 
 The actual current tree (which groups/submemories exist right now) isn't
 recorded here — that's transient filesystem state (`find memory -name
 MEMORY.md` or `tree memory` shows it). This file documents durable shape and
 rules only, not a snapshot of today's tree.
+
+### Group `MEMORY.md` and convention inheritance
+
+Every scoped group `MEMORY.md` follows this semantic shape:
+
+```markdown
+# <group>
+
+**Scope:** ...
+
+## Conventions
+
+<mandatory rules introduced at this scope, or (none)>
+
+## Nodes
+
+[[nodes/MEMORY.md]]
+
+## Submemories
+
+<child groups, or (none)>
+```
+
+Exact headings may vary only when the same roles remain unambiguous.
+
+Before acting in a scoped group, read the full `MEMORY.md` chain from the
+relevant half-root (`local/MEMORY.md` or `shared/MEMORY.md`) down through every
+ancestor group to the target group, in that order. The effective mandatory
+context is the ordered union of conventions introduced along that path.
+
+A child group contains only conventions introduced, narrowed, or overridden at
+that scope. **Never duplicate inherited ancestor conventions into descendants.**
+A more-specific descendant convention may narrow or override an ancestor rule
+inside its scope, but the descendant must state the override explicitly so the
+agent does not have to infer that two conflicting rules are intentional.
+
+Reading a group's `MEMORY.md` must be sufficient to acquire every mandatory
+rule introduced by that group. Links from an inline convention may provide
+optional depth, but following them must never be required merely to discover
+what the rule says or how to obey it.
 
 ### Current vs archival knowledge
 
@@ -184,9 +227,9 @@ improve future reasoning.
 ### Local vs shared
 
 A memory-tree root (`memory/`) is not itself a scoped group — it holds no
-`conventions/`/`nodes/`/`submemory/` of its own, and its `MEMORY.md` only
-links to exactly two mandatory child groups, each treated as if it were its
-own root (**Scope:** `*`):
+`nodes/` or `submemory/` of its own, and its `MEMORY.md` only links to exactly
+two mandatory child groups, each treated as if it were its own root
+(**Scope:** `*`):
 
 - **`local/`** — this agent's own private half. A real directory, unique to
   this agent's tree. Mutually read-only across agents: another agent may
@@ -200,21 +243,20 @@ own root (**Scope:** `*`):
 
 Both halves use the exact same group model recursively.
 
-**Before writing a new node, decide local vs shared first** (see Classifying
-a new memory below) — this determines which physical directory the file is
-written into, before scope/conventions-vs-nodes classification even starts.
+**Before writing new memory, decide local vs shared first** (see Classifying a
+new memory below). This determines the physical half before scope and
+mandatory-vs-on-demand classification.
 
 ## Leaf memory files
 
-Each leaf `.md` (inside a `conventions/` or `nodes/` dir, including below a
-`nodes/.../archive/` directory) keeps the existing frontmatter format with an
-explicit lifecycle for new nodes:
+Every leaf `.md` under `nodes/` — including leaves below an `archive/` — uses
+the following frontmatter:
 
 ```yaml
 ---
 name: kebab-case-slug        # must be dash-case, matches [[link]] targets
 description: "one line"
-requires_read: []            # required for files under nodes/ only
+requires_read: []
 metadata:
   node_type: memory
   type: feedback|project|user|reference
@@ -232,9 +274,9 @@ metadata:
 
 - `name:` is the link key — `[[name]]` anywhere in memory content must match
   a `name:` field exactly (dash-case, no prefix duplication of the filename).
-- Filename doesn't need to match `name:`; keep filenames short/descriptive,
-  drop old flat-memory prefixes (`feedback_`, `project_`, etc.) — the
-  directory already encodes that via conventions/ vs nodes/.
+- Filename doesn't need to match `name:`; keep filenames short/descriptive and
+  do not encode storage taxonomy with prefixes such as `feedback_` or
+  `project_`.
 - Split project records by distinct **subject and activity performed**, not by
   an arbitrary length threshold. Each leaf should be coherent on its own;
   keep one subject/activity together even when it is long, and start a new
@@ -247,9 +289,8 @@ metadata:
   only when required to keep names globally unique.
 - `type:` still reflects the original taxonomy (feedback/project/user/
   reference), orthogonal to *where* the file lives. Placement (local vs
-  shared, conventions vs nodes, which submemory), lifecycle, and archive
-  placement are about privacy, scope, read policy, and current authority —
-  not this field.
+  shared, which submemory), lifecycle, and archive placement are about
+  privacy, scope, read policy, and current authority — not this field.
 - `originAgent:` records the agent that first created this node — immutable,
   kept for attribution even after a node moves into `shared/`. Set it on
   every new node. For legacy nodes without the field, infer ownership from
@@ -287,14 +328,14 @@ metadata:
   storage; preserve detailed former reasoning in an archived node when it has
   future value. Do not use `log` for edit history (that is `modified`) or for
   a blow-by-blow transcript.
-- Every leaf file under `nodes/`, active or archived, must declare a top-level
-  `requires_read:` YAML list (`[]` if none). Before changing a node: read its
-  parent `nodes/MEMORY.md` (and the direct parent collection's
-  `archive/MEMORY.md` when applicable), the existing target node if present,
-  and every path in its `requires_read` list; for a new node, read every path
-  going into its initial list before creating it. An unavailable required path
-  blocks the change. Paths are relative to the node unless absolute, and must
-  point to memory files.
+- Every leaf under `nodes/`, active or archived, must declare a top-level
+  `requires_read:` YAML list (`[]` if none). Before changing a node, first
+  read the applicable group `MEMORY.md` chain, then its parent collection's
+  `MEMORY.md` (and direct `archive/MEMORY.md` when applicable), the existing
+  target if present, and every path in `requires_read`. For a new node, read
+  every path going into its initial list before creating it. An unavailable
+  required path blocks the change. Paths are relative to the node unless
+  absolute and must point to memory files.
 
 ## Archive directories and indexes
 
@@ -344,8 +385,8 @@ repeat.
 
 When archiving:
 
-1. Read the applicable group/index context and all target `requires_read`
-   dependencies.
+1. Read the applicable group `MEMORY.md` chain, parent indexes, and all target
+   `requires_read` dependencies.
 2. Decide whether the former state has durable reasoning value; if not, let
    ordinary Git/edit history carry it.
 3. Identify the active collection whose `MEMORY.md` directly indexes the
@@ -370,20 +411,21 @@ otherwise materially improve future reasoning.
 ## Classifying a new memory
 
 1. **Local vs shared**: private to this agent's own workflow — habits,
-   tool-use preferences, output-style rules, anything with no real
-   equivalent for another agent — goes in `local/`. Anything another agent
-   might need — shared projects, infra any agent touches, facts either side
-   might rely on — goes in `shared/`. Writing into `shared/` is writing the
-   one copy every agent reads; there is no separate linking or provenance
-   step.
-2. **Scope**: does this apply everywhere within that half, or only within
-   one submemory's scope (check each submemory's **Scope:** line)? Classify
-   by the rule's actual applicability, not by which task surfaced it.
-3. **Conventions vs nodes**: a standing rule/preference that should shape
-   future behavior goes in `conventions/`; a fact/finding/decision about
-   work that happened goes in `nodes/`. If genuinely both, put the rule in
-   `conventions/` and let `nodes/` reference it via `[[link]]` rather than
-   duplicating.
+   tool-use preferences, output-style rules, anything with no real equivalent
+   for another agent — goes in `local/`. Anything another agent might need —
+   shared projects, infra any agent touches, facts either side might rely on —
+   goes in `shared/`. Writing into `shared/` is writing the one copy every
+   agent reads; there is no separate linking or provenance step.
+2. **Scope**: does this apply everywhere within that half, or only within one
+   submemory's scope (check each submemory's **Scope:** line)? Classify by the
+   rule or fact's actual applicability, not by which task surfaced it.
+3. **Mandatory convention vs node**: a standing rule/preference that must
+   shape every future task at that scope goes inline under **Conventions** in
+   the group's `MEMORY.md`. A fact, finding, decision, project record,
+   investigation, rationale, or other on-demand knowledge goes in `nodes/`.
+   If something is genuinely both, inline only the concise operational rule
+   and let an active node hold detailed current rationale/evidence; link that
+   node from the convention rather than duplicating it.
 4. **Active vs archived**: new knowledge that is currently authoritative is
    `active`. Create archival knowledge only when intentionally preserving a
    non-current semantic state with future reasoning value; ordinary new facts
@@ -393,37 +435,89 @@ otherwise materially improve future reasoning.
 5. If it doesn't fit any existing submemory's scope and isn't global to its
    half, that's a signal a new `submemory/<name>/` group may be warranted —
    but only for a real distinct ongoing effort, not a one-off fact.
-6. Write the leaf file, then add one line to the relevant group's
-   `conventions/MEMORY.md` or active `nodes/MEMORY.md` index. Archived leaves
-   belong in that active collection's direct `archive/MEMORY.md`, with the
-   active parent index linking the archive separately. Never add leaf content
-   directly to a group-level `MEMORY.md` (`local/MEMORY.md`,
-   `shared/MEMORY.md`, or a submemory's own `MEMORY.md`) — those stay
-   link-only.
-7. If the file was written under `shared/`, commit (and push) it there (see
-   What is under version control above) before the turn ends.
+6. For a convention, edit the group's `MEMORY.md` inline. For an active node,
+   write the leaf and add one concise routing line to the applicable
+   `nodes/MEMORY.md`. Archived leaves belong in that active collection's
+   direct `archive/MEMORY.md`, with the active parent index linking the archive
+   separately. Do not inline ordinary node content into a group `MEMORY.md`.
+7. If the change was under `shared/`, commit (and push) it there (see What is
+   under version control above) before the turn ends.
 
 ## Adding a new submemory group
 
-1. `mkdir -p <local|shared>/submemory/<name>/conventions <local|shared>/submemory/<name>/nodes`
-2. Write `submemory/<name>/MEMORY.md`: **Scope:** line, links to its own
-   `conventions/MEMORY.md` and `nodes/MEMORY.md`, **Submemories:** (none, or
-   nest further if it has its own sub-efforts).
-3. Write `conventions/MEMORY.md` and `nodes/MEMORY.md` index stubs inside it
-   (even if empty to start). Do not create `archive/` until there is actual
-   historically-useful content to index.
-4. Add one line for it under the parent's **Submemories:** list.
-5. If added under `shared/`, commit (and push) it there before the turn
-   ends.
+1. `mkdir -p <local|shared>/submemory/<name>/nodes`
+2. Write `submemory/<name>/MEMORY.md` with its **Scope**, an inline
+   **Conventions** section (`(none)` if empty), a link to `nodes/MEMORY.md`,
+   and **Submemories** (`(none)` if empty). Do not copy inherited conventions
+   from ancestors.
+3. Write `nodes/MEMORY.md` as a concise index stub. Do not create `archive/`
+   until there is actual historically useful content to index.
+4. Add one line for the new group under the parent's **Submemories** list.
+5. If added under `shared/`, commit (and push) it there before the turn ends.
 
-## Keeping conventions concise
+## Keeping inline conventions concise
 
-`conventions/` files are read on every task in scope — keep them tight: the
-rule itself, a one-line **Why:**, a short **How to apply:**. Push incident
-forensics, dates, and blow-by-blow narrative into `nodes/` instead of
-padding the convention; link to it with `[[name]]` if the detail is worth
-preserving at all. If a formerly-current finding is retained only for history,
-put it in the relevant node archive rather than turning it into a convention.
+Inline conventions are mandatory context for every task in their scope, so
+**conciseness is mandatory**. A convention should contain:
+
+- the rule itself;
+- at most a short **Why:** when useful; and
+- only the minimum **How to apply:** detail needed to execute the rule
+  correctly.
+
+A convention must remain **operationally complete without following any
+link**. Never replace the rule with prose such as "follow [[rationale]]" or
+hide required execution detail in an on-demand node.
+
+If deeper explanation is genuinely useful, link an active node and create one
+when no suitable node exists. That node may hold detailed current rationale,
+evidence, examples, edge-case analysis, or application guidance. The link is
+optional depth: the node remains on-demand and does not become mandatory merely
+because a convention references it. Do not duplicate the same detailed
+explanation in both places.
+
+Keep **current justification separate from historical evolution**. An active
+rationale node explains why the rule is justified now. Superseded rationale,
+former versions of the rule, rejected alternatives, investigation history, or
+other non-current explanation belongs in that active collection's direct
+`archive/` when it still has durable reasoning value. The active rationale may
+link the archive when historical context is useful.
+
+Push incident forensics, dates, blow-by-blow narrative, and other optional
+supporting material into `nodes/` rather than padding mandatory conventions.
+If a formerly-current finding is retained only for history, archive it rather
+than turning it into a convention.
+
+## Migrating existing `conventions/` directories
+
+The `2026-08-20T16:14:00-04:00` migration removes `conventions/` from every
+memory group. Apply it group by group after completing the version handshake:
+
+1. Read the group's existing `MEMORY.md`, `conventions/MEMORY.md`, every
+   convention leaf it indexes, `nodes/MEMORY.md`, and any node that will be
+   reused or changed during migration.
+2. For each standing rule, place a concise, operationally complete version
+   inline under the group's **Conventions** section. Preserve only rules
+   introduced at that scope; do not copy inherited ancestor rules into it.
+3. If a convention contains detailed explanation that is still current and
+   worth retaining, move that detail into an appropriate active node (create
+   one if needed) and link it from the inline convention. Keep the rule usable
+   without following the link.
+4. If the moved explanation also contains superseded rationale, former rules,
+   rejected alternatives, or other historically useful non-current material,
+   separate that material into the direct archive of the active collection
+   that owns the corresponding current explanatory node. Do not mix current
+   and historical justification in one active rationale node.
+5. Update the group `MEMORY.md` so it contains **Scope**, inline
+   **Conventions**, the `nodes/MEMORY.md` navigation, and **Submemories**.
+   Remove the obsolete convention index/leaves and delete the now-empty
+   `conventions/` directory.
+6. Validate that no path, index, instruction, or dependency still expects a
+   `conventions/` directory, and that all newly-created or moved nodes satisfy
+   the normal node/archive schema and index rules.
+7. If the migrated group is under `shared/`, commit and push the shared-tree
+   migration before the turn ends. Only after all required migrations are
+   applied and validated may the agent advance its root `Structure-Version:`.
 
 ---
 
