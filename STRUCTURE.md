@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-20T16:24:00-04:00
+Structure-Version: 2026-08-20T16:34:00-04:00
 
 # Memory structure
 
@@ -36,36 +36,49 @@ Every agent copies that line as the first line of its own root
 read and applied. Before relying on the tree, compare the two first lines:
 
 - **Match:** structural state is current.
-- **Differ:** do not merely copy the timestamp. Locate the commit carrying the
-  root's recorded version, review every later `STRUCTURE.md` change in order,
-  apply each migration, validate the result, then update the root marker.
-  If the recorded version cannot be found, review the complete
-  `STRUCTURE.md` history first.
+- **Differ:** do not merely copy the timestamp. Read [MIGRATION.md](MIGRATION.md)
+  and apply every migration newer than the agent's recorded version, in
+  ascending version order, through the canonical version. Validate the tree
+  after applying them, then update the root marker. If the recorded version
+  predates the earliest migration documented there or cannot be found, review
+  the relevant `STRUCTURE.md` repository history and `changelog.md` first.
 
 Agents update only their own root `MEMORY.md`; another agent's stale marker is
 a signal for that agent, never permission to edit its tree.
 
-### Structural changelog
+### Structural documentation roles
 
-Every semantic structural change must update `changelog.md` in the same
+Keep the three structural documents distinct:
+
+- **`STRUCTURE.md`** — what the current model is.
+- **`MIGRATION.md`** — how an older tree is transformed to each newer
+  `Structure-Version`.
+- **`changelog.md`** — why structural transitions were made and their context.
+
+Every `Structure-Version` bump must have a matching `MIGRATION.md` entry in the
+same logical change. If that version requires no memory-tree mutation, the
+entry says so explicitly. Do not put migration procedures back into
+`STRUCTURE.md`.
+
+Every semantic structural change must also update `changelog.md` in the same
 logical change. Record both **what changed** and the **context/rationale**,
 including important behavioral consequences, migrations, removed assumptions,
 or replaced mechanisms. Preserve enough context that a future agent can
 understand the transition without reconstructing the original conversation.
 
-`STRUCTURE.md` defines the current model; `changelog.md` explains how and why
-it changed. Pure wording, formatting, or typo-only edits that do not alter
-behavioral meaning do not require a structural changelog entry.
+Pure wording, formatting, or typo-only edits that do not change structural
+meaning do not require a changelog entry unless they also bump
+`Structure-Version`.
 
 ### What is under version control
 
 Two things here are independently version-controlled; everything else is
 plain files on disk.
 
-- **`STRUCTURE.md`** — canonical copy in the public
-  `github.com/ederevx/agent-mem-struct` repository, cloned at
-  `~/agent-mem-struct/STRUCTURE.md`. Every change must be committed and pushed
-  to that remote before the turn that made it ends.
+- **`STRUCTURE.md`, `MIGRATION.md`, `changelog.md`** — canonical structural
+  documentation in the public `github.com/ederevx/agent-mem-struct` repository,
+  cloned at `~/agent-mem-struct/`. Every change must be committed and pushed to
+  that remote before the turn that made it ends.
 - **`.shared/`** — the directory every agent's `shared/` symlink resolves to
   (`~/agent-mem-struct/.shared/`). It has its own separate **private** Git
   remote and is `.gitignore`d by the public structure repository. Every change
@@ -90,6 +103,10 @@ ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/STRUCTURE.md
 ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/memory/STRUCTURE.md
 ln -sf ~/agent-mem-struct/.shared      <agent-home>/memory/shared
 ```
+
+`MIGRATION.md` and `changelog.md` remain alongside the canonical
+`~/agent-mem-struct/STRUCTURE.md` and are consulted there when needed; they do
+not require per-agent symlinks.
 
 `<agent-home>` and the exact memory-tree root are agent configuration, not
 part of this shared specification.
@@ -398,59 +415,11 @@ rationale node explains why the rule is justified now. Superseded rationale,
 former rules, rejected alternatives, and investigation history belong in that
 active collection's direct archive when worth retaining.
 
-## Migrating existing `conventions/` directories
+## Migrations
 
-The `2026-08-20T16:14:00-04:00` migration removes `conventions/` from every
-memory group. Apply it group by group after the version handshake:
-
-1. Read the old group/index/convention files and any nodes affected.
-2. Inline each standing rule concisely under the group's **Conventions**,
-   preserving only rules introduced at that scope.
-3. Move worthwhile current explanation into an active node and link it from
-   the convention.
-4. Move worthwhile non-current explanation into the corresponding active
-   collection's direct archive.
-5. Make the group `MEMORY.md` contain **Scope**, inline **Conventions**,
-   `nodes/MEMORY.md` navigation, and **Submemories**.
-6. Remove obsolete convention leaves/indexes and the empty `conventions/`
-   directory; validate no live path or dependency still expects it.
-7. If shared, commit/push the migration before advancing the root
-   `Structure-Version:`.
-
-## Migrating legacy leaf metadata
-
-The `2026-08-20T16:24:00-04:00` migration removes the old general-purpose leaf
-schema. Apply it before advancing an agent's root `Structure-Version:`.
-
-For each leaf under `nodes/`:
-
-1. **Preserve link identity first.** If legacy `name:` differs from the
-   filename stem, rename the file to `<name>.md` (or an equivalent unique
-   kebab-case filename using the same old link key) before removing `name:`.
-   Existing `[[name]]` links should continue to resolve without a global link
-   rewrite.
-2. Move useful `description:` text into the parent `MEMORY.md` routing line,
-   phrased as what the node contains rather than a factual conclusion.
-3. If `requires_read` is empty, remove it and all frontmatter. If non-empty,
-   retain only `requires_read`.
-4. Remove `node_type`, `type`, `originAgent`, `originSessionId`, `topics`,
-   `lifecycle`, and `modified`. Their former roles are implicit, redundant, or
-   non-mandatory under the new model.
-5. Convert `superseded_by` into a visible `**Superseded by:** [[...]]` body
-   line when present.
-6. Convert useful `log` entries into a concise body `## Log` section,
-   oldest-to-newest.
-7. Verify authority from placement: active knowledge must be outside
-   `archive/`; historical knowledge must be in the direct archive owned by its
-   active collection. Resolve any legacy metadata/path disagreement in favor
-   of the intended current-vs-historical state, then let path be authoritative.
-8. Preserve creator/session provenance in the body only when it materially
-   matters and is not adequately represented elsewhere.
-9. Validate filename-link uniqueness, indexes, prerequisite paths, and
-   active/archive placement before advancing the version marker.
-
-After migration, do not reintroduce removed metadata simply because older
-history used it.
+Do not store version-to-version procedures in this file. See
+[MIGRATION.md](MIGRATION.md). It is the canonical ordered procedure for
+bringing an older memory tree to the current `Structure-Version`.
 
 ---
 

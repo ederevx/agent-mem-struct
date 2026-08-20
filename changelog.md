@@ -4,6 +4,37 @@ Delta history for `STRUCTURE.md`. Each entry documents *what changed and
 why*, so `STRUCTURE.md` itself only needs to describe the current model, not
 narrate how it got there.
 
+## 2026-08-20T16:34:00-04:00 — extract migration procedures into `MIGRATION.md`
+
+As structural changes accumulated, `STRUCTURE.md` had begun carrying both the
+current model and detailed procedures for converting older trees. Those are
+different agent tasks: routine structural understanding needs only the current
+model, while migration detail matters only when an applied version is stale.
+Keeping both together made the canonical spec longer and made historical
+upgrade procedures compete with current rules for attention.
+
+- Added `MIGRATION.md` as the canonical ordered home for version-to-version
+  tree transformations.
+- Changed the applied-version handshake so a stale agent reads and applies
+  `MIGRATION.md` entries in ascending `Structure-Version` order before
+  advancing its root marker.
+- Established explicit document roles: `STRUCTURE.md` says what is true now,
+  `MIGRATION.md` says how to reach it from an older version, and
+  `changelog.md` preserves why the transition happened.
+- Required every future `Structure-Version` bump to have a matching
+  `MIGRATION.md` entry; versions that require no tree mutation record an
+  explicit no-op entry rather than leaving the agent to guess.
+- Moved the existing direct-archive, convention-inlining, and leaf-schema
+  migration procedures out of `STRUCTURE.md` and into `MIGRATION.md` without
+  changing their intended tree semantics.
+- Recorded this version itself as a no-tree-mutation migration: agents already
+  at `2026-08-20T16:24:00-04:00` only adopt the new documentation/handshake
+  convention.
+- Updated the README to expose the three-document split.
+
+The goal is to keep `STRUCTURE.md` compact and current while retaining precise,
+agent-executable migration procedures separately.
+
 ## 2026-08-20T16:24:00-04:00 — make structure authoritative and collapse leaf metadata
 
 The leaf schema had accumulated fields for identity, description, taxonomy,
