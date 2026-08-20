@@ -28,6 +28,21 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-08-20T19:43:49-04:00 — label mandatory conventions explicitly
+
+Make the mandatory nature of inherited group rules visible in every group
+manifest.
+
+1. Rename every scoped group heading from `## Conventions` to
+   `## Mandatory conventions` without changing the rules beneath it.
+2. Update current instructions, templates, and routing prose that name the
+   heading so they use **Mandatory conventions**.
+3. Preserve historical changelog and older migration wording as historical
+   context; do not rewrite earlier records to imply they used the new label.
+4. Validate that no active group manifest retains `## Conventions`.
+5. After applying the heading migration to the agent's local half and the
+   shared half, update only that agent's root `Structure-Version:` marker.
+
 ## 2026-08-20T16:13:00-04:00 — direct-parent archive placement
 
 Ensure archival knowledge is structurally local to the active collection it
