@@ -4,6 +4,47 @@ Delta history for `STRUCTURE.md`. Each entry documents *what changed and
 why*, so `STRUCTURE.md` itself only needs to describe the current model, not
 narrate how it got there.
 
+## 2026-08-20T15:57:00-04:00 — add active/archive lifecycle for node knowledge
+
+The node model could preserve edit timestamps and concise chronological
+`log:` entries, but neither mechanism told an agent whether a retrieved claim
+was authoritative now or merely useful historical context. That left stale
+facts, replaced decisions, and disproven hypotheses capable of competing with
+current knowledge during retrieval. At the same time, deleting them outright
+would lose valuable negative findings and make future agents more likely to
+repeat already-closed investigations.
+
+- Added a binary `metadata.lifecycle: active|archived` distinction for nodes.
+  New nodes declare it explicitly; legacy nodes without the field are treated
+  as active for backward compatibility, so adopting the protocol does not
+  require rewriting every existing leaf at once.
+- Added `archive/` beneath `nodes/` collections, including nested project/topic
+  node directories. Every archive has its own `MEMORY.md` and is indexed
+  separately from active nodes so historical entries do not look equally
+  authoritative in routine navigation.
+- Active nodes now win conflicts with archived nodes by default. Normal
+  retrieval prefers active knowledge; archives are on-demand for history,
+  regressions, provenance/reasoning, prior attempts, or avoiding repeated
+  work.
+- Added optional `superseded_by:` metadata on archived nodes using the same
+  logical `name:` key used by `[[name]]` links. The direction is deliberately
+  one-way to avoid maintaining redundant bidirectional graph state.
+- Kept `log:` distinct from archive storage: logs remain concise chronological
+  state/event summaries, while archives preserve detailed former semantic
+  states when they still have reasoning value.
+- Explicitly separated semantic archival knowledge from Git history. Typos,
+  rewrites, formatting changes, and ordinary revisions stay in Git; archive a
+  former state only when it is no longer current and remembering it can
+  materially improve future reasoning.
+- Did not add confidence scores, fine-grained states such as `rejected` vs
+  `superseded`, or required validity dates. The goal is a simple agent-facing
+  current-vs-historical distinction without turning memory into a temporal
+  database or forcing agents to invent unavailable precision.
+- Made contextual changelog maintenance itself a structural invariant:
+  semantic changes to `STRUCTURE.md` must update this file in the same logical
+  change with enough rationale and migration context for future agents to
+  understand why the transition occurred.
+
 ## 2026-08-18T16:00:00-04:00 — `.shared/` gets a private remote; commit-and-push made mandatory
 
 An audit pass over the freshly-split trees found an edit sitting
