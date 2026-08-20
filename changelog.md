@@ -45,6 +45,69 @@ repeat already-closed investigations.
   change with enough rationale and migration context for future agents to
   understand why the transition occurred.
 
+## 2026-08-19T16:43:00-04:00 — split project memory by subject and activity, not size
+
+The immediately preceding 500-word cap made leaf size predictable, but it
+created an arbitrary storage boundary that could force one coherent subject or
+performed activity to be fragmented simply because its explanation was long.
+That made an agent reconstruct a single unit of work from multiple leaves even
+when there was no semantic reason to split it.
+
+- Removed the 500-word leaf limit introduced at `2026-08-19T16:33:35-04:00`.
+- Made **subject and activity performed** the criterion for splitting project
+  records: keep one coherent subject/activity together even when long, and
+  start another leaf when the subject or activity changes.
+- Retained project/topic directories, concise directory `MEMORY.md` indexes,
+  topical leaf names, and explicit previous/next links when a project record
+  genuinely spans multiple coherent leaves.
+
+This superseded only the arbitrary word-count boundary; the surrounding
+organization rules from the prior structural change remained in effect.
+
+## 2026-08-19T16:33:35-04:00 — bound and organize project/topic leaves
+
+As project memories grew, flat collections and taxonomy-prefixed names made it
+harder for agents to identify the actual subject of a leaf and to navigate
+long-running work coherently. This change introduced explicit project/topic
+organization and, initially, a hard size limit intended to keep retrieval
+units small.
+
+- Allowed related conventions to be collected in topic directories with their
+  own `MEMORY.md` indexes.
+- Required ongoing projects under `nodes/` to use kebab-case project
+  directories with concise indexes and linked topical leaves when the record
+  spans multiple parts.
+- Required leaf `name:` values to describe the subject itself rather than
+  storage taxonomy such as `project-`, `feedback-`, or parent-directory
+  prefixes, except for a short qualifier when needed for global uniqueness.
+- Introduced a 500-word total limit per leaf, including frontmatter, as the
+  initial mechanism for bounding retrieval units.
+
+The word-count rule was intentionally short-lived: it was replaced at
+`2026-08-19T16:43:00-04:00` by semantic splitting based on subject/activity.
+The project/topic organization and topical naming rules remained.
+
+## 2026-08-19T16:29:08-04:00 — add topical classification and durable event logs
+
+The existing leaf schema described ownership and broad memory type, but it did
+not provide a stable subject classification for grouping related knowledge or
+an explicit place for concise, searchable state transitions. Agents otherwise
+had to infer topic from paths/body prose and either bury chronology in the
+body or overload `modified:` as if it described semantic history.
+
+- Added `metadata.topics` as the canonical leaf-level topical classification,
+  using stable kebab-case subject labels ordered primary to secondary.
+- Kept physical groups responsible for scope and mandatory-read boundaries;
+  topics organize related material within those scopes instead of replacing
+  the hierarchy.
+- Added optional chronological `metadata.log` entries with a `date` and concise
+  `event` for durable state transitions and incident outcomes.
+- Kept `modified:` strictly as edit time, and kept detailed explanation,
+  current state, and actionable information in the body rather than turning
+  `log` into transcript or edit history.
+- Directed indexes with multiple topics to group links by primary topic and
+  allowed crosslinks to connect related nodes without duplicating content.
+
 ## 2026-08-18T16:00:00-04:00 — `.shared/` gets a private remote; commit-and-push made mandatory
 
 An audit pass over the freshly-split trees found an edit sitting
