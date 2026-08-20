@@ -1,9 +1,9 @@
 # agent-mem-struct
 
 The shared structural specification for a cross-agent persistent memory tree —
-a recursive group `MEMORY.md` / `nodes/` / `submemory/` model, mandatory
-inline conventions with scoped inheritance, active-vs-archived knowledge, and
-a structure-first leaf model with optional prerequisite frontmatter.
+a recursive group `MEMORY.md` / `nodes/` / `submemory/` model, inline mandatory
+conventions with scoped inheritance, active-vs-archived knowledge, and a
+structure-first leaf model with optional prerequisite frontmatter.
 
 The structural documents have distinct roles:
 

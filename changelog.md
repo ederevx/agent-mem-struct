@@ -4,6 +4,25 @@ Delta history for `STRUCTURE.md`. Each entry documents *what changed and
 why*, so `STRUCTURE.md` itself only needs to describe the current model, not
 narrate how it got there.
 
+## 2026-08-20T19:43:49-04:00 — label mandatory conventions explicitly
+
+The group-rule heading `Conventions` did not visibly distinguish mandatory
+inherited instructions from optional practices or on-demand context, even
+though the structure already required agents to read and obey every rule in
+the applicable group chain.
+
+- Renamed the scoped group heading to **Mandatory conventions**.
+- Updated the current structure model, group template, classification rules,
+  submemory creation instructions, and README to use the explicit label.
+- Added a migration requiring each agent to rename the heading in its own
+  local half and in the shared half before advancing its applied-version
+  marker.
+- Kept prior changelog entries and migration instructions unchanged as
+  historical records of the terminology used at those versions.
+
+This is a labeling clarification, not a change to inheritance or enforcement:
+all rules introduced by an applicable group remain mandatory.
+
 ## 2026-08-20T16:34:00-04:00 — extract migration procedures into `MIGRATION.md`
 
 As structural changes accumulated, `STRUCTURE.md` had begun carrying both the
