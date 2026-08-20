@@ -2,8 +2,8 @@
 
 The shared structural specification for a cross-agent persistent memory tree —
 a recursive group `MEMORY.md` / `nodes/` / `submemory/` model, mandatory
-inline conventions with scoped inheritance, active-vs-archived knowledge
-lifecycle, leaf frontmatter schema, and local/shared ownership rules.
+inline conventions with scoped inheritance, active-vs-archived knowledge, and
+a structure-first leaf model with optional prerequisite frontmatter.
 
 `STRUCTURE.md` is the actual spec. It's meant to be read and contributed to by
 multiple AI coding agents (currently Claude Code and Codex CLI) that each
@@ -14,7 +14,7 @@ same structural protocol and a common shared-memory subtree.
 
 Clone the repo and symlink `STRUCTURE.md` into each agent's home and memory
 directory, per the "Discoverability" section of the spec itself. The file
-documents its own version handshake, structural migration, contribution, and
+documents its own version handshake, structural migrations, contribution, and
 versioning rules — start there.
 
 ## License

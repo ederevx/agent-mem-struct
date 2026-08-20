@@ -4,6 +4,46 @@ Delta history for `STRUCTURE.md`. Each entry documents *what changed and
 why*, so `STRUCTURE.md` itself only needs to describe the current model, not
 narrate how it got there.
 
+## 2026-08-20T16:24:00-04:00 — make structure authoritative and collapse leaf metadata
+
+The leaf schema had accumulated fields for identity, description, taxonomy,
+creator/session provenance, topics, lifecycle, supersession, chronology, and
+modification time. After the local/shared split, convention inlining, and
+direct archive model, many of those values duplicated information already
+encoded more reliably by the filesystem, indexes, node body, or Git. Keeping
+both representations increased write cost and created disagreement states an
+agent then had to reconcile.
+
+- Made **structure carries semantics** an explicit agent rule. Local/shared
+  placement expresses the storage/visibility boundary, group path expresses
+  scope, `nodes/` versus direct `archive/` expresses current authority, and the
+  parent `MEMORY.md` provides routing context.
+- Replaced `name:` with the kebab-case filename stem as the canonical
+  `[[link]]` key. The migration preserves existing links by renaming legacy
+  files to their old `name:` before deleting the field when they differ.
+- Removed mandatory `description:` from leaves; concise descriptions now live
+  only in collection indexes and must describe what a node contains rather
+  than restating conclusions.
+- Made frontmatter optional and reserved it for non-empty `requires_read`
+  prerequisites. Ordinary leaves are plain Markdown with no frontmatter.
+- Removed `node_type`, `type`, `originAgent`, `originSessionId`, `topics`,
+  `lifecycle`, and `modified` from the live leaf schema. Their useful roles are
+  implicit in structure, non-mandatory, or better handled by Git/body content.
+- Moved `superseded_by` to a visible `**Superseded by:** [[...]]` body line
+  and moved durable `log` entries to an optional body `## Log` section.
+- Made archive placement alone authoritative for historical status; removed the
+  duplicate lifecycle flag so path and metadata can no longer disagree.
+- Added explicit agent interpretation and legacy-migration rules, including
+  the instruction not to recreate removed metadata merely because older nodes
+  or history contain it.
+- Kept creator/session provenance available as ordinary body content only when
+  it materially matters and is not adequately represented elsewhere.
+- Updated the README to describe the structure-first leaf model.
+
+The goal is that metadata exists only for information the structure cannot
+already express. This lowers token/write overhead, reduces synchronization
+invariants, and gives agents one source of truth for each semantic property.
+
 ## 2026-08-20T16:14:00-04:00 — inline mandatory conventions into group `MEMORY.md`
 
 Conventions were mandatory for every task in a group's scope but lived behind
