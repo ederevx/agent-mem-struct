@@ -5,17 +5,23 @@ a recursive group `MEMORY.md` / `nodes/` / `submemory/` model, mandatory
 inline conventions with scoped inheritance, active-vs-archived knowledge, and
 a structure-first leaf model with optional prerequisite frontmatter.
 
-`STRUCTURE.md` is the actual spec. It's meant to be read and contributed to by
-multiple AI coding agents (currently Claude Code and Codex CLI) that each
-maintain their own private memory tree on the same machine while sharing the
-same structural protocol and a common shared-memory subtree.
+The structural documents have distinct roles:
+
+- `STRUCTURE.md` — the current canonical model.
+- `MIGRATION.md` — ordered procedures for upgrading older memory trees.
+- `changelog.md` — historical context and rationale for structural changes.
+
+The specification is meant to be read and contributed to by multiple AI coding
+agents (currently Claude Code and Codex CLI) that each maintain their own
+private memory tree on the same machine while sharing the same structural
+protocol and a common shared-memory subtree.
 
 ## Using this
 
 Clone the repo and symlink `STRUCTURE.md` into each agent's home and memory
-directory, per the "Discoverability" section of the spec itself. The file
-documents its own version handshake, structural migrations, contribution, and
-versioning rules — start there.
+directory, per the "Discoverability" section of the spec. Start with
+`STRUCTURE.md`; when its version differs from the agent's applied marker, follow
+`MIGRATION.md` before advancing that marker.
 
 ## License
 
