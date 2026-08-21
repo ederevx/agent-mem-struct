@@ -1,8 +1,51 @@
 # Changelog
 
-Delta history for `STRUCTURE.md`. Each entry documents *what changed and
-why*, so `STRUCTURE.md` itself only needs to describe the current model, not
-narrate how it got there.
+Delta history for the memory protocol. Each entry documents what changed and
+why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
+current mandatory behavior.
+
+## 2026-08-21T16:34:28-04:00 — pair every memory with a log and add mandatory `RULES.md`
+
+Two reliability failures had become visible in deployed memory trees. First,
+archive handling depended on the agent recognizing that an ordinary node edit
+should become a structural archival action, so superseded state often remained
+inside active nodes and `## Log` sections instead of moving to `archive/`.
+Second, mandatory conventions could still be missed because routine memory work
+did not have a single compact mandatory operational checklist independent of
+the larger structural specification.
+
+- Replaced the archive model with deterministic same-name `log/` counterparts.
+  Every active `.md` at a memory directory level now has
+  `log/<same-filename>.md`; active files hold current truth and logs hold
+  displaced semantic history.
+- Made the history trigger unconditional for semantic edits: before rewriting
+  active memory, an agent must determine whether existing semantic state is
+  becoming non-current and preserve that state in the paired log first.
+- Removed competing history mechanisms from the current model: no `archive/`
+  trees, no active-body `## Log` chronology, no archive indexes, and no
+  lifecycle/supersession storage conventions. Git remains mechanical edit
+  history; paired logs are semantic history.
+- Made logs terminal and on-demand. They have no `log/log/`, need no routing
+  index because lookup is deterministic, and never override current memory.
+- Added `RULES.md` as the mandatory operational checklist for every memory
+  task. It centralizes the protocol-version check, mandatory-convention read
+  order, on-demand node policy, semantic-log trigger, prerequisites, routing,
+  classification, and shared-tree write discipline.
+- Changed the protocol control path so the agent root `memory/MEMORY.md`
+  explicitly points to `../STRUCTURE.md` and monitors the canonical
+  `Structure-Version` on every memory task. Semantic changes to either
+  `STRUCTURE.md` or `RULES.md` now bump that one protocol version.
+- Reduced structural-document discoverability to one root `STRUCTURE.md`
+  symlink. The old duplicate `memory/STRUCTURE.md` symlink is removed;
+  `memory/shared` remains because it is the shared-data topology link rather
+  than a documentation alias.
+- Kept document responsibilities separate: `RULES.md` says what agents must do
+  routinely, `STRUCTURE.md` says what the tree is, `MIGRATION.md` says how to
+  upgrade older trees, and this changelog says why the protocol changed.
+
+The goal is to remove optional judgment from history preservation and routine
+rule enforcement. A memory update now has a fixed historical destination, and
+every memory task has one short mandatory operational entry point.
 
 ## 2026-08-20T19:43:49-04:00 — label mandatory conventions explicitly
 
