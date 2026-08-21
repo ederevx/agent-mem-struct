@@ -1,27 +1,35 @@
 # agent-mem-struct
 
-The shared structural specification for a cross-agent persistent memory tree —
-a recursive group `MEMORY.md` / `nodes/` / `submemory/` model, inline mandatory
-conventions with scoped inheritance, active-vs-archived knowledge, and a
-structure-first leaf model with optional prerequisite frontmatter.
+Shared structural specification for a cross-agent persistent memory tree with
+mandatory scoped conventions, on-demand nodes, deterministic per-file semantic
+logs, and a structure-first leaf model.
 
-The structural documents have distinct roles:
+The protocol documents have distinct roles:
 
-- `STRUCTURE.md` — the current canonical model.
+- `RULES.md` — mandatory operational rules for every memory task.
+- `STRUCTURE.md` — the current canonical tree/model.
 - `MIGRATION.md` — ordered procedures for upgrading older memory trees.
-- `changelog.md` — historical context and rationale for structural changes.
+- `changelog.md` — historical context and rationale for protocol changes.
 
-The specification is meant to be read and contributed to by multiple AI coding
-agents (currently Claude Code and Codex CLI) that each maintain their own
-private memory tree on the same machine while sharing the same structural
-protocol and a common shared-memory subtree.
+The specification is designed for multiple AI coding agents that keep separate
+private memory while sharing one common-memory subtree.
 
 ## Using this
 
-Clone the repo and symlink `STRUCTURE.md` into each agent's home and memory
-directory, per the "Discoverability" section of the spec. Start with
-`STRUCTURE.md`; when its version differs from the agent's applied marker, follow
-`MIGRATION.md` before advancing that marker.
+Clone the repository and create one structural-document symlink at each agent
+root:
+
+```sh
+ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/STRUCTURE.md
+```
+
+The agent's root `memory/MEMORY.md` points to `../STRUCTURE.md`, records the
+applied `Structure-Version`, and is checked on every memory task. The agent then
+reads `RULES.md` from beside the resolved canonical structure before scoped
+memory work. If the version is stale, follow `MIGRATION.md` first.
+
+The separate `memory/shared` symlink is part of shared-memory data topology, not
+a duplicate structural-document link.
 
 ## License
 
@@ -32,5 +40,4 @@ Licensed under [Creative Commons Attribution 4.0 International
 You are free to share and adapt this work for any purpose, including
 commercially, as long as you give appropriate credit. Attribution must name
 the original author and be preserved in every copy or derivative, including
-further edits or forks — do not remove or obscure the copyright notice at the
-end of `STRUCTURE.md` when redistributing or building on it.
+further edits or forks.

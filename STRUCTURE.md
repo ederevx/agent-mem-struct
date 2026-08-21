@@ -1,159 +1,106 @@
-Structure-Version: 2026-08-20T19:43:49-04:00
+Structure-Version: 2026-08-21T16:34:28-04:00
 
 # Memory structure
 
-Meta-doc for the memory tree itself. Not part of routine recall — consult and
-update this only when the *structure* changes. Routine work reads `MEMORY.md`
-files and on-demand nodes, not this file.
+Canonical description of the current persistent-memory shape. Operational
+requirements are in [RULES.md](RULES.md), which is mandatory for every memory
+task. Version-to-version procedures are in [MIGRATION.md](MIGRATION.md).
 
-## Structure-change preflight
+## Protocol control
 
-Before changing the tree's structure, schema, governing protocol, group scope,
-inline mandatory conventions, indexes, node-placement rules, or agent
-instructions that
-govern memory:
+`Structure-Version` is the version of the whole protocol, including
+`STRUCTURE.md` and `RULES.md`. Any semantic change to either document must bump
+the first line above and add matching `MIGRATION.md` and `changelog.md` entries.
 
-1. Read this file in full and complete the applied-version handshake below.
-2. Read every applicable group `MEMORY.md` from the relevant half-root
-   (`local/` or `shared/`) down to the affected group.
-3. Read the affected node collection's `MEMORY.md`, target files, and any
-   explicit `requires_read` prerequisites.
-4. If the target is archived or is being archived, also read its direct
-   parent collection's `archive/MEMORY.md`.
-5. For additions, decide local vs shared before choosing scope or placement.
+Every agent's root `memory/MEMORY.md` begins with:
 
-Never infer the model from a partial index or version marker alone.
+```text
+Structure-Version: <applied-version>
+Structure: ../STRUCTURE.md
+```
+
+`Structure:` points to the single structural-document symlink at the agent
+root. The resolved `STRUCTURE.md` target directory also contains `RULES.md`,
+`MIGRATION.md`, and `changelog.md`.
+
+On every memory task the agent checks this root control header. If the applied
+version differs from canonical `STRUCTURE.md`, it follows `MIGRATION.md` before
+using or changing memory. `RULES.md` is then read before scoped memory work.
+
+Agents update only their own root marker. Another agent's stale marker never
+authorizes editing that agent's private tree.
+
+## Structural documents
+
+- **`RULES.md`** — mandatory operational rules for every memory task.
+- **`STRUCTURE.md`** — current structural model.
+- **`MIGRATION.md`** — ordered transformations between structure versions.
+- **`changelog.md`** — historical context and rationale.
+
+Keep these roles distinct. Do not move migration procedures or routine rules
+back into this file merely for convenience.
 
 ## Version control
 
-### Applied-version handshake
+The public `github.com/ederevx/agent-mem-struct` repository contains the four
+structural documents above. Every structural-document change must be committed
+and pushed there before the turn ends.
 
-The first line of this file is the canonical `Structure-Version:` timestamp.
-Every structural edit to `STRUCTURE.md` must replace it with the current
-ISO 8601 timestamp in the same commit.
+The shared memory directory, `~/agent-mem-struct/.shared/`, is independently
+version-controlled with its own private remote and is `.gitignore`d by the
+public repository. Every shared-memory edit must be committed and pushed from
+within `.shared/` before the turn ends.
 
-Every agent copies that line as the first line of its own root
-`memory/MEMORY.md`, recording the newest structural version it has actually
-read and applied. Before relying on the tree, compare the two first lines:
+Both repositories follow each agent's commit-attribution convention: human
+author, `Assisted-by` and `Signed-off-by` trailers, no `Co-authored-by`, and one
+commit per logical change. Agent-private `local/` memory is not added to either
+repository.
 
-- **Match:** structural state is current.
-- **Differ:** do not merely copy the timestamp. Read [MIGRATION.md](MIGRATION.md)
-  and apply every migration newer than the agent's recorded version, in
-  ascending version order, through the canonical version. Validate the tree
-  after applying them, then update the root marker. If the recorded version
-  predates the earliest migration documented there or cannot be found, review
-  the relevant `STRUCTURE.md` repository history and `changelog.md` first.
+## Discoverability
 
-Agents update only their own root `MEMORY.md`; another agent's stale marker is
-a signal for that agent, never permission to edit its tree.
-
-### Structural documentation roles
-
-Keep the three structural documents distinct:
-
-- **`STRUCTURE.md`** — what the current model is.
-- **`MIGRATION.md`** — how an older tree is transformed to each newer
-  `Structure-Version`.
-- **`changelog.md`** — why structural transitions were made and their context.
-
-Every `Structure-Version` bump must have a matching `MIGRATION.md` entry in the
-same logical change. If that version requires no memory-tree mutation, the
-entry says so explicitly. Do not put migration procedures back into
-`STRUCTURE.md`.
-
-Every semantic structural change must also update `changelog.md` in the same
-logical change. Record both **what changed** and the **context/rationale**,
-including important behavioral consequences, migrations, removed assumptions,
-or replaced mechanisms. Preserve enough context that a future agent can
-understand the transition without reconstructing the original conversation.
-
-Pure wording, formatting, or typo-only edits that do not change structural
-meaning do not require a changelog entry unless they also bump
-`Structure-Version`.
-
-### What is under version control
-
-Two things here are independently version-controlled; everything else is
-plain files on disk.
-
-- **`STRUCTURE.md`, `MIGRATION.md`, `changelog.md`** — canonical structural
-  documentation in the public `github.com/ederevx/agent-mem-struct` repository,
-  cloned at `~/agent-mem-struct/`. Every change must be committed and pushed to
-  that remote before the turn that made it ends.
-- **`.shared/`** — the directory every agent's `shared/` symlink resolves to
-  (`~/agent-mem-struct/.shared/`). It has its own separate **private** Git
-  remote and is `.gitignore`d by the public structure repository. Every change
-  under `.shared/` must be committed and pushed from within `.shared/` before
-  the turn ends.
-
-Both follow each agent's own commit-attribution convention
-(human author, `Assisted-by`/`Signed-off-by` trailers, no `Co-authored-by`).
-Use one commit per logical change; no fixup/followup commits. `local/` is never
-added to either repository.
-
-The user notifies the agent when changes have landed elsewhere; there is no
-unprompted polling/sync step.
-
-### Discoverability
-
-Each agent recreates only its own symlinks, all pointing at the canonical
-clone:
+Only one structural-document symlink is required per agent:
 
 ```sh
 ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/STRUCTURE.md
-ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/memory/STRUCTURE.md
-ln -sf ~/agent-mem-struct/.shared      <agent-home>/memory/shared
 ```
 
-`MIGRATION.md` and `changelog.md` remain alongside the canonical
-`~/agent-mem-struct/STRUCTURE.md` and are consulted there when needed; they do
-not require per-agent symlinks.
+The shared-memory data link remains part of the memory topology, not structural
+document discoverability:
 
-`<agent-home>` and the exact memory-tree root are agent configuration, not
-part of this shared specification.
+```sh
+ln -sf ~/agent-mem-struct/.shared <agent-home>/memory/shared
+```
 
-## Model
+Do not create the former duplicate `<agent-home>/memory/STRUCTURE.md` symlink.
+The root `memory/MEMORY.md` points to `../STRUCTURE.md` and monitors the
+protocol version as described above.
 
-The tree is a recursive hierarchy of **memory groups**. Each group may contain:
+`<agent-home>` and the exact memory-tree root are agent configuration, not part
+of this shared specification.
 
-- **`MEMORY.md`** — mandatory scope manifest: **Scope**, concise
-  **Mandatory conventions introduced at this scope**, navigation to
-  `nodes/MEMORY.md`, and **Submemories**.
+## Memory model
+
+The root `memory/` is a control/root index, not a scoped group. It links exactly
+two scoped half-roots:
+
+- **`local/`** — this agent's private real directory. Other agents may read it
+  for cross-agent context but must not create, edit, or delete within it.
+- **`shared/`** — the common writable shared-memory tree.
+
+Each scoped memory group may contain:
+
+- **`MEMORY.md`** — current scope manifest: **Scope**, **Mandatory
+  conventions**, navigation to `nodes/MEMORY.md`, and **Submemories**.
 - **`nodes/`** — current on-demand facts, findings, decisions, project records,
-  rationale, incident detail, and other knowledge. Project/topic collections
-  may use their own `MEMORY.md` routing index.
-- **`submemory/<name>/`** — child groups with the same shape, used only for a
-  genuinely distinct ongoing body of work with its own scope.
+  rationale, incident detail, and other knowledge. Nested project/topic
+  collections may have their own `MEMORY.md` routing index.
+- **`submemory/<name>/`** — narrower child groups using the same shape.
+- **`log/`** — historical counterpart files for active `.md` files directly at
+  this same directory level.
 
-### Read policy
+### Group `MEMORY.md`
 
-**Mandatory conventions must always be read.** Before acting in a scoped group,
-the agent must read that group's applicable `MEMORY.md` chain and obey every
-mandatory convention introduced along the path. Do not skip them because the
-immediate task looks unrelated; their scope is what makes them mandatory.
-
-**Nodes are on-demand.** Do not load all node leaves by default. Read the
-relevant node index and only the active nodes, prerequisites, or archive
-material the current task actually needs. A node linked from a mandatory
-convention for extra rationale remains on-demand; the mandatory convention
-itself must contain all behavior required to obey it.
-
-There is no separate mandatory-convention storage. A standing rule that must
-shape every task in a group lives inline in that group's `MEMORY.md`; optional
-explanation or evidence belongs in `nodes/`.
-
-An active node collection may own one direct `archive/` child for historically
-useful knowledge that is no longer current. The archive is always exactly one
-directory level below the active collection it belongs to and always has its
-own `MEMORY.md` index.
-
-The actual current tree is transient filesystem state (`find memory -name
-MEMORY.md` or `tree memory`); this file documents durable shape and rules, not
-a snapshot.
-
-### Group `MEMORY.md` and mandatory-convention inheritance
-
-Every scoped group `MEMORY.md` has these roles:
+A scoped group follows this semantic shape:
 
 ```markdown
 # <group>
@@ -162,7 +109,7 @@ Every scoped group `MEMORY.md` has these roles:
 
 ## Mandatory conventions
 
-<mandatory rules introduced here, or (none)>
+<rules introduced, narrowed, or explicitly overridden here; or (none)>
 
 ## Nodes
 
@@ -173,100 +120,75 @@ Every scoped group `MEMORY.md` has these roles:
 <child groups, or (none)>
 ```
 
-Before acting in a scoped group, read the full group `MEMORY.md` chain from
-the relevant half-root down through every ancestor to the target group, in
-that order. Effective mandatory context is the ordered union of mandatory
-conventions introduced along that path.
+Mandatory conventions inherit from half-root to target group. Descendants do
+not duplicate inherited rules; a narrower override states the override
+explicitly.
 
-A child group contains only mandatory conventions introduced, narrowed, or
-overridden there. Never duplicate inherited mandatory conventions into
-descendants. A descendant may override an ancestor inside its narrower scope,
-but must state the override explicitly.
+## Current memory and historical logs
 
-Reading a group's `MEMORY.md` must be enough to obey every rule introduced by
-that group. Links from a mandatory convention may provide optional depth, but
-must never hide required behavior.
+Current and historical knowledge are deterministically paired.
 
-### Current vs archival knowledge
+For every active `.md` file directly in a memory directory, that directory has
+a `log/` child containing a same-named historical counterpart:
 
-- **Active nodes** are authoritative for current on-demand knowledge.
-- **Archived nodes** preserve useful non-current knowledge: superseded
-  decisions, former configurations, disproven hypotheses, regression context,
-  failed approaches worth remembering, and similar historical state.
+```text
+A/foo.md
+A/log/foo.md
+```
 
-If active and archived knowledge conflict, the active node wins by default.
-Archive material is evidence about a prior state or reasoning path, not a
-competing source of present truth, unless an active node explicitly reinstates
-it.
+This applies at every memory layer, including `MEMORY.md` files and node
+leaves. For example:
 
-Normal retrieval prefers active nodes. Read archives when the task concerns
-history, prior attempts, regressions, provenance/reasoning, avoiding repeated
-work, or when an active node explicitly links to archive material.
+```text
+submemory/msm8998-kernel/MEMORY.md
+submemory/msm8998-kernel/log/MEMORY.md
 
-Archive is semantic history, not mechanical edit history. Git retains ordinary
-revisions; do not archive typo fixes, formatting, rewrites, or routine
-refinement. Archive only when the former semantic state is no longer current
-and retaining it can materially improve future reasoning.
+submemory/msm8998-kernel/nodes/kernel-port/MEMORY.md
+submemory/msm8998-kernel/nodes/kernel-port/log/MEMORY.md
 
-### Local vs shared
+submemory/msm8998-kernel/nodes/kernel-port/msm8998-kernel-porting.md
+submemory/msm8998-kernel/nodes/kernel-port/log/msm8998-kernel-porting.md
+```
 
-The root `memory/` is not itself a scoped group. Its `MEMORY.md` links exactly
-two mandatory child groups, each treated as a half-root with **Scope:** `*`:
+`log/MEMORY.md` is the history of the parent directory's active `MEMORY.md`; it
+is not an index for the log directory. Log lookup needs no index because the
+mapping is mechanical.
 
-- **`local/`** — this agent's private, real directory. Other agents may read it
-  for cross-agent context but must never create, edit, or delete within it.
-- **`shared/`** — symlink to `~/agent-mem-struct/.shared/`, physically common
-  to all agents on the machine and writable by all of them.
+Logs are terminal historical storage: never create `log/log/`. A log may
+outlive its active counterpart when that memory identity is retired.
 
-Both halves use the same group model recursively. Decide local vs shared before
-choosing scope or node placement.
+Active files contain current truth only. Log counterparts contain displaced
+semantic states and chronology. Logs are non-authoritative and on-demand; they
+are read for history, provenance, regressions, prior attempts, or when current
+memory explicitly makes that history relevant.
+
+Git remains mechanical text/edit history. The paired log is semantic history.
+Typos, formatting, equivalent rewrites, and metadata cleanup do not require a
+semantic log entry.
 
 ## Leaf memory files
 
-### Principle: structure carries semantics
+### Identity
 
-Leaf metadata is exceptional, not the primary source of truth. An agent must
-interpret a leaf from its structure first:
-
-- **local/shared path** → storage/visibility boundary;
-- **group path** → scope;
-- **`nodes/` vs direct `archive/` path** → current vs historical authority;
-- **filename stem** → node identity and `[[link]]` key;
-- **parent collection `MEMORY.md`** → concise routing description;
-- **Git** → edit history and attribution where versioned;
-- **node body** → durable content, optional provenance, chronology, and
-  supersession context;
-- **`requires_read` frontmatter** → exceptional hard prerequisites.
-
-Do not duplicate these facts back into metadata. When legacy metadata
-disagrees with the migrated structure, the structure is authoritative.
-
-### Identity and links
-
-Every leaf filename is kebab-case. Its filename stem is its canonical identity:
+Every node leaf filename is kebab-case. Its filename stem is its canonical
+identity and `[[link]]` key:
 
 ```text
 warm-reset.md  <->  [[warm-reset]]
 ```
 
 Filename stems used as link keys must be unique among leaves addressable from
-the same memory tree. Add a short subject qualifier when necessary.
+the same memory tree. A rename changes the link key and requires updating
+inbound links; rename the same-named log counterpart with it.
 
-A rename changes the link key and therefore requires updating inbound
-`[[old-stem]]` links. Moving a file without renaming it does not change its
-link key.
-
-Project/topic records split by distinct **subject and activity performed**, not
+Project/topic records split by coherent **subject and activity performed**, not
 an arbitrary size threshold. Keep one coherent subject/activity together even
-when long; start another leaf when the subject or activity changes. Connect a
-multi-leaf sequence with explicit previous/next links when useful.
+when long and split when the subject or activity changes.
 
 ### Optional `requires_read`
 
-Ordinary leaves have **no frontmatter**.
-
-Use frontmatter only when a node has hard prerequisites that must be read before
-the node may be changed:
+Ordinary node leaves have no frontmatter. Use frontmatter only for hard
+prerequisites that must be read before changing the node:
 
 ```yaml
 ---
@@ -276,167 +198,54 @@ requires_read:
 ---
 ```
 
-If there are no prerequisites, omit frontmatter entirely. Do not write
-`requires_read: []`.
+If there are no prerequisites, omit frontmatter. `requires_read` paths are
+relative to the active node unless absolute and must point to active memory
+files. Logs do not carry independent prerequisites.
 
-`requires_read` paths are relative to the node unless absolute and must point
-to memory files. Before changing a node, read the applicable group
-`MEMORY.md` chain, its parent collection `MEMORY.md`, the target itself, and
-every `requires_read` path. For a new node, read every path that will enter its
-initial `requires_read`. An unavailable prerequisite blocks the change.
+### Routing indexes
 
-Frontmatter is reserved for structural exceptions; do not recreate removed
-legacy metadata there.
-
-### Indexes are routing, not duplicate memory
-
-Every active collection `MEMORY.md` is a concise routing index. Give each leaf
-one line that describes **what the node contains**, not its conclusions:
+An active node-collection `MEMORY.md` is a concise routing index. Each entry
+describes what the node contains rather than duplicating its conclusions:
 
 ```markdown
 - [[warm-reset]] — Investigation and current state of warm-reset behavior.
 ```
 
-The leaf does not repeat that description in metadata. Index summaries must
-remain topic/routing descriptions so they do not become stale competing truth.
+History is not separately indexed; use the deterministic `log/<same-file>`
+counterpart when needed.
 
-Archive indexes follow the same rule but clearly label their entries as
-historical and non-authoritative.
+## Creating memory
 
-### Body conventions
-
-Put optional chronology in the body:
+A new active `.md` and its same-named `log/` counterpart are created together.
+An empty counterpart may contain only:
 
 ```markdown
-## Log
+# Log: <name>
 
-- 2026-08-18 — Watchdog hypothesis remained plausible.
-- 2026-08-20 — Watchdog hypothesis ruled out.
+No semantic history yet.
 ```
 
-Keep logs concise and oldest-to-newest. They summarize durable transitions;
-detailed former reasoning belongs in archive.
+Create `log/` when the first active `.md` at that directory level requires its
+counterpart. Because every memory directory includes `MEMORY.md`, migrated
+memory directories normally have `log/MEMORY.md`.
 
-An archived node must visibly state why it is historical, for example:
-
-```markdown
-**Archived because:** Controlled comparison ruled this hypothesis out.
-```
-
-When a clear current successor exists, use a visible body link:
-
-```markdown
-**Superseded by:** [[warm-reset]]
-```
-
-Creator/session provenance is not mandatory schema. If provenance materially
-matters to future reasoning and is not adequately represented by Git/history,
-state it in the body.
-
-## Archive directories and indexes
-
-Archive placement is mechanical. Every active node collection — the group's
-`nodes/` directory or a nested active project/topic directory with its own
-`MEMORY.md` — may own at most one `archive/` directly beneath it.
-
-Historical knowledge must use the archive owned by the same collection that
-directly indexes the active knowledge it supersedes:
+A new submemory group therefore contains at minimum:
 
 ```text
-A/B/current.md
-A/B/archive/<historical-memory>.md
+submemory/<name>/
+├── MEMORY.md
+├── log/
+│   └── MEMORY.md
+└── nodes/
+    ├── MEMORY.md
+    └── log/
+        └── MEMORY.md
 ```
-
-Do not use an ancestor archive or create a deeper arbitrary archive. If current
-knowledge lives in `nodes/project/`, use `nodes/project/archive/`; if it lives
-directly in `nodes/`, use `nodes/archive/`.
-
-Whenever `archive/` exists, `archive/MEMORY.md` is mandatory. It is a concise
-routing index whose opening text says its entries are historical, belong to
-the parent active collection, and are non-authoritative for current truth.
-The active parent index links the archive under a separate **Archive** heading.
-
-Archives are terminal: never create `archive/archive/`. Later edits to archived
-knowledge are ordinary revisions handled by Git/history.
-
-## Archiving a node
-
-Archive only a former semantic state that is no longer current but still has
-durable reasoning value.
-
-1. Read the applicable group chain, parent indexes, target, and prerequisites.
-2. If the former state has no durable reasoning value, leave it to ordinary
-   edit/Git history.
-3. Put the coherent historical content in the direct `archive/` of the active
-   collection that owns the corresponding current knowledge.
-4. Add a visible `**Archived because:** ...` statement.
-5. Add `**Superseded by:** [[current-node]]` when a clear successor exists.
-6. Rewrite/update the active node so present truth is explicit.
-7. Add a concise body `## Log` transition when useful.
-8. Update active/archive indexes.
-
-Do not archive every intermediate thought. Preserve closed reasoning branches
-only when remembering them can prevent repeated work or otherwise improve
-future reasoning.
-
-## Classifying a new memory
-
-1. **Local vs shared:** choose the physical half first.
-2. **Scope:** choose the narrowest existing group whose scope actually covers
-   the knowledge.
-3. **Mandatory convention vs node:** standing behavior goes inline under the
-   group's **Mandatory conventions**; facts/findings/decisions/projects,
-   rationale, and other on-demand material go in `nodes/`. If something is
-   both, inline only the concise operational rule and link an active rationale
-   node for detail.
-4. **Current vs archived:** new knowledge is active by default. Create archive
-   content only when intentionally preserving a non-current semantic state.
-5. If no existing group fits and the knowledge represents a distinct ongoing
-   body of work, create a submemory; do not create groups for one-off facts.
-6. For active nodes, create the leaf and add one routing line to the applicable
-   collection index. For archived nodes, use that collection's direct archive
-   and archive index.
-7. If the change is under `shared/`, commit and push it before the turn ends.
-
-## Adding a new submemory group
-
-1. `mkdir -p <local|shared>/submemory/<name>/nodes`
-2. Write `submemory/<name>/MEMORY.md` with **Scope**, inline
-   **Mandatory conventions** (`(none)` if empty), `[[nodes/MEMORY.md]]`, and
-   **Submemories**
-   (`(none)` if empty). Do not copy ancestor mandatory conventions.
-3. Write `nodes/MEMORY.md` as a concise routing-index stub.
-4. Add the child under the parent's **Submemories** list.
-5. Create no archive until historical content actually exists.
-6. If shared, commit and push before the turn ends.
-
-## Keeping mandatory conventions concise
-
-Inline mandatory conventions are required context for every task in scope, so
-**conciseness is mandatory**. A mandatory convention contains:
-
-- the rule;
-- at most a short **Why:** when useful; and
-- only the minimum **How to apply:** detail required to obey it.
-
-A mandatory convention must remain operationally complete without following
-any link. Never hide required behavior in an on-demand rationale node.
-
-If deeper explanation is useful, link an active node and create one when no
-suitable node exists. That node may hold current rationale, evidence,
-examples, edge cases, or application guidance. The link remains optional
-depth.
-
-Keep current justification separate from historical evolution. An active
-rationale node explains why the rule is justified now. Superseded rationale,
-former rules, rejected alternatives, and investigation history belong in that
-active collection's direct archive when worth retaining.
 
 ## Migrations
 
-Do not store version-to-version procedures in this file. See
-[MIGRATION.md](MIGRATION.md). It is the canonical ordered procedure for
-bringing an older memory tree to the current `Structure-Version`.
+Do not store version-to-version procedures here. See
+[MIGRATION.md](MIGRATION.md).
 
 ---
 
