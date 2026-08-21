@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-21T16:34:28-04:00
+Structure-Version: 2026-08-21T17:03:00-04:00
 
 # Memory structure
 
@@ -19,26 +19,29 @@ Structure-Version: <applied-version>
 Structure: ../STRUCTURE.md
 ```
 
-`Structure:` points to the single structural-document symlink at the agent
-root. The resolved `STRUCTURE.md` target directory also contains `RULES.md`,
+`Structure:` points to the structural model symlink at the agent root. The
+agent root also carries a direct `RULES.md` symlink for mandatory routine
+access. The canonical target directory contains `STRUCTURE.md`, `RULES.md`,
 `MIGRATION.md`, and `changelog.md`.
 
 On every memory task the agent checks this root control header. If the applied
 version differs from canonical `STRUCTURE.md`, it follows `MIGRATION.md` before
-using or changing memory. `RULES.md` is then read before scoped memory work.
+using or changing memory. Root `RULES.md` is then read before scoped memory
+work.
 
 Agents update only their own root marker. Another agent's stale marker never
 authorizes editing that agent's private tree.
 
 ## Structural documents
 
-- **`RULES.md`** — mandatory operational rules for every memory task.
+- **`RULES.md`** — compact mandatory operational rules for every memory task.
 - **`STRUCTURE.md`** — current structural model.
 - **`MIGRATION.md`** — ordered transformations between structure versions.
 - **`changelog.md`** — historical context and rationale.
 
-Keep these roles distinct. Do not move migration procedures or routine rules
-back into this file merely for convenience.
+Keep these roles distinct. `RULES.md` must remain intentionally compact; move
+explanation, examples, and historical rationale to the appropriate non-mandatory
+document instead of expanding the routine checklist.
 
 ## Version control
 
@@ -58,10 +61,11 @@ repository.
 
 ## Discoverability
 
-Only one structural-document symlink is required per agent:
+Each agent keeps only two structural-document symlinks, both at its root:
 
 ```sh
 ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/STRUCTURE.md
+ln -sf ~/agent-mem-struct/RULES.md     <agent-home>/RULES.md
 ```
 
 The shared-memory data link remains part of the memory topology, not structural
@@ -71,9 +75,9 @@ document discoverability:
 ln -sf ~/agent-mem-struct/.shared <agent-home>/memory/shared
 ```
 
-Do not create the former duplicate `<agent-home>/memory/STRUCTURE.md` symlink.
-The root `memory/MEMORY.md` points to `../STRUCTURE.md` and monitors the
-protocol version as described above.
+Do not create duplicate `<agent-home>/memory/STRUCTURE.md` or
+`<agent-home>/memory/RULES.md` symlinks. Root `memory/MEMORY.md` points to
+`../STRUCTURE.md` and monitors the protocol version as described above.
 
 `<agent-home>` and the exact memory-tree root are agent configuration, not part
 of this shared specification.

@@ -27,6 +27,28 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-08-21T17:03:00-04:00 — compact mandatory rules and expose root `RULES.md`
+
+No memory-tree content migration is required. This revision compacts the
+mandatory checklist and adds a direct root symlink for it.
+
+1. Create or refresh:
+
+   ```sh
+   ln -sf ~/agent-mem-struct/RULES.md <agent-home>/RULES.md
+   ```
+
+2. Keep the existing root `STRUCTURE.md` symlink and `memory/shared` data link.
+   Do not create duplicate `memory/STRUCTURE.md` or `memory/RULES.md` links.
+3. Adopt the `RULES.md` compactness invariant: future rules must be concise,
+   action-oriented, non-duplicative, and operationally complete. Consolidate
+   rules when possible; move explanation and history outside the mandatory
+   checklist.
+4. Existing memory groups, paired logs, conventions, nodes, and prerequisites
+   require no content changes for this version.
+5. After validating the root links and reading the compact rules, advance the
+   agent root marker to `2026-08-21T17:03:00-04:00`.
+
 ## 2026-08-21T16:34:28-04:00 — paired logs and mandatory `RULES.md`
 
 Replace discretionary archive/history handling with deterministic per-file

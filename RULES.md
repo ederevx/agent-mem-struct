@@ -1,80 +1,52 @@
 # Memory rules
 
-Mandatory operational rules for every memory task. Read this file after the
-agent root control header is checked and before any scoped memory work.
+Mandatory operational checklist for every memory task. Read the agent root
+control header first, then the root `RULES.md` before scoped memory work.
 
-1. **Check protocol control first.** Read the agent's root
-   `memory/MEMORY.md`, resolve its `Structure: ../STRUCTURE.md` pointer, and
-   compare the recorded `Structure-Version` with canonical `STRUCTURE.md`.
-   If they differ, apply `MIGRATION.md` in order before using or changing
-   memory. This version check is mandatory on every memory task.
+**Compactness is mandatory.** Keep this file short. New or changed rules must
+be concise, action-oriented, non-duplicative, and operationally complete.
+Consolidate existing rules when possible; put rationale, examples, and history
+in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
 
-2. **Read mandatory conventions before acting.** Determine the target half and
-   scope, then read every applicable group `MEMORY.md` from `local/` or
-   `shared/` through the target group. Apply every **Mandatory convention** in
-   that chain before node retrieval or task execution. Do not skip a scoped
-   convention because the immediate task appears unrelated.
+1. **Check protocol control.** Read root `memory/MEMORY.md`, resolve its
+   `Structure: ../STRUCTURE.md`, and compare `Structure-Version` with canonical
+   `STRUCTURE.md`. If stale, apply `MIGRATION.md` in order before memory work;
+   then read root `RULES.md`.
 
-3. **Keep nodes on-demand.** Read the relevant node-collection `MEMORY.md` and
-   only the active nodes the task needs. Do not preload all leaves. A node
-   linked from a convention for rationale remains on-demand unless an explicit
-   prerequisite requires it.
+2. **Apply mandatory scope before nodes.** Read every applicable group
+   `MEMORY.md` from the `local/` or `shared/` half-root through the target and
+   obey all **Mandatory conventions**. Nodes are on-demand: load only the
+   relevant index, active nodes, and explicitly required context.
 
-4. **Keep active memory current.** Active `.md` files contain present truth,
-   current decisions, current plans, and current routing only. Do not leave a
-   superseded state in the active file merely because it may be useful later.
+3. **Keep current truth separate from history.** Active `.md` files hold only
+   current state. Before every semantic edit, preserve any state made
+   non-current in the same-named `log/<file>.md`; logs are historical,
+   non-authoritative, and on-demand. Use no `archive/`, active-body `## Log`,
+   lifecycle history metadata, or `log/log/`; Git handles mechanical edits.
 
-5. **Run the log trigger before every semantic edit.** Before changing any
-   active memory `.md`, determine whether the edit makes existing semantic
-   information non-current. If so, preserve that displaced state in the
-   same-named `log/<file>.md` counterpart before rewriting the active file.
-   Preserve enough context to understand what changed and why; do not make a
-   mechanical full snapshot unless that detail is genuinely useful.
+4. **Maintain active/log pairs.** Create and rename an active `.md` and its
+   same-named log counterpart together, updating links on rename. A log may
+   remain after its active identity is intentionally retired.
 
-6. **Use one history mechanism.** Semantic history belongs only in the paired
-   `log/` counterpart. Do not maintain active-body `## Log` chronology,
-   `archive/` trees, lifecycle metadata, or competing historical stores.
-   Ordinary Git history remains responsible for textual/mechanical revisions.
+5. **Honor prerequisites and routing.** `requires_read` is a hard prerequisite;
+   unavailable prerequisites block edits, and frontmatter exists only for
+   non-empty prerequisites. Indexes describe what nodes contain, not factual
+   conclusions that duplicate node truth.
 
-7. **Logs are deterministic and on-demand.** Every active `.md` has one
-   same-named counterpart in the sibling `log/` directory. Logs are historical
-   and non-authoritative. Read them only for history, provenance, regressions,
-   prior attempts, or when active memory makes that context relevant. Never
-   create `log/log/`.
+6. **Classify by structure.** Choose `local/` versus `shared/`, then the
+   narrowest applicable group. Standing behavior belongs in concise,
+   operationally complete **Mandatory conventions**; facts, decisions,
+   rationale, and project records belong in on-demand nodes. Required behavior
+   must never be hidden in a rationale node.
 
-8. **Create and rename pairs together.** When creating an active `.md`, create
-   its `log/<same-file>.md` counterpart at the same time. When renaming an
-   active file, rename its counterpart too and update affected links. A log may
-   remain after its active counterpart is intentionally retired.
+7. **Respect write boundaries.** Other agents' `local/` trees are read-only.
+   Shared edits use the common `.shared/` tree, are narrowly staged, and are
+   committed and pushed to its private remote before the turn ends.
 
-9. **Treat `requires_read` as a hard prerequisite.** Before changing a node,
-   read the applicable mandatory group chain, its parent collection index, the
-   target, and every declared `requires_read` path. An unavailable prerequisite
-   blocks the edit. New nodes may use frontmatter only when they actually have
-   non-empty prerequisites.
-
-10. **Keep indexes for routing, not truth duplication.** Index entries describe
-    what a node contains. Do not copy factual conclusions into indexes where
-    they can become stale competing truth.
-
-11. **Classify by structure.** Choose `local/` versus `shared/` first, then the
-    narrowest applicable group. Standing behavior belongs in the group's
-    **Mandatory conventions**; facts, findings, decisions, rationale, and
-    project records belong in on-demand nodes.
-
-12. **Keep mandatory conventions concise and complete.** A convention contains
-    the rule, at most a short rationale, and only the execution detail required
-    to obey it. Required behavior must not be hidden in an on-demand node.
-
-13. **Respect shared-tree ownership.** Other agents' `local/` trees are
-    read-only. Shared-memory edits are made in the one common `.shared/` tree,
-    narrowly staged, committed, and pushed to its private remote before the
-    turn ends.
-
-14. **Use the structural spec only when needed beyond these rules.**
-    `STRUCTURE.md` defines shape and invariants; `MIGRATION.md` handles version
-    changes; `changelog.md` explains historical rationale. Do not substitute
-    old changelog or log content for current rules or current memory.
+8. **Keep protocol documents focused.** `STRUCTURE.md` defines shape and
+   invariants, `MIGRATION.md` handles version changes, and `changelog.md`
+   preserves rationale. Do not let historical material override current rules
+   or current memory.
 
 ---
 
