@@ -4,6 +4,33 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-08-21T17:03:00-04:00 — compact mandatory rules and expose root `RULES.md`
+
+`RULES.md` is paid as mandatory context on every memory task, so allowing it to
+grow like an explanatory specification would recreate the same reliability
+problem it was introduced to solve.
+
+- Compressed the checklist from fourteen rules to eight without removing the
+  protocol-version check, mandatory convention chain, on-demand node policy,
+  paired-log trigger, prerequisites, routing discipline, classification, or
+  shared-tree write boundary.
+- Made compactness itself mandatory: new or changed rules must be concise,
+  action-oriented, non-duplicative, and operationally complete. Agents should
+  consolidate existing rules before adding another when possible.
+- Directed rationale, examples, and historical explanation out of `RULES.md`
+  into `STRUCTURE.md`, `changelog.md`, or on-demand memory so the mandatory
+  checklist stays cheap to read.
+- Added a direct `<agent-home>/RULES.md` symlink beside the existing root
+  `STRUCTURE.md` symlink. The memory directory does not gain duplicate
+  structural-document symlinks; `memory/shared` remains only as data topology.
+- Kept `memory/MEMORY.md` minimal: it still monitors `Structure-Version` and
+  points at `../STRUCTURE.md`; the root `RULES.md` path is a fixed protocol
+  convention rather than another metadata field.
+
+No memory-tree content migration is required. Agents only add/refresh the root
+`RULES.md` symlink, read the compact checklist, and advance their applied
+protocol marker.
+
 ## 2026-08-21T16:34:28-04:00 — pair every memory with a log and add mandatory `RULES.md`
 
 Two reliability failures had become visible in deployed memory trees. First,
