@@ -17,6 +17,15 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("action", choices=("install", "uninstall"))
     p.add_argument("--home", default=os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"))
+    p.add_argument(
+        "--memory-home",
+        default=None,
+        help=(
+            "Agent root holding memory/MEMORY.md, RULES.md, and STRUCTURE.md. "
+            "Defaults to --home. Set this when Claude's config home and the "
+            "memory root are different directories."
+        ),
+    )
     return p.parse_args()
 
 
@@ -86,8 +95,8 @@ def handler(command: str, label: str) -> dict[str, Any]:
     }
 
 
-def protocol_groups(home: Path, hook: Path) -> dict[str, list[dict[str, Any]]]:
-    command = f"{quote(sys.executable)} {quote(str(hook))} --agent claude --home {quote(str(home))}"
+def protocol_groups(memory_home: Path, hook: Path) -> dict[str, list[dict[str, Any]]]:
+    command = f"{quote(sys.executable)} {quote(str(hook))} --agent claude --home {quote(str(memory_home))}"
     return {
         "SessionStart": [{"hooks": [handler(command, "load root at session start")]}],
         "UserPromptSubmit": [{"hooks": [handler(command, "refresh root each turn")]}],
@@ -96,7 +105,7 @@ def protocol_groups(home: Path, hook: Path) -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def install(home: Path, hook: Path) -> None:
+def install(home: Path, memory_home: Path, hook: Path) -> None:
     settings_path = home / "settings.json"
     state_dir = home / ".agent-mem-struct"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -109,19 +118,31 @@ def install(home: Path, hook: Path) -> None:
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SystemExit("Refusing to replace existing non-object `hooks` value")
-    for event, groups in protocol_groups(home, hook).items():
+    for event, groups in protocol_groups(memory_home, hook).items():
         current = hooks.setdefault(event, [])
         if not isinstance(current, list):
             raise SystemExit(f"Refusing to replace existing non-array hooks.{event}")
         current.extend(groups)
     save(settings_path, data)
     (state_dir / "claude-root-memory-hook.json").write_text(
-        json.dumps({"hook": str(hook), "settings": str(settings_path)}, indent=2) + "\n",
+        json.dumps(
+            {"hook": str(hook), "settings": str(settings_path), "memoryHome": str(memory_home)},
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     if data.get("disableAllHooks") is True:
         print("WARNING: disableAllHooks=true is already configured; this installer preserved it, so hooks will not run.", file=sys.stderr)
+    root_memory = memory_home / "memory" / "MEMORY.md"
+    if not root_memory.exists():
+        print(
+            f"WARNING: no root memory found at {root_memory}. "
+            "The hook will report a control error until it exists; pass --memory-home to point at the agent root.",
+            file=sys.stderr,
+        )
     print(f"Installed additive Claude root-memory hooks into {settings_path}")
+    print(f"Root memory authority: {memory_home}")
     print("Restart Claude Code and use /context to verify the injected root memory/rules are visible during a turn.")
 
 
@@ -140,11 +161,12 @@ def uninstall(home: Path) -> None:
 def main() -> int:
     args = parse_args()
     home = Path(args.home).expanduser().resolve(strict=False)
+    memory_home = Path(args.memory_home).expanduser().resolve(strict=False) if args.memory_home else home
     hook = Path(__file__).resolve().parents[1] / "root-memory-context.py"
     if not hook.exists():
         raise SystemExit(f"Shared hook not found: {hook}")
     if args.action == "install":
-        install(home, hook)
+        install(home, memory_home, hook)
     else:
         uninstall(home)
     return 0
