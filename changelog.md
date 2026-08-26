@@ -4,6 +4,27 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-08-26T12:39:09-04:00 — keep attribution out of the structural specification
+
+The **Version control** section listed the commit-attribution trailers
+themselves — human author, `Assisted-by` and `Signed-off-by`, no
+`Co-authored-by` — while the same rule already bound from each agent's memory
+conventions. A rule stated in two places drifts silently in one of them, and
+this copy also pushed a machine-local convention into a specification that is
+meant to describe shape and invariants only.
+
+- Reduced the paragraph to what belongs here: both repositories follow the
+  agent's own attribution convention, wherever the agent records it, and keep
+  one commit per logical change. The trailers are no longer named.
+- Left the rule itself untouched. Agents that held it only by way of this
+  document must record it in their own **Mandatory conventions**, which the
+  migration entry requires before the marker advances.
+- Generalized the lesson into a shared convention: a convention records only
+  what is genuinely new, or an explicit narrowing or override, and one whose
+  whole content points at a rule already in force is deleted.
+
+No memory-tree content migration is required.
+
 ## 2026-08-21T17:03:00-04:00 — compact mandatory rules and expose root `RULES.md`
 
 `RULES.md` is paid as mandatory context on every memory task, so allowing it to

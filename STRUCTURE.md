@@ -1,4 +1,4 @@
-Structure-Version: 2026-08-21T17:03:00-04:00
+Structure-Version: 2026-08-26T12:39:09-04:00
 
 # Memory structure
 
@@ -54,10 +54,10 @@ version-controlled with its own private remote and is `.gitignore`d by the
 public repository. Every shared-memory edit must be committed and pushed from
 within `.shared/` before the turn ends.
 
-Both repositories follow each agent's commit-attribution convention: human
-author, `Assisted-by` and `Signed-off-by` trailers, no `Co-authored-by`, and one
-commit per logical change. Agent-private `local/` memory is not added to either
-repository.
+Both repositories follow each agent's own commit-attribution convention,
+wherever that agent records it, and keep one commit per logical change. This
+specification does not restate the trailers themselves. Agent-private `local/`
+memory is not added to either repository.
 
 ## Discoverability
 
