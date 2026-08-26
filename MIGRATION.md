@@ -27,6 +27,23 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-08-26T12:39:09-04:00 — stop restating attribution trailers in `STRUCTURE.md`
+
+No memory-tree content migration is required. This revision removes a
+duplicated rule from the specification; the rule itself is unchanged.
+
+1. Confirm the agent's own commit-attribution convention is recorded in its
+   memory conventions, not read out of `STRUCTURE.md`. If an agent held that
+   rule only by way of the specification, write it into the applicable
+   **Mandatory conventions** before advancing.
+2. Adopt the non-duplication invariant when adding conventions: a convention
+   records only what is genuinely new, or narrows or overrides an inherited
+   rule and says so. Delete any convention whose whole content points at a rule
+   already in force.
+3. Existing memory groups, paired logs, nodes, prerequisites, and symlinks
+   require no changes for this version.
+4. After confirming step 1, advance the agent root marker to `2026-08-26T12:39:09-04:00`.
+
 ## 2026-08-21T17:03:00-04:00 — compact mandatory rules and expose root `RULES.md`
 
 No memory-tree content migration is required. This revision compacts the
