@@ -27,12 +27,13 @@ SHELL_MUTATION_RE = re.compile(
     r"rm\b|mv\b|cp\b|mkdir\b|rmdir\b|touch\b|"
     r"sed\s+-i\b|perl\s+-pi\b|patch\b|tee\b|"
     r"git\s+(?:apply|checkout|reset|clean)\b|"
-    r"python(?:3)?\b[^\n]*(?:write_text|write_bytes|open\([^\n]*['\"]w)|"
+    r"python(?:3)?\b[^\n]*(?:write_text|write_bytes)|"
     r"powershell\b[^\n]*(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item)"
     r")",
     re.IGNORECASE,
 )
 REDIRECT_RE = re.compile(r"(?:^|[^<])>{1,2}\s*[^&]", re.MULTILINE)
+TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "patch", "cwd")
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,6 +75,21 @@ def all_strings(value: Any) -> Iterable[str]:
     elif isinstance(value, list):
         for item in value:
             yield from all_strings(item)
+
+
+def target_strings(value: Any) -> Iterable[str]:
+    if not isinstance(value, dict):
+        return
+    for key, item in value.items():
+        key_lower = str(key).lower()
+        if isinstance(item, str) and any(token in key_lower for token in TARGET_KEY_TOKENS):
+            yield item
+        elif isinstance(item, dict):
+            yield from target_strings(item)
+        elif isinstance(item, list):
+            for child in item:
+                if isinstance(child, dict):
+                    yield from target_strings(child)
 
 
 def path_from_string(value: str, cwd: Path) -> Path | None:
@@ -226,6 +242,16 @@ def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
     return False
 
 
+def candidate_paths(raw: str, cwd: Path) -> Iterable[Path]:
+    direct = path_from_string(raw, cwd)
+    if direct is not None:
+        yield direct
+    for token in re.split(r"[\s,;(){}\[\]|&<>]+", raw):
+        candidate = path_from_string(token, cwd)
+        if candidate is not None:
+            yield candidate
+
+
 def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> tuple[bool, bool]:
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -235,22 +261,16 @@ def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> tuple[
     root_memory: Path = state["root_memory"]
     shared_resolved: Path = state["shared_resolved"]
 
-    root_only = False
-    for raw in all_strings(tool_input):
-        expanded = os.path.expandvars(os.path.expanduser(raw))
-        if str(memory_root) in expanded or str(shared_resolved) in expanded:
-            if str(root_memory) in expanded:
-                root_only = True
-            return True, root_only
-        for token in re.split(r"[\s,;(){}\[\]]+", raw):
-            candidate = path_from_string(token, cwd)
-            if candidate is None:
-                continue
+    found_memory = False
+    found_nonroot = False
+    for raw in target_strings(tool_input):
+        for candidate in candidate_paths(raw, cwd):
             if under(candidate, memory_root) or under(candidate, shared_resolved):
-                if candidate.resolve(strict=False) == root_memory.resolve(strict=False):
-                    root_only = True
-                return True, root_only
-    return False, root_only
+                found_memory = True
+                if candidate.resolve(strict=False) != root_memory.resolve(strict=False):
+                    found_nonroot = True
+
+    return found_memory, found_memory and not found_nonroot
 
 
 def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
