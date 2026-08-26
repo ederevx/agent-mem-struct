@@ -29,7 +29,11 @@ The shared hook `root-memory-context.py`:
 7. guards scoped memory mutations when the root authority is missing or
    malformed;
 8. reports a stale structure as a mandatory migrate-first condition without
-   hard-blocking the migration itself.
+   hard-blocking the migration itself; and
+9. exposes the stable shared-memory alias and its resolved target, including
+   whether the target is an available Git worktree, so requested durable
+   cross-agent records can be inserted directly instead of remaining only in
+   a session or artifact upload.
 
 It does **not** create another `MEMORY.md`, `RULES.md`, or `STRUCTURE.md`.
 
@@ -118,3 +122,9 @@ non-memory work.
 A stale but valid `Structure-Version` remains writable so the agent can apply
 `MIGRATION.md`; the hook injects the stale-state warning and the canonical
 migration path on every relevant context refresh.
+
+When shared memory is available, the injected context directs agents to edit
+the resolved shared tree under the existing paired-log and narrow
+commit-and-push rules. It also keeps raw dumps and complete logs in artifact
+storage: an artifact upload and a distilled shared-memory update are separate
+durability steps, not substitutes for one another.

@@ -162,6 +162,8 @@ def root_state(home: Path) -> dict[str, Any]:
 
     shared = memory_root / "shared"
     shared_resolved = shared.resolve(strict=False)
+    shared_available = shared_resolved.is_dir()
+    shared_git_backed = (shared_resolved / ".git").exists()
 
     return {
         "home": home,
@@ -170,7 +172,10 @@ def root_state(home: Path) -> dict[str, Any]:
         "root_rules": root_rules,
         "structure": expected_structure,
         "migration": migration,
+        "shared": shared,
         "shared_resolved": shared_resolved,
+        "shared_available": shared_available,
+        "shared_git_backed": shared_git_backed,
         "memory_text": memory_text,
         "rules_text": rules_text,
         "applied": applied,
@@ -187,7 +192,15 @@ def context_text(state: dict[str, Any]) -> str:
         f"Root memory: {state['root_memory']}",
         f"Root rules: {state['root_rules']}",
         f"Canonical structure: {state['structure']}",
+        f"Direct shared-memory alias: {state['shared']}",
+        f"Resolved shared-memory target: {state['shared_resolved']}",
     ]
+
+    if state["shared_available"]:
+        backing = "Git-backed" if state["shared_git_backed"] else "not detected as Git-backed"
+        lines.append(f"Shared-memory insertion: available ({backing}).")
+    else:
+        lines.append("Shared-memory insertion: unavailable; do not claim persistence there.")
 
     if state["errors"]:
         lines.append("CONTROL ERROR: " + " | ".join(state["errors"]))
@@ -213,7 +226,11 @@ def context_text(state: dict[str, Any]) -> str:
             "",
             "Mandatory use: treat the injected root MEMORY.md and RULES.md as current context. "
             "For any memory task, follow their control/version/scope rules before reading or changing scoped nodes. "
-            "For non-memory tasks, use root memory only when relevant; do not manufacture memory edits.",
+            "When the user or an applicable scoped convention requires durable cross-agent capture and shared-memory "
+            "insertion is available, update the resolved shared tree directly during the turn, preserve paired semantic "
+            "logs, and narrowly commit and push the change. Artifact uploads do not substitute for memory insertion; "
+            "keep raw dumps and full logs in artifact storage. For non-memory tasks, use root memory only when relevant; "
+            "do not manufacture memory edits.",
         )
     )
     return "\n".join(lines)
