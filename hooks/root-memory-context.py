@@ -33,7 +33,7 @@ SHELL_MUTATION_RE = re.compile(
     re.IGNORECASE,
 )
 REDIRECT_RE = re.compile(r"(?:^|[^<])>{1,2}\s*[^&]", re.MULTILINE)
-TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "patch", "cwd")
+TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "cmd", "patch", "cwd")
 
 
 def parse_args() -> argparse.Namespace:
