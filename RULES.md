@@ -13,10 +13,13 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
    `STRUCTURE.md`. If stale, apply `MIGRATION.md` in order before memory work;
    then read root `RULES.md`.
 
-2. **Apply mandatory scope before nodes.** Read every applicable group
-   `MEMORY.md` from the `local/` or `shared/` half-root through the target and
-   obey all **Mandatory conventions**. Nodes are on-demand: load only the
-   relevant index, active nodes, and explicitly required context.
+2. **Apply mandatory scope before nodes.** Always read the shared half —
+   `shared/MEMORY.md` and its mandatory groups — at the start of every session
+   and task, memory work or not; its conventions bind every agent. Then read
+   every applicable group `MEMORY.md` from the `local/` or `shared/` half-root
+   through the target and obey all **Mandatory conventions**. Nodes are
+   on-demand: load only the relevant index, active nodes, and explicitly
+   required context.
 
 3. **Keep current truth separate from history.** Active `.md` files hold only
    current state. Before every semantic edit, preserve any state made

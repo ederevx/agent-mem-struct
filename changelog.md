@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-08-27T09:35:43-04:00 — shared memory is always read
+
+Agents read the shared half only during memory work, so canonical Mandatory
+conventions that bind every agent (commit attribution, scratch hygiene) were
+missed in ordinary sessions. Rule 2 now makes the shared half an always-read:
+load `shared/MEMORY.md` and its mandatory groups at the start of every session
+and task, memory work or not.
+
+No memory-tree content migration is required.
+
 ## 2026-08-26T12:39:09-04:00 — keep attribution out of the structural specification
 
 The **Version control** section listed the commit-attribution trailers
