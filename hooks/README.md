@@ -34,6 +34,10 @@ The shared hook `root-memory-context.py`:
    whether the target is an available Git worktree, so requested durable
    cross-agent records can be inserted directly instead of remaining only in
    a session or artifact upload.
+10. writes a bounded, per-session continuity checkpoint immediately before
+    manual or automatic compaction; and
+11. restores that checkpoint together with the authoritative root memory after
+    compaction, using each agent's supported lifecycle contract.
 
 It does **not** create another `MEMORY.md`, `RULES.md`, or `STRUCTURE.md`.
 
@@ -58,6 +62,8 @@ Installed events:
 - `SessionStart`
 - `UserPromptSubmit`
 - `SubagentStart`
+- `PreCompact`
+- `PostCompact`
 - `PreToolUse`
 
 Existing hook groups and unrelated JSON fields are preserved. Current Codex
@@ -91,7 +97,17 @@ Installed events:
 - `SessionStart`
 - `UserPromptSubmit`
 - `SubagentStart`
+- `PreCompact`
+- `PostCompact`
 - `PreToolUse`
+
+Claude's `PostCompact` hook is observational: Claude Code does not accept
+context injection or blocking from that event. The reliable Claude sequence is
+therefore `PreCompact` (validate and durably checkpoint), followed by the
+existing `SessionStart` hook with source `compact` (reinject root authority and
+the checkpoint). `PostCompact` records the emitted compact summary when
+available. Codex accepts a top-level `systemMessage` on both compact events, so
+it receives the checkpoint directly before and after compaction as well.
 
 Existing settings, hooks, permissions, environment values, and instructions are
 preserved. If `disableAllHooks: true` is already configured, the installer
@@ -115,9 +131,11 @@ are independent; installing one does not configure the other.
 
 ## Failure behavior
 
-The hook intentionally fails closed only for a scoped memory mutation when the
-root control authority is missing or malformed. It does not block ordinary
-non-memory work.
+The hook fails closed before compaction when root control is invalid or the
+continuity checkpoint cannot be written. Codex can also fail closed on a
+post-compaction restoration error. Claude cannot block from `PostCompact` or
+the compact-sourced `SessionStart`, so its pre-compaction checkpoint is the
+enforcement point. It does not block ordinary non-memory work.
 
 A stale but valid `Structure-Version` remains writable so the agent can apply
 `MIGRATION.md`; the hook injects the stale-state warning and the canonical
