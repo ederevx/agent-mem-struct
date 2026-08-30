@@ -17,6 +17,8 @@ import json
 import os
 import re
 import sys
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -34,6 +36,7 @@ SHELL_MUTATION_RE = re.compile(
 )
 REDIRECT_RE = re.compile(r"(?:^|[^<])>{1,2}\s*[^&]", re.MULTILINE)
 TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "cmd", "patch", "cwd")
+CHECKPOINT_TEXT_LIMIT = 3500
 
 
 def parse_args() -> argparse.Namespace:
@@ -236,17 +239,227 @@ def context_text(state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def emit_context(event_name: str, state: dict[str, Any]) -> None:
+def safe_identity(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "unknown"))
+    return text[:160] or "unknown"
+
+
+def checkpoint_path(event: dict[str, Any], state: dict[str, Any]) -> Path:
+    identity = safe_identity(event.get("session_id") or event.get("sessionId"))
+    agent = event.get("agent_id") or event.get("agentId")
+    if agent:
+        identity += "--" + safe_identity(agent)
+    return state["home"] / ".agent-mem-struct" / "compaction-checkpoints" / f"{identity}.json"
+
+
+def content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for block in value:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                kind = str(block.get("type") or "")
+                if kind in {"text", "input_text", "output_text"}:
+                    parts.append(str(block.get("text") or ""))
+                elif kind == "tool_use":
+                    parts.append(f"tool call: {block.get('name') or 'unknown'}")
+                elif kind == "tool_result":
+                    result = content_text(block.get("content"))
+                    parts.append("tool result: " + result[:500])
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
+def transcript_entry(record: dict[str, Any]) -> str | None:
+    if record.get("type") == "last-prompt" and record.get("lastPrompt"):
+        return "LATEST USER OBJECTIVE: " + str(record["lastPrompt"])
+
+    message = record.get("message")
+    if isinstance(message, dict) and message.get("role") in {"user", "assistant"}:
+        text = content_text(message.get("content"))
+        if text:
+            return f"{str(message['role']).upper()}: {text}"
+
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        if payload.get("type") == "message" and payload.get("role") in {"user", "assistant"}:
+            text = content_text(payload.get("content"))
+            if text:
+                return f"{str(payload['role']).upper()}: {text}"
+        if payload.get("type") in {"user_message", "agent_message"} and payload.get("message"):
+            role = "USER" if payload.get("type") == "user_message" else "ASSISTANT"
+            return f"{role}: {payload['message']}"
+        if payload.get("type") in {"custom_tool_call", "function_call"}:
+            return "TOOL CALL: " + str(payload.get("name") or "unknown")
+        if payload.get("type") in {"custom_tool_call_output", "function_call_output"}:
+            output = str(payload.get("output") or "")
+            return "TOOL RESULT: " + output[:500] if output else None
+    return None
+
+
+def build_checkpoint(event: dict[str, Any]) -> str:
+    raw_path = event.get("transcript_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        raise ValueError("compaction event did not provide transcript_path")
+    path = Path(raw_path).expanduser()
+    entries: deque[str] = deque(maxlen=80)
+    with path.open(encoding="utf-8", errors="replace") as transcript:
+        for line in transcript:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            entry = transcript_entry(record)
+            if entry:
+                entries.append(re.sub(r"\s+", " ", entry).strip())
+
+    if not entries:
+        raise ValueError(f"no continuity anchors found in transcript {path}")
+    selected: list[str] = []
+    used = 0
+    for entry in reversed(entries):
+        clipped = entry[:1200]
+        if selected and used + len(clipped) + 1 > CHECKPOINT_TEXT_LIMIT:
+            continue
+        selected.append(clipped)
+        used += len(clipped) + 1
+        if used >= CHECKPOINT_TEXT_LIMIT:
+            break
+    selected.reverse()
+    return "\n".join(selected)
+
+
+def save_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str:
+    path = checkpoint_path(event, state)
+    checkpoint = build_checkpoint(event)
+    data: dict[str, Any] = {
+        "version": 1,
+        "saved_at": int(time.time()),
+        "session_id": event.get("session_id") or event.get("sessionId"),
+        "agent_id": event.get("agent_id") or event.get("agentId"),
+        "trigger": event.get("trigger"),
+        "transcript_path": event.get("transcript_path"),
+        "checkpoint": checkpoint,
+    }
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+    return checkpoint
+
+
+def record_compact_summary(event: dict[str, Any], state: dict[str, Any]) -> str:
+    path = checkpoint_path(event, state)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("checkpoint"), str):
+        raise ValueError(f"invalid continuity checkpoint at {path}")
+    summary = event.get("compact_summary")
+    if summary is not None:
+        data["compact_summary"] = str(summary)[:CHECKPOINT_TEXT_LIMIT]
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    return data["checkpoint"]
+
+
+def load_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str | None:
+    path = checkpoint_path(event, state)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    checkpoint = data.get("checkpoint") if isinstance(data, dict) else None
+    return checkpoint if isinstance(checkpoint, str) and checkpoint else None
+
+
+def continuity_context(state: dict[str, Any], checkpoint: str | None) -> str:
+    text = context_text(state)
+    if checkpoint:
+        text += (
+            "\n\n--- BEGIN PRE-COMPACTION CONTINUITY CHECKPOINT ---\n"
+            + checkpoint
+            + "\n--- END PRE-COMPACTION CONTINUITY CHECKPOINT ---\n"
+            "Use this bounded checkpoint only to restore the active objective, completed actions, tool outcomes, "
+            "decisions, blockers, and next action. The transcript and current user instructions remain authoritative."
+        )
+    return text
+
+
+def emit_context(event_name: str, state: dict[str, Any], event: dict[str, Any]) -> None:
+    checkpoint = None
+    after_compaction = event_name == "SessionStart" and event.get("source") == "compact"
+    if after_compaction:
+        checkpoint = load_checkpoint(event, state)
+    context = continuity_context(state, checkpoint)
+    if after_compaction and checkpoint is None:
+        context += (
+            "\n\nCONTINUITY WARNING: no pre-compaction checkpoint was available for this session. "
+            "Reconfirm the active objective, completed actions, blockers, and next action from the transcript or user."
+        )
     json.dump(
         {
             "hookSpecificOutput": {
                 "hookEventName": event_name,
-                "additionalContext": context_text(state),
+                "additionalContext": context,
             }
         },
         sys.stdout,
         separators=(",", ":"),
     )
+
+
+def compact_error(agent: str, reason: str) -> None:
+    if agent == "claude":
+        json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
+    else:
+        json.dump({"continue": False, "stopReason": reason}, sys.stdout, separators=(",", ":"))
+
+
+def handle_precompact(agent: str, event: dict[str, Any], state: dict[str, Any]) -> None:
+    if state["errors"]:
+        compact_error(agent, "Compaction blocked: root memory control is invalid. " + " | ".join(state["errors"]))
+        return
+    try:
+        checkpoint = save_checkpoint(event, state)
+    except Exception as exc:
+        compact_error(agent, f"Compaction blocked: continuity checkpoint could not be saved: {exc}")
+        return
+    if agent == "codex":
+        instruction = (
+            "COMPACTION CONTINUITY: Preserve the active user objective, completed actions, important tool outcomes, "
+            "decisions and assumptions, unresolved blockers, exact identifiers/paths, and the next executable action.\n\n"
+        )
+        json.dump(
+            {"systemMessage": instruction + continuity_context(state, checkpoint)},
+            sys.stdout,
+            separators=(",", ":"),
+        )
+
+
+def handle_postcompact(agent: str, event: dict[str, Any], state: dict[str, Any]) -> None:
+    if state["errors"]:
+        if agent == "codex":
+            compact_error(agent, "Post-compaction root memory restore failed. " + " | ".join(state["errors"]))
+        return
+    try:
+        checkpoint = record_compact_summary(event, state)
+    except Exception as exc:
+        if agent == "codex":
+            compact_error(agent, f"Post-compaction continuity restore failed: {exc}")
+        return
+    if agent == "codex":
+        json.dump(
+            {"systemMessage": continuity_context(state, checkpoint)},
+            sys.stdout,
+            separators=(",", ":"),
+        )
 
 
 def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
@@ -342,7 +555,13 @@ def main() -> int:
     state = root_state(home)
 
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
-        emit_context(event_name, state)
+        emit_context(event_name, state, event)
+        return 0
+    if event_name == "PreCompact":
+        handle_precompact(args.agent, event, state)
+        return 0
+    if event_name == "PostCompact":
+        handle_postcompact(args.agent, event, state)
         return 0
     if event_name == "PreToolUse":
         handle_pretool(event, state)
