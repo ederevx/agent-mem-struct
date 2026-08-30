@@ -134,6 +134,7 @@ def uninstall(home: Path) -> None:
     marker = home / ".agent-mem-struct" / "codex-root-memory-hook.json"
     if marker.exists():
         marker.unlink()
+    shutil.rmtree(home / ".agent-mem-struct" / "compaction-checkpoints", ignore_errors=True)
     print("Removed only agent-mem-struct Codex hook entries.")
 
 
