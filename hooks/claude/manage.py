@@ -101,6 +101,8 @@ def protocol_groups(memory_home: Path, hook: Path) -> dict[str, list[dict[str, A
         "SessionStart": [{"hooks": [handler(command, "load root at session start")]}],
         "UserPromptSubmit": [{"hooks": [handler(command, "refresh root each turn")]}],
         "SubagentStart": [{"hooks": [handler(command, "load root for subagent")]}],
+        "PreCompact": [{"hooks": [handler(command, "checkpoint context before compaction")]}],
+        "PostCompact": [{"hooks": [handler(command, "record compaction result")]}],
         "PreToolUse": [{"matcher": "*", "hooks": [handler(command, "guard memory mutation")]}],
     }
 
