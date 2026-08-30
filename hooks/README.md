@@ -37,7 +37,9 @@ The shared hook `root-memory-context.py`:
 10. writes a bounded, per-session continuity checkpoint immediately before
     manual or automatic compaction; and
 11. restores that checkpoint together with the authoritative root memory after
-    compaction, using each agent's supported lifecycle contract.
+    compaction, using each agent's supported lifecycle contract; and
+12. deletes a checkpoint after successful restoration and scavenges
+    crash-orphaned checkpoints after seven days.
 
 It does **not** create another `MEMORY.md`, `RULES.md`, or `STRUCTURE.md`.
 
@@ -136,6 +138,13 @@ continuity checkpoint cannot be written. Codex can also fail closed on a
 post-compaction restoration error. Claude cannot block from `PostCompact` or
 the compact-sourced `SessionStart`, so its pre-compaction checkpoint is the
 enforcement point. It does not block ordinary non-memory work.
+
+Checkpoint files contain bounded transcript-derived execution anchors, use
+mode `0600`, and are transient. A successful post-compaction restoration
+consumes them. Any checkpoint stranded by a process crash is removed after
+seven days when the hook next runs, and uninstall removes the owned checkpoint
+tree immediately. The first-install settings backup is intentionally retained
+as recovery state.
 
 A stale but valid `Structure-Version` remains writable so the agent can apply
 `MIGRATION.md`; the hook injects the stale-state warning and the canonical

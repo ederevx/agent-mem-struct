@@ -107,6 +107,25 @@ def protocol_groups(memory_home: Path, hook: Path) -> dict[str, list[dict[str, A
     }
 
 
+def checkpoint_home_from_marker(home: Path) -> Path | None:
+    marker = home / ".agent-mem-struct" / "claude-root-memory-hook.json"
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = data.get("memoryHome") if isinstance(data, dict) else None
+    if not isinstance(value, str) or not value:
+        return None
+    return Path(value).expanduser().resolve(strict=False)
+
+
+def remove_checkpoints(memory_home: Path) -> None:
+    shutil.rmtree(
+        memory_home / ".agent-mem-struct" / "compaction-checkpoints",
+        ignore_errors=True,
+    )
+
+
 def install(home: Path, memory_home: Path, hook: Path) -> None:
     settings_path = home / "settings.json"
     state_dir = home / ".agent-mem-struct"
@@ -114,6 +133,10 @@ def install(home: Path, memory_home: Path, hook: Path) -> None:
     backup = state_dir / "settings.before-first-install.json"
     if settings_path.exists() and not backup.exists():
         shutil.copy2(settings_path, backup)
+
+    previous_memory_home = checkpoint_home_from_marker(home)
+    if previous_memory_home is not None and previous_memory_home != memory_home:
+        remove_checkpoints(previous_memory_home)
 
     data = load(settings_path)
     strip_owned(data)
@@ -148,15 +171,21 @@ def install(home: Path, memory_home: Path, hook: Path) -> None:
     print("Restart Claude Code and use /context to verify the injected root memory/rules are visible during a turn.")
 
 
-def uninstall(home: Path) -> None:
+def uninstall(home: Path, memory_home: Path) -> None:
     settings_path = home / "settings.json"
     if settings_path.exists():
         data = load(settings_path)
         strip_owned(data)
         save(settings_path, data)
     marker = home / ".agent-mem-struct" / "claude-root-memory-hook.json"
+    checkpoint_homes = {memory_home}
+    installed_memory_home = checkpoint_home_from_marker(home)
+    if installed_memory_home is not None:
+        checkpoint_homes.add(installed_memory_home)
     if marker.exists():
         marker.unlink()
+    for checkpoint_home in checkpoint_homes:
+        remove_checkpoints(checkpoint_home)
     print("Removed only agent-mem-struct Claude hook entries.")
 
 
@@ -170,7 +199,7 @@ def main() -> int:
     if args.action == "install":
         install(home, memory_home, hook)
     else:
-        uninstall(home)
+        uninstall(home, memory_home)
     return 0
 
 

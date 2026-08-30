@@ -37,6 +37,10 @@ SHELL_MUTATION_RE = re.compile(
 REDIRECT_RE = re.compile(r"(?:^|[^<])>{1,2}\s*[^&]", re.MULTILINE)
 TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "cmd", "patch", "cwd")
 CHECKPOINT_TEXT_LIMIT = 3500
+CHECKPOINT_MAX_AGE = 7 * 24 * 60 * 60
+CHECKPOINT_RESTORE_MAX_AGE = 24 * 60 * 60
+CHECKPOINT_TEMP_MAX_AGE = 60 * 60
+CHECKPOINT_MAX_FILES = 256
 
 
 def parse_args() -> argparse.Namespace:
@@ -244,12 +248,64 @@ def safe_identity(value: Any) -> str:
     return text[:160] or "unknown"
 
 
+def checkpoint_dir(state: dict[str, Any]) -> Path:
+    return state["home"] / ".agent-mem-struct" / "compaction-checkpoints"
+
+
 def checkpoint_path(event: dict[str, Any], state: dict[str, Any]) -> Path:
-    identity = safe_identity(event.get("session_id") or event.get("sessionId"))
+    session = event.get("session_id") or event.get("sessionId")
+    identity = safe_identity(session)
     agent = event.get("agent_id") or event.get("agentId")
     if agent:
         identity += "--" + safe_identity(agent)
-    return state["home"] / ".agent-mem-struct" / "compaction-checkpoints" / f"{identity}.json"
+    return checkpoint_dir(state) / f"{identity}.json"
+
+
+def remove_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> None:
+    path = checkpoint_path(event, state)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def prune_checkpoints(state: dict[str, Any], keep: Path | None = None) -> None:
+    directory = checkpoint_dir(state)
+    now = time.time()
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    survivors: list[tuple[float, Path]] = []
+    for entry in entries:
+        try:
+            if entry == keep or entry.is_symlink() or not entry.is_file():
+                continue
+            age = now - entry.stat().st_mtime
+            limit = CHECKPOINT_TEMP_MAX_AGE if ".tmp." in entry.name else CHECKPOINT_MAX_AGE
+            if age > limit:
+                entry.unlink()
+            elif entry.suffix == ".json":
+                survivors.append((entry.stat().st_mtime, entry))
+        except OSError:
+            continue
+    survivors.sort(key=lambda item: item[0], reverse=True)
+    survivor_limit = CHECKPOINT_MAX_FILES - (1 if keep is not None and keep.exists() else 0)
+    for _, entry in survivors[max(0, survivor_limit):]:
+        if entry == keep:
+            continue
+        try:
+            entry.unlink()
+        except OSError:
+            pass
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
 
 
 def content_text(value: Any) -> str:
@@ -335,34 +391,46 @@ def build_checkpoint(event: dict[str, Any]) -> str:
 
 
 def save_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str:
+    session_id = event.get("session_id") or event.get("sessionId")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("compaction event did not provide a valid session_id")
     path = checkpoint_path(event, state)
     checkpoint = build_checkpoint(event)
     data: dict[str, Any] = {
         "version": 1,
+        "phase": "prepared",
         "saved_at": int(time.time()),
-        "session_id": event.get("session_id") or event.get("sessionId"),
+        "session_id": session_id,
         "agent_id": event.get("agent_id") or event.get("agentId"),
         "trigger": event.get("trigger"),
         "transcript_path": event.get("transcript_path"),
         "checkpoint": checkpoint,
     }
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
+    os.chmod(path.parent, 0o700)
+    temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+    prune_checkpoints(state, keep=path)
     return checkpoint
 
 
 def record_compact_summary(event: dict[str, Any], state: dict[str, Any]) -> str:
     path = checkpoint_path(event, state)
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not isinstance(data.get("checkpoint"), str):
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("checkpoint"), str)
+        or data.get("phase") not in {"prepared", "observed"}
+        or time.time() - float(data.get("saved_at", 0)) > CHECKPOINT_RESTORE_MAX_AGE
+    ):
         raise ValueError(f"invalid continuity checkpoint at {path}")
     summary = event.get("compact_summary")
     if summary is not None:
         data["compact_summary"] = str(summary)[:CHECKPOINT_TEXT_LIMIT]
-        temporary = path.with_suffix(".tmp")
+        data["phase"] = "observed"
+        temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
@@ -375,8 +443,22 @@ def load_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    checkpoint = data.get("checkpoint") if isinstance(data, dict) else None
-    return checkpoint if isinstance(checkpoint, str) and checkpoint else None
+    if not isinstance(data, dict):
+        return None
+    checkpoint = data.get("checkpoint")
+    try:
+        age = time.time() - float(data.get("saved_at", 0))
+    except (TypeError, ValueError):
+        age = CHECKPOINT_RESTORE_MAX_AGE + 1
+    if (
+        not isinstance(checkpoint, str)
+        or not checkpoint
+        or data.get("phase") not in {"prepared", "observed"}
+        or age > CHECKPOINT_RESTORE_MAX_AGE
+    ):
+        remove_checkpoint(event, state)
+        return None
+    return checkpoint
 
 
 def continuity_context(state: dict[str, Any], checkpoint: str | None) -> str:
@@ -413,6 +495,8 @@ def emit_context(event_name: str, state: dict[str, Any], event: dict[str, Any]) 
         sys.stdout,
         separators=(",", ":"),
     )
+    if after_compaction:
+        remove_checkpoint(event, state)
 
 
 def compact_error(agent: str, reason: str) -> None:
@@ -460,6 +544,7 @@ def handle_postcompact(agent: str, event: dict[str, Any], state: dict[str, Any])
             sys.stdout,
             separators=(",", ":"),
         )
+        remove_checkpoint(event, state)
 
 
 def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
@@ -553,6 +638,11 @@ def main() -> int:
     event = read_event()
     event_name = str(event.get("hook_event_name") or event.get("hookEventName") or "")
     state = root_state(home)
+    keep = checkpoint_path(event, state) if (
+        event_name == "PostCompact"
+        or (event_name == "SessionStart" and event.get("source") == "compact")
+    ) else None
+    prune_checkpoints(state, keep=keep)
 
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
         emit_context(event_name, state, event)
