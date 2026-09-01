@@ -19,6 +19,7 @@ from manage_common import (  # noqa: E402
     remove_checkpoints,
     replace_owned_hooks,
     save_json,
+    secure_dir,
     strip_owned_hooks,
 )
 
@@ -87,7 +88,7 @@ def restore_native_memory(settings: dict[str, Any], marker: dict[str, Any]) -> N
 def install(home: Path, memory_home: Path, hook: Path) -> None:
     settings_path = home / "settings.json"
     marker_file = marker_path(home)
-    marker_file.parent.mkdir(parents=True, exist_ok=True)
+    secure_dir(marker_file.parent)
     backup_once(settings_path, marker_file.parent / "settings.before-first-install.json")
 
     previous_marker = read_marker(marker_file)

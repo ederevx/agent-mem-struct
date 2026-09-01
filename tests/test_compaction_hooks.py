@@ -299,6 +299,42 @@ class CompactionHookTests(unittest.TestCase):
             "deny",
         )
 
+    def test_embedded_script_writes_are_guarded_across_heredoc_lines(self) -> None:
+        invalid_home = self.temp / "invalid-home"
+        target = invalid_home / "memory" / "local" / "note.md"
+        for command in (
+            f"python3 - <<'PY'\nopen('{target}', 'w').write('x')\nPY",
+            f"python3 -c \"import shutil; shutil.rmtree('{target}')\"",
+            f"node -e \"require('fs').writeFileSync('{target}', 'x')\"",
+        ):
+            event = self.event("PreToolUse")
+            event.update({"tool_name": "Bash", "tool_input": {"command": command}})
+            output = json.loads(invoke("codex", invalid_home, event).stdout)
+            self.assertEqual(
+                output["hookSpecificOutput"]["permissionDecision"], "deny", command
+            )
+
+    def test_embedded_script_reads_are_not_guarded(self) -> None:
+        invalid_home = self.temp / "invalid-home"
+        target = invalid_home / "memory" / "local" / "note.md"
+        for command in (
+            f"python3 -c \"print(open('{target}').read())\"",
+            f"python3 - <<'PY'\nprint(open('{target}').read())\nPY",
+        ):
+            event = self.event("PreToolUse")
+            event.update({"tool_name": "Bash", "tool_input": {"command": command}})
+            self.assertEqual(invoke("codex", invalid_home, event).stdout, "", command)
+
+    def test_checkpoint_state_tree_is_private_at_every_level(self) -> None:
+        owned = self.home / ".agent-mem-struct"
+        owned.mkdir()
+        owned.chmod(0o755)
+        invoke("codex", self.home, self.event("PreCompact"))
+        self.assertEqual(owned.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(
+            (owned / "compaction-checkpoints").stat().st_mode & 0o777, 0o700
+        )
+
     def test_compact_session_start_warns_when_precompact_did_not_run(self) -> None:
         event = self.event("SessionStart")
         event["session_id"] = "never-checkpointed"
@@ -437,6 +473,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn("--config-home", owned[0]["command"])
                 self.assertIn(str(home), owned[0]["command"])
         self.assertNotIn("PostCompact", data["hooks"])
+        self.assertEqual((home / ".agent-mem-struct").stat().st_mode & 0o777, 0o700)
 
         if manager == CODEX_MANAGER:
             codex_config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
