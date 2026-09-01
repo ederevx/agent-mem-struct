@@ -19,6 +19,7 @@ from manage_common import (  # noqa: E402
     load_json,
     read_marker,
     remove_checkpoints,
+    remove_install_backup,
     replace_owned_hooks,
     save_json,
     secure_dir,
@@ -205,6 +206,7 @@ def uninstall(home: Path) -> None:
                 save_text(config_path, restored)
     marker_file.unlink(missing_ok=True)
     remove_checkpoints(home)
+    remove_install_backup(home, "hooks.before-first-install.json")
     print("Removed only agent-mem-struct Codex hook entries.")
 
 

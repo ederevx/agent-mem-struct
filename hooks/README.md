@@ -161,12 +161,14 @@ Because a timed-out hook is a silently skipped checkpoint, the installed
 5-second default.
 
 Checkpoint files contain bounded transcript-derived execution anchors, use
-mode `0600`, and are transient; the state directories holding them and the
-first-install settings backup are `0700` at every owned level. A successful post-compaction restoration
+mode `0600` on POSIX, and are transient; the state directories holding them
+and the first-install settings backup are `0700` on POSIX at every owned
+level. A successful post-compaction restoration
 consumes them. A checkpoint stranded by a process crash is removed after seven
 days at the next session, subagent, or compaction boundary; uninstall removes
 the owned checkpoint tree immediately. The first-install settings backup is
-intentionally retained as recovery state.
+available as recovery state while hooks are installed; uninstall removes it
+and removes each owned state directory once empty.
 
 A stale but valid `Structure-Version` remains writable so the agent can apply
 `MIGRATION.md`; the hook injects the stale-state warning and the canonical
