@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 OWNER_PREFIX = "agent-mem-struct root memory:"
+AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
 
 def parse_args() -> argparse.Namespace:
@@ -95,11 +96,16 @@ def handler(command: str, label: str) -> dict[str, Any]:
     }
 
 
-def protocol_groups(memory_home: Path, hook: Path) -> dict[str, list[dict[str, Any]]]:
-    command = f"{quote(sys.executable)} {quote(str(hook))} --agent claude --home {quote(str(memory_home))}"
+def protocol_groups(
+    config_home: Path, memory_home: Path, hook: Path
+) -> dict[str, list[dict[str, Any]]]:
+    command = (
+        f"{quote(sys.executable)} {quote(str(hook))} --agent claude "
+        f"--home {quote(str(memory_home))} --config-home {quote(str(config_home))}"
+    )
     return {
         "SessionStart": [{"hooks": [handler(command, "load root at session start")]}],
-        "UserPromptSubmit": [{"hooks": [handler(command, "refresh root each turn")]}],
+        "UserPromptSubmit": [{"hooks": [handler(command, "remind root each turn")]}],
         "SubagentStart": [{"hooks": [handler(command, "load root for subagent")]}],
         "PreCompact": [{"hooks": [handler(command, "checkpoint context before compaction")]}],
         "PostCompact": [{"hooks": [handler(command, "record compaction result")]}],
@@ -119,6 +125,50 @@ def checkpoint_home_from_marker(home: Path) -> Path | None:
     return Path(value).expanduser().resolve(strict=False)
 
 
+def marker_data(home: Path) -> dict[str, Any]:
+    marker = home / ".agent-mem-struct" / "claude-root-memory-hook.json"
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def disable_native_auto_memory(
+    settings: dict[str, Any], marker: dict[str, Any]
+) -> dict[str, Any]:
+    environment = settings.setdefault("env", {})
+    if not isinstance(environment, dict):
+        raise SystemExit("Refusing to replace existing non-object `env` value")
+    previous = marker.get("previousAutoMemoryDisable")
+    if not isinstance(previous, dict) or "present" not in previous:
+        previous = {
+            "present": AUTO_MEMORY_ENV in environment,
+            "value": environment.get(AUTO_MEMORY_ENV),
+        }
+    environment[AUTO_MEMORY_ENV] = "1"
+    return previous
+
+
+def restore_native_auto_memory(
+    settings: dict[str, Any], marker: dict[str, Any]
+) -> None:
+    previous = marker.get("previousAutoMemoryDisable")
+    environment = settings.get("env")
+    if (
+        not isinstance(previous, dict)
+        or not isinstance(environment, dict)
+        or environment.get(AUTO_MEMORY_ENV) != "1"
+    ):
+        return
+    if previous.get("present") is True:
+        environment[AUTO_MEMORY_ENV] = previous.get("value")
+    else:
+        environment.pop(AUTO_MEMORY_ENV, None)
+    if not environment:
+        settings.pop("env", None)
+
+
 def remove_checkpoints(memory_home: Path) -> None:
     shutil.rmtree(
         memory_home / ".agent-mem-struct" / "compaction-checkpoints",
@@ -134,16 +184,18 @@ def install(home: Path, memory_home: Path, hook: Path) -> None:
     if settings_path.exists() and not backup.exists():
         shutil.copy2(settings_path, backup)
 
+    previous_marker = marker_data(home)
     previous_memory_home = checkpoint_home_from_marker(home)
     if previous_memory_home is not None and previous_memory_home != memory_home:
         remove_checkpoints(previous_memory_home)
 
     data = load(settings_path)
     strip_owned(data)
+    previous_auto_memory = disable_native_auto_memory(data, previous_marker)
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SystemExit("Refusing to replace existing non-object `hooks` value")
-    for event, groups in protocol_groups(memory_home, hook).items():
+    for event, groups in protocol_groups(home, memory_home, hook).items():
         current = hooks.setdefault(event, [])
         if not isinstance(current, list):
             raise SystemExit(f"Refusing to replace existing non-array hooks.{event}")
@@ -151,7 +203,12 @@ def install(home: Path, memory_home: Path, hook: Path) -> None:
     save(settings_path, data)
     (state_dir / "claude-root-memory-hook.json").write_text(
         json.dumps(
-            {"hook": str(hook), "settings": str(settings_path), "memoryHome": str(memory_home)},
+            {
+                "hook": str(hook),
+                "settings": str(settings_path),
+                "memoryHome": str(memory_home),
+                "previousAutoMemoryDisable": previous_auto_memory,
+            },
             indent=2,
         )
         + "\n",
@@ -173,9 +230,11 @@ def install(home: Path, memory_home: Path, hook: Path) -> None:
 
 def uninstall(home: Path, memory_home: Path) -> None:
     settings_path = home / "settings.json"
+    installed_marker = marker_data(home)
     if settings_path.exists():
         data = load(settings_path)
         strip_owned(data)
+        restore_native_auto_memory(data, installed_marker)
         save(settings_path, data)
     marker = home / ".agent-mem-struct" / "claude-root-memory-hook.json"
     checkpoint_homes = {memory_home}

@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent", choices=("codex", "claude"), required=True)
     parser.add_argument("--home", required=True)
+    parser.add_argument("--config-home")
     return parser.parse_args()
 
 
@@ -241,6 +242,48 @@ def context_text(state: dict[str, Any]) -> str:
         )
     )
     return "\n".join(lines)
+
+
+def turn_refresh_text(state: dict[str, Any]) -> str:
+    """Keep Claude task boundaries current without duplicating root bodies."""
+    lines = [
+        "ROOT MEMORY TURN CHECK — the hook-loaded authority remains in force.",
+        f"Root memory: {state['root_memory']}",
+        f"Root rules: {state['root_rules']}",
+        f"Shared memory: {state['shared_resolved']}",
+    ]
+    if state["errors"]:
+        lines.extend((
+            "CONTROL ERROR: " + " | ".join(state["errors"]),
+            "Do not mutate scoped memory until root control is repaired.",
+        ))
+    elif state["stale"]:
+        lines.append(
+            f"PROTOCOL STALE: applied {state['applied']} != canonical "
+            f"{state['canonical']}; apply {state['migration']} before memory work."
+        )
+    else:
+        lines.append(f"Protocol status: current ({state['canonical']}).")
+    lines.append(
+        "For each substantive new task, follow the already-loaded root rules and "
+        "read the shared scope before relevant nodes. Claude native auto memory is "
+        "disabled for this integration; do not treat an auto-memory directory as "
+        "a second authority."
+    )
+    return "\n".join(lines)
+
+
+def claude_config_is_active(config_home: Path | None) -> bool:
+    if config_home is None:
+        return True
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    active = Path(configured).expanduser() if configured else Path.home() / ".claude"
+    try:
+        return os.path.normcase(str(active.resolve(strict=False))) == os.path.normcase(
+            str(config_home.resolve(strict=False))
+        )
+    except OSError:
+        return False
 
 
 def safe_identity(value: Any) -> str:
@@ -474,12 +517,18 @@ def continuity_context(state: dict[str, Any], checkpoint: str | None) -> str:
     return text
 
 
-def emit_context(event_name: str, state: dict[str, Any], event: dict[str, Any]) -> None:
+def emit_context(
+    agent: str, event_name: str, state: dict[str, Any], event: dict[str, Any]
+) -> None:
     checkpoint = None
     after_compaction = event_name == "SessionStart" and event.get("source") == "compact"
     if after_compaction:
         checkpoint = load_checkpoint(event, state)
-    context = continuity_context(state, checkpoint)
+    context = (
+        turn_refresh_text(state)
+        if agent == "claude" and event_name == "UserPromptSubmit"
+        else continuity_context(state, checkpoint)
+    )
     if after_compaction and checkpoint is None:
         context += (
             "\n\nCONTINUITY WARNING: no pre-compaction checkpoint was available for this session. "
@@ -635,6 +684,13 @@ def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
 def main() -> int:
     args = parse_args()
     home = Path(args.home).expanduser().resolve(strict=False)
+    config_home = (
+        Path(args.config_home).expanduser().resolve(strict=False)
+        if args.config_home
+        else None
+    )
+    if args.agent == "claude" and not claude_config_is_active(config_home):
+        return 0
     event = read_event()
     event_name = str(event.get("hook_event_name") or event.get("hookEventName") or "")
     state = root_state(home)
@@ -645,7 +701,7 @@ def main() -> int:
     prune_checkpoints(state, keep=keep)
 
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
-        emit_context(event_name, state, event)
+        emit_context(args.agent, event_name, state, event)
         return 0
     if event_name == "PreCompact":
         handle_precompact(args.agent, event, state)
