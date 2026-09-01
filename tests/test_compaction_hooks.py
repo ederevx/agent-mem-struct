@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -98,19 +99,27 @@ class CompactionHookTests(unittest.TestCase):
             "transcript_path": str(self.transcript),
         }
 
-    def test_codex_manual_and_auto_compaction_use_top_level_schema(self) -> None:
+    def test_codex_manual_and_auto_compaction_restore_at_session_start(self) -> None:
         for trigger in ("manual", "auto"):
             with self.subTest(trigger=trigger):
                 result = invoke("codex", self.home, self.event("PreCompact", trigger))
                 self.assertEqual(result.returncode, 0, result.stderr)
-                output = json.loads(result.stdout)
-                self.assertEqual(set(output), {"systemMessage"})
-                self.assertIn("Fix the stuck CI session", output["systemMessage"])
+                self.assertEqual(result.stdout, "")
 
                 result = invoke("codex", self.home, self.event("PostCompact", trigger))
-                output = json.loads(result.stdout)
-                self.assertEqual(set(output), {"systemMessage"})
-                self.assertIn("Next action: install", output["systemMessage"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertTrue(
+                    (self.home / ".agent-mem-struct" / "compaction-checkpoints" / "session-1.json").exists()
+                )
+
+                event = self.event("SessionStart", trigger)
+                event["source"] = "compact"
+                result = invoke("codex", self.home, event)
+                context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("PRE-COMPACTION CONTINUITY CHECKPOINT", context)
+                self.assertIn("Next action: install", context)
+                self.assertNotIn("CONTINUITY WARNING", context)
                 self.assertFalse(
                     (self.home / ".agent-mem-struct" / "compaction-checkpoints" / "session-1.json").exists()
                 )
@@ -149,11 +158,25 @@ class CompactionHookTests(unittest.TestCase):
             (self.home / ".agent-mem-struct" / "compaction-checkpoints" / "unknown.json").exists()
         )
 
-    def test_existing_context_event_still_uses_hook_specific_output(self) -> None:
-        result = invoke("codex", self.home, self.event("UserPromptSubmit"))
-        output = json.loads(result.stdout)
-        self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
-        self.assertIn("ROOT MEMORY CONTROL", output["hookSpecificOutput"]["additionalContext"])
+    def test_codex_prompt_refresh_does_not_repeat_root_bodies(self) -> None:
+        started = json.loads(
+            invoke("codex", self.home, self.event("SessionStart")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        refreshed = json.loads(
+            invoke("codex", self.home, self.event("UserPromptSubmit")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
+        self.assertIn("Keep continuity.", started)
+        self.assertIn("ROOT MEMORY TURN CHECK", refreshed)
+        self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", refreshed)
+        self.assertNotIn("Keep continuity.", refreshed)
+        self.assertIn("Codex native AGENTS.md instruction discovery remains active", refreshed)
+        self.assertIn("generated memories are disabled", refreshed)
+        subagent = json.loads(
+            invoke("codex", self.home, self.event("SubagentStart")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
+        self.assertIn("Keep continuity.", subagent)
 
     def test_claude_prompt_refresh_does_not_repeat_root_bodies(self) -> None:
         started = json.loads(
@@ -185,6 +208,29 @@ class CompactionHookTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         result = invoke(
             "claude",
+            self.home,
+            self.event("SessionStart"),
+            config_home=active,
+            environment=environment,
+        )
+        self.assertIn("ROOT MEMORY CONTROL", result.stdout)
+
+    def test_codex_hook_ignores_an_inactive_config_profile(self) -> None:
+        active = self.temp / "active-codex"
+        inactive = self.temp / "inactive-codex"
+        environment = dict(os.environ)
+        environment["CODEX_HOME"] = str(active)
+        result = invoke(
+            "codex",
+            self.home,
+            self.event("SessionStart"),
+            config_home=inactive,
+            environment=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        result = invoke(
+            "codex",
             self.home,
             self.event("SessionStart"),
             config_home=active,
@@ -280,6 +326,9 @@ class InstallerTests(unittest.TestCase):
             encoding="utf-8",
         )
         command = [sys.executable, str(manager), "install", "--home", str(home), *extra]
+        if manager == CODEX_MANAGER:
+            (home / "config.toml").write_text("model = \"keep-model\"\n", encoding="utf-8")
+            (home / "AGENTS.md").write_text("Keep native instructions.\n", encoding="utf-8")
         subprocess.run(command, check=True, capture_output=True, text=True)
         subprocess.run(command, check=True, capture_output=True, text=True)
         data = json.loads(config.read_text(encoding="utf-8"))
@@ -295,9 +344,18 @@ class InstallerTests(unittest.TestCase):
                 if str(hook.get("statusMessage", "")).startswith("agent-mem-struct root memory:")
             ]
             self.assertEqual(len(owned), 1, event)
-            if manager == CLAUDE_MANAGER:
+            if manager in {CODEX_MANAGER, CLAUDE_MANAGER}:
                 self.assertIn("--config-home", owned[0]["command"])
                 self.assertIn(str(home), owned[0]["command"])
+
+        if manager == CODEX_MANAGER:
+            codex_config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+            self.assertEqual(codex_config["model"], "keep-model")
+            self.assertIs(codex_config["features"]["memories"], False)
+            self.assertEqual(
+                (home / "AGENTS.md").read_text(encoding="utf-8"),
+                "Keep native instructions.\n",
+            )
 
         checkpoint_root = checkpoint_home or home
         checkpoint_dir = checkpoint_root / ".agent-mem-struct" / "compaction-checkpoints"
@@ -308,9 +366,77 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(set(data["hooks"]), {"Stop"})
         self.assertEqual(data["env"], {"KEEP": "yes"})
         self.assertFalse(checkpoint_dir.exists())
+        if manager == CODEX_MANAGER:
+            self.assertEqual(
+                (home / "config.toml").read_text(encoding="utf-8"),
+                "model = \"keep-model\"\n",
+            )
 
     def test_codex_installer_is_additive_and_idempotent(self) -> None:
         self.check_manager(CODEX_MANAGER, "hooks.json", [])
+
+    def test_codex_uninstall_restores_existing_native_memory_setting(self) -> None:
+        for prior in ("true", "false"):
+            with self.subTest(prior=prior):
+                home = self.temp / f"codex-existing-memory-{prior}"
+                home.mkdir()
+                config = home / "config.toml"
+                original = (
+                    "model = \"keep\"\n\n[features]\n"
+                    f"memories = {prior} # user choice\nhooks = true\n"
+                )
+                config.write_text(original, encoding="utf-8")
+                command = [sys.executable, str(CODEX_MANAGER), "--home", str(home)]
+                subprocess.run(
+                    [command[0], command[1], "install", *command[2:]], check=True
+                )
+                installed = tomllib.loads(config.read_text(encoding="utf-8"))
+                self.assertIs(installed["features"]["memories"], False)
+                self.assertIs(installed["features"]["hooks"], True)
+                subprocess.run(
+                    [command[0], command[1], "uninstall", *command[2:]], check=True
+                )
+                self.assertEqual(config.read_text(encoding="utf-8"), original)
+
+    def test_codex_uninstall_restores_missing_config_file(self) -> None:
+        home = self.temp / "codex-missing-config"
+        home.mkdir()
+        config = home / "config.toml"
+        command = [sys.executable, str(CODEX_MANAGER), "--home", str(home)]
+        subprocess.run([command[0], command[1], "install", *command[2:]], check=True)
+        self.assertIs(
+            tomllib.loads(config.read_text(encoding="utf-8"))["features"]["memories"],
+            False,
+        )
+        subprocess.run([command[0], command[1], "uninstall", *command[2:]], check=True)
+        self.assertFalse(config.exists())
+
+    def test_codex_restores_a_feature_section_without_final_newline(self) -> None:
+        home = self.temp / "codex-no-final-newline"
+        home.mkdir()
+        config = home / "config.toml"
+        original = "[features]\nhooks = true"
+        config.write_text(original, encoding="utf-8")
+        command = [sys.executable, str(CODEX_MANAGER), "--home", str(home)]
+        subprocess.run([command[0], command[1], "install", *command[2:]], check=True)
+        installed = tomllib.loads(config.read_text(encoding="utf-8"))
+        self.assertIs(installed["features"]["memories"], False)
+        subprocess.run([command[0], command[1], "uninstall", *command[2:]], check=True)
+        self.assertEqual(config.read_text(encoding="utf-8"), original)
+
+    def test_codex_uninstall_preserves_a_user_changed_managed_line(self) -> None:
+        home = self.temp / "codex-user-changed-memory"
+        home.mkdir()
+        config = home / "config.toml"
+        config.write_text("[features]\nmemories = true\n", encoding="utf-8")
+        command = [sys.executable, str(CODEX_MANAGER), "--home", str(home)]
+        subprocess.run([command[0], command[1], "install", *command[2:]], check=True)
+        config.write_text("[features]\nmemories = true # changed later\n", encoding="utf-8")
+        subprocess.run([command[0], command[1], "uninstall", *command[2:]], check=True)
+        self.assertEqual(
+            config.read_text(encoding="utf-8"),
+            "[features]\nmemories = true # changed later\n",
+        )
 
     def test_claude_installer_is_additive_and_idempotent(self) -> None:
         memory_home = self.temp / "claude-memory"

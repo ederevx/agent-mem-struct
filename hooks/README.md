@@ -23,9 +23,9 @@ The shared hook `root-memory-context.py`:
 2. resolves and validates its `Structure:` target against root `STRUCTURE.md`;
 3. reads root `RULES.md`;
 4. compares the applied and canonical `Structure-Version` values;
-5. injects the exact current root memory and rules at session start; for Claude,
-   each later user turn receives only a compact authority/task-boundary reminder
-   instead of another copy of both files;
+5. injects the exact current root memory and rules at session start; each later
+   user turn receives only a compact authority/task-boundary reminder instead
+   of another copy of both files;
 6. injects the same root context into spawned subagents;
 7. guards scoped memory mutations when the root authority is missing or
    malformed;
@@ -73,6 +73,16 @@ Existing hook groups and unrelated JSON fields are preserved. Current Codex
 builds may require user hooks to be reviewed/trusted; after installation,
 restart Codex and inspect `/hooks` when applicable.
 
+The installer explicitly sets `[features].memories = false` in `config.toml`
+because Codex's generated local memories under `$CODEX_HOME/memories/` are a
+separate recall layer and do not implement the structured root's paired-log and
+write rules. The prior value or absence is restored on uninstall unless the
+user changes the managed line after installation. Each hook is bound to its
+owning `CODEX_HOME`, preventing a hook sourced from another profile from
+injecting the wrong root. Native `AGENTS.md` discovery remains enabled and is
+still Codex's instruction layer; only its separate generated-memory feature is
+disabled.
+
 Uninstall only these entries:
 
 ```sh
@@ -104,13 +114,11 @@ Installed events:
 - `PostCompact`
 - `PreToolUse`
 
-Claude's `PostCompact` hook is observational: Claude Code does not accept
-context injection or blocking from that event. The reliable Claude sequence is
-therefore `PreCompact` (validate and durably checkpoint), followed by the
-existing `SessionStart` hook with source `compact` (reinject root authority and
-the checkpoint). `PostCompact` records the emitted compact summary when
-available. Codex accepts a top-level `systemMessage` on both compact events, so
-it receives the checkpoint directly before and after compaction as well.
+`PostCompact` is observational for context restoration. The reliable sequence
+for both agents is `PreCompact` (validate and durably checkpoint), followed by
+`PostCompact` (verify and annotate the checkpoint), then the existing
+`SessionStart` hook with source `compact` (reinject root authority and the
+checkpoint before the next model request).
 
 Existing settings, hooks, permissions, environment values, and instructions are
 preserved. The installer sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` because

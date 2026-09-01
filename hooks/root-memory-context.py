@@ -244,8 +244,8 @@ def context_text(state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def turn_refresh_text(state: dict[str, Any]) -> str:
-    """Keep Claude task boundaries current without duplicating root bodies."""
+def turn_reminder_text(agent: str, state: dict[str, Any]) -> str:
+    """Keep task boundaries current without duplicating root bodies."""
     lines = [
         "ROOT MEMORY TURN CHECK — the hook-loaded authority remains in force.",
         f"Root memory: {state['root_memory']}",
@@ -266,18 +266,29 @@ def turn_refresh_text(state: dict[str, Any]) -> str:
         lines.append(f"Protocol status: current ({state['canonical']}).")
     lines.append(
         "For each substantive new task, follow the already-loaded root rules and "
-        "read the shared scope before relevant nodes. Claude native auto memory is "
-        "disabled for this integration; do not treat an auto-memory directory as "
-        "a second authority."
+        "read the shared scope before relevant nodes."
     )
+    if agent == "codex":
+        lines.append(
+            "Codex native AGENTS.md instruction discovery remains active. Its "
+            "generated memories are disabled for this integration; do not treat "
+            "$CODEX_HOME/memories/ as a second persistence authority."
+        )
+    else:
+        lines.append(
+            "Claude native auto memory is disabled for this integration; do not "
+            "treat its storage directory as a second authority."
+        )
     return "\n".join(lines)
 
 
-def claude_config_is_active(config_home: Path | None) -> bool:
+def config_is_active(agent: str, config_home: Path | None) -> bool:
     if config_home is None:
         return True
-    configured = os.environ.get("CLAUDE_CONFIG_DIR")
-    active = Path(configured).expanduser() if configured else Path.home() / ".claude"
+    environment = "CODEX_HOME" if agent == "codex" else "CLAUDE_CONFIG_DIR"
+    default = ".codex" if agent == "codex" else ".claude"
+    configured = os.environ.get(environment)
+    active = Path(configured).expanduser() if configured else Path.home() / default
     try:
         return os.path.normcase(str(active.resolve(strict=False))) == os.path.normcase(
             str(config_home.resolve(strict=False))
@@ -525,8 +536,8 @@ def emit_context(
     if after_compaction:
         checkpoint = load_checkpoint(event, state)
     context = (
-        turn_refresh_text(state)
-        if agent == "claude" and event_name == "UserPromptSubmit"
+        turn_reminder_text(agent, state)
+        if event_name == "UserPromptSubmit"
         else continuity_context(state, checkpoint)
     )
     if after_compaction and checkpoint is None:
@@ -560,20 +571,12 @@ def handle_precompact(agent: str, event: dict[str, Any], state: dict[str, Any]) 
         compact_error(agent, "Compaction blocked: root memory control is invalid. " + " | ".join(state["errors"]))
         return
     try:
-        checkpoint = save_checkpoint(event, state)
+        save_checkpoint(event, state)
     except Exception as exc:
         compact_error(agent, f"Compaction blocked: continuity checkpoint could not be saved: {exc}")
         return
-    if agent == "codex":
-        instruction = (
-            "COMPACTION CONTINUITY: Preserve the active user objective, completed actions, important tool outcomes, "
-            "decisions and assumptions, unresolved blockers, exact identifiers/paths, and the next executable action.\n\n"
-        )
-        json.dump(
-            {"systemMessage": instruction + continuity_context(state, checkpoint)},
-            sys.stdout,
-            separators=(",", ":"),
-        )
+    # The checkpoint is durable state for the compact-sourced SessionStart.
+    # PreCompact systemMessage is UI feedback, not model context.
 
 
 def handle_postcompact(agent: str, event: dict[str, Any], state: dict[str, Any]) -> None:
@@ -582,18 +585,13 @@ def handle_postcompact(agent: str, event: dict[str, Any], state: dict[str, Any])
             compact_error(agent, "Post-compaction root memory restore failed. " + " | ".join(state["errors"]))
         return
     try:
-        checkpoint = record_compact_summary(event, state)
+        record_compact_summary(event, state)
     except Exception as exc:
         if agent == "codex":
             compact_error(agent, f"Post-compaction continuity restore failed: {exc}")
         return
-    if agent == "codex":
-        json.dump(
-            {"systemMessage": continuity_context(state, checkpoint)},
-            sys.stdout,
-            separators=(",", ":"),
-        )
-        remove_checkpoint(event, state)
+    # SessionStart(source=compact) is the model-context restoration boundary for
+    # both agents. PostCompact only verifies/annotates the durable checkpoint.
 
 
 def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
@@ -689,7 +687,7 @@ def main() -> int:
         if args.config_home
         else None
     )
-    if args.agent == "claude" and not claude_config_is_active(config_home):
+    if not config_is_active(args.agent, config_home):
         return 0
     event = read_event()
     event_name = str(event.get("hook_event_name") or event.get("hookEventName") or "")
