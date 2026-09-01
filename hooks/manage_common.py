@@ -44,6 +44,15 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def secure_dir(path: Path) -> None:
+    """Own the state directory privately; it holds a settings backup."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
 def read_marker(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

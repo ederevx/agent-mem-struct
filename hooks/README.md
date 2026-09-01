@@ -27,8 +27,9 @@ The shared hook `root-memory-context.py`:
    user turn receives only a compact authority/task-boundary reminder instead
    of another copy of both files;
 6. injects the same root context into spawned subagents;
-7. guards scoped memory mutations when the root authority is missing or
-   malformed;
+7. guards scoped memory mutations, including writes embedded in an
+   interpreter one-liner or heredoc rather than a shell redirect, when the
+   root authority is missing or malformed;
 8. reports a stale structure as a mandatory migrate-first condition without
    hard-blocking the migration itself;
 9. exposes the stable shared-memory alias and its resolved target, including
@@ -160,7 +161,8 @@ Because a timed-out hook is a silently skipped checkpoint, the installed
 5-second default.
 
 Checkpoint files contain bounded transcript-derived execution anchors, use
-mode `0600`, and are transient. A successful post-compaction restoration
+mode `0600`, and are transient; the state directories holding them and the
+first-install settings backup are `0700` at every owned level. A successful post-compaction restoration
 consumes them. A checkpoint stranded by a process crash is removed after seven
 days at the next session, subagent, or compaction boundary; uninstall removes
 the owned checkpoint tree immediately. The first-install settings backup is

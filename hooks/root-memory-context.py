@@ -33,12 +33,26 @@ SHELL_MUTATION_RE = re.compile(
     r"rm\b|mv\b|cp\b|mkdir\b|rmdir\b|touch\b|"
     r"sed\s+-i\b|perl\s+-pi\b|patch\b|tee\b|"
     r"git\s+(?:apply|checkout|reset|clean)\b|"
-    r"python(?:3)?\b[^\n]*(?:write_text|write_bytes)|"
     r"powershell\b[^\n]*(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item)"
     r")",
     re.IGNORECASE,
 )
 REDIRECT_RE = re.compile(r"(?:^|[^<])>{1,2}\s*[^&]", re.MULTILINE)
+# An embedded script writes without a shell redirect, and a heredoc body sits on
+# lines after the interpreter, so the two halves are matched over the whole
+# command rather than one line. A write primitive is required, which keeps a
+# read-only one-liner out of the guard.
+INTERPRETER_RE = re.compile(
+    r"(?:^|[;&|(]\s*)(?:python(?:3)?|perl|ruby|node)\b", re.IGNORECASE | re.MULTILINE
+)
+SCRIPT_MUTATION_RE = re.compile(
+    r"write_text|write_bytes|writeFileSync|appendFileSync|unlinkSync|rmSync|"
+    r"open\s*\([^)\n]*,\s*['\"][rwxab+]*[wxa+][rwxab+]*['\"]|"
+    r"os\.(?:remove|unlink|rename|replace|mkdir|makedirs|rmdir)|"
+    r"shutil\.(?:copy|copy2|copyfile|move|rmtree)|"
+    r"File\.(?:write|delete|rename)|FileUtils\.",
+    re.IGNORECASE,
+)
 TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "cmd", "patch", "cwd")
 CHECKPOINT_TEXT_LIMIT = 3500
 CHECKPOINT_MAX_AGE = 7 * 24 * 60 * 60
@@ -458,8 +472,10 @@ def save_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> None:
         "saved_at": int(time.time()),
         "checkpoint": checkpoint,
     }
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
+    # mkdir applies its mode to the leaf only, so secure the owned tree itself.
+    for directory in (path.parent.parent, path.parent):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
     temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(temporary, 0o600)
@@ -593,7 +609,11 @@ def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
         return True
     if name in {"bash", "powershell", "shell", "exec_command", "command"} or "shell" in name:
         command = "\n".join(all_strings(tool_input))
-        return bool(SHELL_MUTATION_RE.search(command) or REDIRECT_RE.search(command))
+        if SHELL_MUTATION_RE.search(command) or REDIRECT_RE.search(command):
+            return True
+        return bool(
+            INTERPRETER_RE.search(command) and SCRIPT_MUTATION_RE.search(command)
+        )
     return False
 
 
