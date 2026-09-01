@@ -30,15 +30,15 @@ The shared hook `root-memory-context.py`:
 7. guards scoped memory mutations when the root authority is missing or
    malformed;
 8. reports a stale structure as a mandatory migrate-first condition without
-   hard-blocking the migration itself; and
+   hard-blocking the migration itself;
 9. exposes the stable shared-memory alias and its resolved target, including
    whether the target is an available Git worktree, so requested durable
    cross-agent records can be inserted directly instead of remaining only in
-   a session or artifact upload.
+   a session or artifact upload;
 10. writes a bounded, per-session continuity checkpoint immediately before
-    manual or automatic compaction; and
+    manual or automatic compaction;
 11. restores that checkpoint together with the authoritative root memory after
-    compaction, using each agent's supported lifecycle contract; and
+    compaction at the compact-sourced session start; and
 12. deletes a checkpoint after successful restoration and scavenges
     crash-orphaned checkpoints after seven days.
 
@@ -66,7 +66,6 @@ Installed events:
 - `UserPromptSubmit`
 - `SubagentStart`
 - `PreCompact`
-- `PostCompact`
 - `PreToolUse`
 
 Existing hook groups and unrelated JSON fields are preserved. Current Codex
@@ -111,14 +110,7 @@ Installed events:
 - `UserPromptSubmit`
 - `SubagentStart`
 - `PreCompact`
-- `PostCompact`
 - `PreToolUse`
-
-`PostCompact` is observational for context restoration. The reliable sequence
-for both agents is `PreCompact` (validate and durably checkpoint), followed by
-`PostCompact` (verify and annotate the checkpoint), then the existing
-`SessionStart` hook with source `compact` (reinject root authority and the
-checkpoint before the next model request).
 
 Existing settings, hooks, permissions, environment values, and instructions are
 preserved. The installer sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` because
@@ -149,17 +141,16 @@ are independent; installing one does not configure the other.
 ## Failure behavior
 
 The hook fails closed before compaction when root control is invalid or the
-continuity checkpoint cannot be written. Codex can also fail closed on a
-post-compaction restoration error. Claude cannot block from `PostCompact` or
-the compact-sourced `SessionStart`, so its pre-compaction checkpoint is the
-enforcement point. It does not block ordinary non-memory work.
+continuity checkpoint cannot be written. Compact-sourced `SessionStart` cannot
+block, so the pre-compaction checkpoint is the enforcement point. It does not
+block ordinary non-memory work.
 
 Checkpoint files contain bounded transcript-derived execution anchors, use
 mode `0600`, and are transient. A successful post-compaction restoration
-consumes them. Any checkpoint stranded by a process crash is removed after
-seven days when the hook next runs, and uninstall removes the owned checkpoint
-tree immediately. The first-install settings backup is intentionally retained
-as recovery state.
+consumes them. A checkpoint stranded by a process crash is removed after seven
+days at the next session, subagent, or compaction boundary; uninstall removes
+the owned checkpoint tree immediately. The first-install settings backup is
+intentionally retained as recovery state.
 
 A stale but valid `Structure-Version` remains writable so the agent can apply
 `MIGRATION.md`; the hook injects the stale-state warning and the canonical
