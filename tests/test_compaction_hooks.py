@@ -95,7 +95,9 @@ class CompactionHookTests(unittest.TestCase):
             "turn_id": "turn-1",
             "cwd": str(self.temp),
             "model": "test-model",
+            # Codex labels the compaction trigger `trigger`, Claude `triggered_by`.
             "trigger": trigger,
+            "triggered_by": trigger,
             "transcript_path": str(self.transcript),
         }
 
@@ -137,20 +139,63 @@ class CompactionHookTests(unittest.TestCase):
             (self.home / ".agent-mem-struct" / "compaction-checkpoints" / "session-1.json").exists()
         )
 
-    def test_precompact_blocks_when_checkpoint_cannot_be_built(self) -> None:
-        event = self.event("PreCompact")
+    def test_manual_precompact_blocks_when_checkpoint_cannot_be_built(self) -> None:
+        # PreCompact honors no JSON decision field; only a non-zero exit blocks it.
+        event = self.event("PreCompact", "manual")
         event["transcript_path"] = str(self.temp / "missing.jsonl")
-        claude = json.loads(invoke("claude", self.home, event).stdout)
-        self.assertEqual(claude["decision"], "block")
-        codex = json.loads(invoke("codex", self.home, event).stdout)
-        self.assertIs(codex["continue"], False)
-        self.assertIn("checkpoint", codex["stopReason"])
+        claude = invoke("claude", self.home, event)
+        self.assertEqual(claude.returncode, 2)
+        self.assertEqual(claude.stdout, "")
+        self.assertIn("Compaction blocked", claude.stderr)
+        codex = invoke("codex", self.home, event)
+        self.assertEqual(codex.returncode, 2)
+        self.assertIn("Compaction blocked", codex.stderr)
+        payload = json.loads(codex.stdout)
+        self.assertIs(payload["continue"], False)
+        self.assertIn("checkpoint", payload["stopReason"])
+
+    def test_manual_precompact_blocks_when_root_control_is_invalid(self) -> None:
+        (self.home / "RULES.md").unlink()
+        result = invoke("claude", self.home, self.event("PreCompact", "manual"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("root memory control is invalid", result.stderr)
+
+    def test_automatic_precompact_warns_instead_of_stranding_the_session(self) -> None:
+        # Blocking an automatic compaction pins the session at its context
+        # ceiling, which loses more continuity than the missing checkpoint.
+        event = self.event("PreCompact", "auto")
+        event["transcript_path"] = str(self.temp / "missing.jsonl")
+        for agent in ("claude", "codex"):
+            result = invoke(agent, self.home, event)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            message = json.loads(result.stdout)["systemMessage"]
+            self.assertIn("without a continuity checkpoint", message)
+            self.assertNotIn("blocked", message)
+
+    def test_precompact_trigger_is_read_from_either_host_key(self) -> None:
+        for key in ("trigger", "triggered_by"):
+            event = self.event("PreCompact", "auto")
+            event.pop("trigger")
+            event.pop("triggered_by")
+            event[key] = "auto"
+            event["transcript_path"] = str(self.temp / "missing.jsonl")
+            result = invoke("claude", self.home, event)
+            self.assertEqual(result.returncode, 0, key)
+            self.assertIn("systemMessage", json.loads(result.stdout))
+
+    def test_unlabelled_precompact_trigger_is_treated_as_manual(self) -> None:
+        event = self.event("PreCompact")
+        event.pop("trigger")
+        event.pop("triggered_by")
+        event["transcript_path"] = str(self.temp / "missing.jsonl")
+        self.assertEqual(invoke("claude", self.home, event).returncode, 2)
 
     def test_precompact_without_session_id_is_blocked_without_unknown_file(self) -> None:
-        event = self.event("PreCompact")
+        event = self.event("PreCompact", "manual")
         event.pop("session_id")
-        output = json.loads(invoke("codex", self.home, event).stdout)
-        self.assertIs(output["continue"], False)
+        result = invoke("codex", self.home, event)
+        self.assertEqual(result.returncode, 2)
+        self.assertIs(json.loads(result.stdout)["continue"], False)
         self.assertFalse(
             (self.home / ".agent-mem-struct" / "compaction-checkpoints" / "unknown.json").exists()
         )
@@ -387,6 +432,7 @@ class InstallerTests(unittest.TestCase):
                 if str(hook.get("statusMessage", "")).startswith("agent-mem-struct root memory:")
             ]
             self.assertEqual(len(owned), 1, event)
+            self.assertEqual(owned[0]["timeout"], 60 if event == "PreCompact" else 5, event)
             if manager in {CODEX_MANAGER, CLAUDE_MANAGER}:
                 self.assertIn("--config-home", owned[0]["command"])
                 self.assertIn(str(home), owned[0]["command"])
