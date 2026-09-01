@@ -9,6 +9,10 @@ On PreToolUse it only blocks writes into the agent memory tree when the root
 control authority is missing or malformed. A stale Structure-Version is not
 hard-blocked because migration itself may require memory writes; instead the
 staleness is injected as a mandatory migrate-first condition.
+
+On PreCompact a failed checkpoint refuses a manually requested compaction by
+exit status, the only mechanism that event honors, and merely warns about an
+automatic one so the session is never stranded at its context ceiling.
 """
 from __future__ import annotations
 
@@ -530,24 +534,57 @@ def emit_context(
         remove_checkpoint(event, state)
 
 
-def compact_error(agent: str, reason: str) -> None:
-    if agent == "claude":
-        json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
-    else:
+def compaction_is_automatic(event: dict[str, Any]) -> bool:
+    """Report whether the host, not the user, asked for this compaction."""
+    trigger = (
+        event.get("triggered_by") or event.get("triggeredBy") or event.get("trigger")
+    )
+    return str(trigger or "").lower() == "auto"
+
+
+def compact_error(agent: str, event: dict[str, Any], cause: str) -> int:
+    """Refuse a manual compaction; warn and continue an automatic one.
+
+    PreCompact honors no JSON decision field, so only a non-zero exit blocks
+    it. Blocking an automatic compaction strands the session at the context
+    ceiling, which destroys more continuity than the missing checkpoint does,
+    so an automatic run is warned about instead. An unlabelled trigger is
+    treated as manual.
+    """
+    if compaction_is_automatic(event):
+        json.dump(
+            {
+                "systemMessage": (
+                    "Automatic compaction is continuing without a continuity checkpoint: "
+                    + cause
+                    + ". Reconfirm the active objective after compaction."
+                )
+            },
+            sys.stdout,
+            separators=(",", ":"),
+        )
+        return 0
+    reason = f"Compaction blocked: {cause}. Repair this, then compact again."
+    if agent == "codex":
         json.dump({"continue": False, "stopReason": reason}, sys.stdout, separators=(",", ":"))
+    print(reason, file=sys.stderr)
+    return 2
 
 
-def handle_precompact(agent: str, event: dict[str, Any], state: dict[str, Any]) -> None:
+def handle_precompact(agent: str, event: dict[str, Any], state: dict[str, Any]) -> int:
     if state["errors"]:
-        compact_error(agent, "Compaction blocked: root memory control is invalid. " + " | ".join(state["errors"]))
-        return
+        return compact_error(
+            agent, event, "root memory control is invalid. " + " | ".join(state["errors"])
+        )
     try:
         save_checkpoint(event, state)
     except Exception as exc:
-        compact_error(agent, f"Compaction blocked: continuity checkpoint could not be saved: {exc}")
-        return
+        return compact_error(
+            agent, event, f"continuity checkpoint could not be saved: {exc}"
+        )
     # The checkpoint is durable state for the compact-sourced SessionStart.
     # PreCompact systemMessage is UI feedback, not model context.
+    return 0
 
 
 def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
@@ -667,8 +704,7 @@ def main() -> int:
         emit_context(args.agent, event_name, state, event)
         return 0
     if event_name == "PreCompact":
-        handle_precompact(args.agent, event, state)
-        return 0
+        return handle_precompact(args.agent, event, state)
     if event_name == "PreToolUse":
         handle_pretool(event, state)
         return 0

@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 OWNER_PREFIX = "agent-mem-struct root memory:"
+DEFAULT_TIMEOUT = 5
+# Building a checkpoint streams the whole transcript, and a timed-out PreCompact
+# is a silently skipped checkpoint. The event is not latency-sensitive.
+EVENT_TIMEOUTS = {"PreCompact": 60}
 EVENT_LABELS = {
     "SessionStart": "load root at session start",
     "UserPromptSubmit": "remind root each turn",
@@ -110,7 +114,7 @@ def hook_groups(
         handler = {
             "type": "command",
             "command": command,
-            "timeout": 5,
+            "timeout": EVENT_TIMEOUTS.get(event, DEFAULT_TIMEOUT),
             "statusMessage": f"{OWNER_PREFIX} {label}",
         }
         group: dict[str, Any] = {"hooks": [handler]}

@@ -36,7 +36,8 @@ The shared hook `root-memory-context.py`:
    cross-agent records can be inserted directly instead of remaining only in
    a session or artifact upload;
 10. writes a bounded, per-session continuity checkpoint immediately before
-    manual or automatic compaction;
+    manual or automatic compaction, refusing a manual compaction it cannot
+    checkpoint and warning about an automatic one;
 11. restores that checkpoint together with the authoritative root memory after
     compaction at the compact-sourced session start; and
 12. deletes a checkpoint after successful restoration and scavenges
@@ -140,10 +141,23 @@ are independent; installing one does not configure the other.
 
 ## Failure behavior
 
-The hook fails closed before compaction when root control is invalid or the
-continuity checkpoint cannot be written. Compact-sourced `SessionStart` cannot
-block, so the pre-compaction checkpoint is the enforcement point. It does not
-block ordinary non-memory work.
+When root control is invalid or the continuity checkpoint cannot be written,
+the hook refuses a *manually* requested compaction. `PreCompact` honors no JSON
+decision field, so the refusal is a non-zero exit with the reason on stderr;
+the hook reads the trigger from either `triggered_by` or `trigger`, and treats
+an unlabelled trigger as manual.
+
+An *automatic* compaction is never refused. Blocking it would pin the session
+at its context ceiling, destroying more continuity than the missing checkpoint
+does, so the hook emits a `systemMessage` warning and lets the compaction run;
+the compact-sourced `SessionStart` then injects its `CONTINUITY WARNING`.
+Compact-sourced `SessionStart` cannot block, so the pre-compaction checkpoint
+remains the only enforcement point. Neither path blocks ordinary non-memory
+work.
+
+Because a timed-out hook is a silently skipped checkpoint, the installed
+`PreCompact` handler carries a 60-second timeout; the other events keep the
+5-second default.
 
 Checkpoint files contain bounded transcript-derived execution anchors, use
 mode `0600`, and are transient. A successful post-compaction restoration
