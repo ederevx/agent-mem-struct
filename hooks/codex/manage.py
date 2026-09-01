@@ -21,6 +21,7 @@ from manage_common import (  # noqa: E402
     remove_checkpoints,
     replace_owned_hooks,
     save_json,
+    secure_dir,
     strip_owned_hooks,
 )
 
@@ -151,7 +152,7 @@ def install(home: Path, hook: Path) -> None:
     hooks_path = home / "hooks.json"
     config_path = home / "config.toml"
     marker_file = marker_path(home)
-    marker_file.parent.mkdir(parents=True, exist_ok=True)
+    secure_dir(marker_file.parent)
     backup_once(hooks_path, marker_file.parent / "hooks.before-first-install.json")
 
     previous_marker = read_marker(marker_file)
