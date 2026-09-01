@@ -54,13 +54,24 @@ def make_transcript(path: Path) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
-def invoke(agent: str, home: Path, event: dict[str, object]) -> subprocess.CompletedProcess[str]:
+def invoke(
+    agent: str,
+    home: Path,
+    event: dict[str, object],
+    *,
+    config_home: Path | None = None,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [sys.executable, str(HOOK), "--agent", agent, "--home", str(home)]
+    if config_home is not None:
+        command.extend(("--config-home", str(config_home)))
     return subprocess.run(
-        [sys.executable, str(HOOK), "--agent", agent, "--home", str(home)],
+        command,
         input=json.dumps(event),
         text=True,
         capture_output=True,
         check=False,
+        env=environment,
     )
 
 
@@ -144,6 +155,43 @@ class CompactionHookTests(unittest.TestCase):
         self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertIn("ROOT MEMORY CONTROL", output["hookSpecificOutput"]["additionalContext"])
 
+    def test_claude_prompt_refresh_does_not_repeat_root_bodies(self) -> None:
+        started = json.loads(
+            invoke("claude", self.home, self.event("SessionStart")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        refreshed = json.loads(
+            invoke("claude", self.home, self.event("UserPromptSubmit")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
+        self.assertIn("Keep continuity.", started)
+        self.assertIn("ROOT MEMORY TURN CHECK", refreshed)
+        self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", refreshed)
+        self.assertNotIn("Keep continuity.", refreshed)
+        self.assertIn("read the shared scope", refreshed)
+
+    def test_claude_hook_ignores_an_inactive_config_profile(self) -> None:
+        active = self.temp / "active-config"
+        inactive = self.temp / "inactive-config"
+        environment = dict(os.environ)
+        environment["CLAUDE_CONFIG_DIR"] = str(active)
+        result = invoke(
+            "claude",
+            self.home,
+            self.event("SessionStart"),
+            config_home=inactive,
+            environment=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        result = invoke(
+            "claude",
+            self.home,
+            self.event("SessionStart"),
+            config_home=active,
+            environment=environment,
+        )
+        self.assertIn("ROOT MEMORY CONTROL", result.stdout)
+
     def test_compact_session_start_warns_when_precompact_did_not_run(self) -> None:
         event = self.event("SessionStart")
         event["session_id"] = "never-checkpointed"
@@ -224,7 +272,11 @@ class InstallerTests(unittest.TestCase):
         home.mkdir()
         config = home / config_name
         config.write_text(
-            json.dumps({"unrelated": True, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep"}]}]}}),
+            json.dumps({
+                "unrelated": True,
+                "env": {"KEEP": "yes"},
+                "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep"}]}]},
+            }),
             encoding="utf-8",
         )
         command = [sys.executable, str(manager), "install", "--home", str(home), *extra]
@@ -233,6 +285,8 @@ class InstallerTests(unittest.TestCase):
         data = json.loads(config.read_text(encoding="utf-8"))
         self.assertTrue(data["unrelated"])
         self.assertEqual(data["hooks"]["Stop"][0]["hooks"][0]["command"], "keep")
+        if manager == CLAUDE_MANAGER:
+            self.assertEqual(data["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
         for event in ("SessionStart", "UserPromptSubmit", "SubagentStart", "PreCompact", "PostCompact", "PreToolUse"):
             owned = [
                 hook
@@ -241,6 +295,9 @@ class InstallerTests(unittest.TestCase):
                 if str(hook.get("statusMessage", "")).startswith("agent-mem-struct root memory:")
             ]
             self.assertEqual(len(owned), 1, event)
+            if manager == CLAUDE_MANAGER:
+                self.assertIn("--config-home", owned[0]["command"])
+                self.assertIn(str(home), owned[0]["command"])
 
         checkpoint_root = checkpoint_home or home
         checkpoint_dir = checkpoint_root / ".agent-mem-struct" / "compaction-checkpoints"
@@ -249,6 +306,7 @@ class InstallerTests(unittest.TestCase):
         subprocess.run([sys.executable, str(manager), "uninstall", "--home", str(home)], check=True, capture_output=True, text=True)
         data = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(set(data["hooks"]), {"Stop"})
+        self.assertEqual(data["env"], {"KEEP": "yes"})
         self.assertFalse(checkpoint_dir.exists())
 
     def test_codex_installer_is_additive_and_idempotent(self) -> None:
@@ -288,6 +346,31 @@ class InstallerTests(unittest.TestCase):
             text=True,
         )
         self.assertFalse(old_checkpoints.exists())
+
+    def test_claude_uninstall_restores_existing_auto_memory_setting(self) -> None:
+        home = self.temp / "claude-existing-auto-memory"
+        memory_home = self.temp / "claude-existing-memory"
+        home.mkdir()
+        make_home(memory_home)
+        settings = home / "settings.json"
+        settings.write_text(
+            json.dumps({"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}}),
+            encoding="utf-8",
+        )
+        command = [
+            sys.executable,
+            str(CLAUDE_MANAGER),
+            "--home",
+            str(home),
+            "--memory-home",
+            str(memory_home),
+        ]
+        subprocess.run([command[0], command[1], "install", *command[2:]], check=True)
+        installed = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(installed["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
+        subprocess.run([command[0], command[1], "uninstall", *command[2:]], check=True)
+        restored = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(restored["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "0")
 
 
 if __name__ == "__main__":
