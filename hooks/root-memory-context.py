@@ -41,6 +41,13 @@ CHECKPOINT_MAX_AGE = 7 * 24 * 60 * 60
 CHECKPOINT_RESTORE_MAX_AGE = 24 * 60 * 60
 CHECKPOINT_TEMP_MAX_AGE = 60 * 60
 CHECKPOINT_MAX_FILES = 256
+SUPPORTED_EVENTS = {
+    "SessionStart",
+    "UserPromptSubmit",
+    "SubagentStart",
+    "PreCompact",
+    "PreToolUse",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -232,13 +239,11 @@ def context_text(state: dict[str, Any]) -> str:
     lines.extend(
         (
             "",
-            "Mandatory use: treat the injected root MEMORY.md and RULES.md as current context. "
-            "For any memory task, follow their control/version/scope rules before reading or changing scoped nodes. "
-            "When the user or an applicable scoped convention requires durable cross-agent capture and shared-memory "
-            "insertion is available, update the resolved shared tree directly during the turn, preserve paired semantic "
-            "logs, and narrowly commit and push the change. Artifact uploads do not substitute for memory insertion; "
-            "keep raw dumps and full logs in artifact storage. For non-memory tasks, use root memory only when relevant; "
-            "do not manufacture memory edits.",
+            "Mandatory use: treat the injected files as current authority. For "
+            "memory work, follow their control, scope, and paired-log rules; "
+            "narrowly commit and push required shared updates. Artifact uploads "
+            "do not replace shared insertion. Do not manufacture memory edits for "
+            "unrelated work.",
         )
     )
     return "\n".join(lines)
@@ -248,9 +253,6 @@ def turn_reminder_text(agent: str, state: dict[str, Any]) -> str:
     """Keep task boundaries current without duplicating root bodies."""
     lines = [
         "ROOT MEMORY TURN CHECK — the hook-loaded authority remains in force.",
-        f"Root memory: {state['root_memory']}",
-        f"Root rules: {state['root_rules']}",
-        f"Shared memory: {state['shared_resolved']}",
     ]
     if state["errors"]:
         lines.extend((
@@ -262,8 +264,6 @@ def turn_reminder_text(agent: str, state: dict[str, Any]) -> str:
             f"PROTOCOL STALE: applied {state['applied']} != canonical "
             f"{state['canonical']}; apply {state['migration']} before memory work."
         )
-    else:
-        lines.append(f"Protocol status: current ({state['canonical']}).")
     lines.append(
         "For each substantive new task, follow the already-loaded root rules and "
         "read the shared scope before relevant nodes."
@@ -444,20 +444,14 @@ def build_checkpoint(event: dict[str, Any]) -> str:
     return "\n".join(selected)
 
 
-def save_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str:
+def save_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> None:
     session_id = event.get("session_id") or event.get("sessionId")
     if not isinstance(session_id, str) or not session_id.strip():
         raise ValueError("compaction event did not provide a valid session_id")
     path = checkpoint_path(event, state)
     checkpoint = build_checkpoint(event)
     data: dict[str, Any] = {
-        "version": 1,
-        "phase": "prepared",
         "saved_at": int(time.time()),
-        "session_id": session_id,
-        "agent_id": event.get("agent_id") or event.get("agentId"),
-        "trigger": event.get("trigger"),
-        "transcript_path": event.get("transcript_path"),
         "checkpoint": checkpoint,
     }
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -467,28 +461,6 @@ def save_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str:
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
     prune_checkpoints(state, keep=path)
-    return checkpoint
-
-
-def record_compact_summary(event: dict[str, Any], state: dict[str, Any]) -> str:
-    path = checkpoint_path(event, state)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get("checkpoint"), str)
-        or data.get("phase") not in {"prepared", "observed"}
-        or time.time() - float(data.get("saved_at", 0)) > CHECKPOINT_RESTORE_MAX_AGE
-    ):
-        raise ValueError(f"invalid continuity checkpoint at {path}")
-    summary = event.get("compact_summary")
-    if summary is not None:
-        data["compact_summary"] = str(summary)[:CHECKPOINT_TEXT_LIMIT]
-        data["phase"] = "observed"
-        temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
-        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    return data["checkpoint"]
 
 
 def load_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str | None:
@@ -507,7 +479,6 @@ def load_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> str | None:
     if (
         not isinstance(checkpoint, str)
         or not checkpoint
-        or data.get("phase") not in {"prepared", "observed"}
         or age > CHECKPOINT_RESTORE_MAX_AGE
     ):
         remove_checkpoint(event, state)
@@ -579,21 +550,6 @@ def handle_precompact(agent: str, event: dict[str, Any], state: dict[str, Any]) 
     # PreCompact systemMessage is UI feedback, not model context.
 
 
-def handle_postcompact(agent: str, event: dict[str, Any], state: dict[str, Any]) -> None:
-    if state["errors"]:
-        if agent == "codex":
-            compact_error(agent, "Post-compaction root memory restore failed. " + " | ".join(state["errors"]))
-        return
-    try:
-        record_compact_summary(event, state)
-    except Exception as exc:
-        if agent == "codex":
-            compact_error(agent, f"Post-compaction continuity restore failed: {exc}")
-        return
-    # SessionStart(source=compact) is the model-context restoration boundary for
-    # both agents. PostCompact only verifies/annotates the durable checkpoint.
-
-
 def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
     name = tool_name.lower()
     if any(token in name for token in ("write", "edit", "patch", "delete", "remove", "rename", "move", "create", "update")):
@@ -636,9 +592,8 @@ def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> tuple[
 
 
 def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
-    tool_name = str(event.get("tool_name") or "")
     tool_input = event.get("tool_input")
-    if not isinstance(tool_input, dict) or not tool_is_mutating(tool_name, tool_input):
+    if not isinstance(tool_input, dict):
         return
     targets_memory, root_only = input_targets_memory(event, state)
     if not targets_memory:
@@ -691,21 +646,28 @@ def main() -> int:
         return 0
     event = read_event()
     event_name = str(event.get("hook_event_name") or event.get("hookEventName") or "")
+    if event_name not in SUPPORTED_EVENTS:
+        return 0
+    if event_name == "PreToolUse":
+        tool_input = event.get("tool_input")
+        if not isinstance(tool_input, dict) or not tool_is_mutating(
+            str(event.get("tool_name") or ""), tool_input
+        ):
+            return 0
     state = root_state(home)
-    keep = checkpoint_path(event, state) if (
-        event_name == "PostCompact"
-        or (event_name == "SessionStart" and event.get("source") == "compact")
-    ) else None
-    prune_checkpoints(state, keep=keep)
 
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
+        if event_name != "UserPromptSubmit":
+            keep = (
+                checkpoint_path(event, state)
+                if event_name == "SessionStart" and event.get("source") == "compact"
+                else None
+            )
+            prune_checkpoints(state, keep=keep)
         emit_context(args.agent, event_name, state, event)
         return 0
     if event_name == "PreCompact":
         handle_precompact(args.agent, event, state)
-        return 0
-    if event_name == "PostCompact":
-        handle_postcompact(args.agent, event, state)
         return 0
     if event_name == "PreToolUse":
         handle_pretool(event, state)
