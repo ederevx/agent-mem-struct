@@ -23,8 +23,9 @@ The shared hook `root-memory-context.py`:
 2. resolves and validates its `Structure:` target against root `STRUCTURE.md`;
 3. reads root `RULES.md`;
 4. compares the applied and canonical `Structure-Version` values;
-5. injects the exact current root memory and rules into the primary model at
-   session start and every user turn;
+5. injects the exact current root memory and rules at session start; for Claude,
+   each later user turn receives only a compact authority/task-boundary reminder
+   instead of another copy of both files;
 6. injects the same root context into spawned subagents;
 7. guards scoped memory mutations when the root authority is missing or
    malformed;
@@ -112,8 +113,14 @@ available. Codex accepts a top-level `systemMessage` on both compact events, so
 it receives the checkpoint directly before and after compaction as well.
 
 Existing settings, hooks, permissions, environment values, and instructions are
-preserved. If `disableAllHooks: true` is already configured, the installer
-leaves it unchanged and warns that the new hooks will not run.
+preserved. The installer sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` because
+Claude's native per-project auto-memory directory can overlap the protocol's
+structured root and does not implement its paired-log/write rules. The prior
+value is restored on uninstall unless the user changes it after installation.
+Each installed hook is also bound to its owning `CLAUDE_CONFIG_DIR`; this stops
+project-scoped hooks from another Claude profile from injecting a second root.
+If `disableAllHooks: true` is already configured, the installer leaves it
+unchanged and warns that the new hooks will not run.
 
 Uninstall only these entries:
 
