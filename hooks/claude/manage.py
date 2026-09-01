@@ -17,6 +17,7 @@ from manage_common import (  # noqa: E402
     load_json,
     read_marker,
     remove_checkpoints,
+    remove_install_backup,
     replace_owned_hooks,
     save_json,
     secure_dir,
@@ -136,6 +137,7 @@ def uninstall(home: Path, memory_home: Path) -> None:
     for checkpoint_home in checkpoint_homes:
         if checkpoint_home is not None:
             remove_checkpoints(checkpoint_home)
+    remove_install_backup(home, "settings.before-first-install.json")
     print("Removed only agent-mem-struct Claude hook entries.")
 
 

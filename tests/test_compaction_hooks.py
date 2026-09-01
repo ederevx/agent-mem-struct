@@ -330,10 +330,12 @@ class CompactionHookTests(unittest.TestCase):
         owned.mkdir()
         owned.chmod(0o755)
         invoke("codex", self.home, self.event("PreCompact"))
-        self.assertEqual(owned.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(
-            (owned / "compaction-checkpoints").stat().st_mode & 0o777, 0o700
-        )
+        if os.name != "nt":
+            self.assertEqual(owned.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(
+                (owned / "compaction-checkpoints").stat().st_mode & 0o777,
+                0o700,
+            )
 
     def test_compact_session_start_warns_when_precompact_did_not_run(self) -> None:
         event = self.event("SessionStart")
@@ -366,9 +368,10 @@ class CompactionHookTests(unittest.TestCase):
         directory.mkdir(parents=True)
         directory.chmod(0o755)
         invoke("codex", self.home, self.event("PreCompact"))
-        self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
-        checkpoint = directory / "session-1.json"
-        self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            checkpoint = directory / "session-1.json"
+            self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
 
     def test_consumed_checkpoint_is_not_reinjected_again(self) -> None:
         invoke("claude", self.home, self.event("PreCompact"))
@@ -473,7 +476,11 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn("--config-home", owned[0]["command"])
                 self.assertIn(str(home), owned[0]["command"])
         self.assertNotIn("PostCompact", data["hooks"])
-        self.assertEqual((home / ".agent-mem-struct").stat().st_mode & 0o777, 0o700)
+        if os.name != "nt":
+            self.assertEqual(
+                (home / ".agent-mem-struct").stat().st_mode & 0o777,
+                0o700,
+            )
 
         if manager == CODEX_MANAGER:
             codex_config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -499,6 +506,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(set(data["hooks"]), {"Stop"})
         self.assertEqual(data["env"], {"KEEP": "yes"})
         self.assertFalse(checkpoint_dir.exists())
+        self.assertFalse((home / ".agent-mem-struct").exists())
+        self.assertFalse((checkpoint_root / ".agent-mem-struct").exists())
         if manager == CODEX_MANAGER:
             self.assertEqual(
                 (home / "config.toml").read_text(encoding="utf-8"),
@@ -544,6 +553,7 @@ class InstallerTests(unittest.TestCase):
         )
         subprocess.run([command[0], command[1], "uninstall", *command[2:]], check=True)
         self.assertFalse(config.exists())
+        self.assertFalse((home / ".agent-mem-struct").exists())
 
     def test_codex_restores_a_feature_section_without_final_newline(self) -> None:
         home = self.temp / "codex-no-final-newline"

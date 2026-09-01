@@ -67,10 +67,21 @@ def backup_once(source: Path, backup: Path) -> None:
 
 
 def remove_checkpoints(home: Path) -> None:
-    shutil.rmtree(
-        home / ".agent-mem-struct" / "compaction-checkpoints",
-        ignore_errors=True,
-    )
+    state = home / ".agent-mem-struct"
+    shutil.rmtree(state / "compaction-checkpoints", ignore_errors=True)
+    try:
+        state.rmdir()
+    except OSError:
+        pass
+
+
+def remove_install_backup(home: Path, name: str) -> None:
+    state = home / ".agent-mem-struct"
+    (state / name).unlink(missing_ok=True)
+    try:
+        state.rmdir()
+    except OSError:
+        pass
 
 
 def _quote(value: str) -> str:
