@@ -51,6 +51,17 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
    preserves rationale. Do not let historical material override current rules
    or current memory.
 
+9. **Keep this checkout current.** This is convention, not a hook-enforced
+   gate. Confirm this checkout sits on the latest `protocol-v*` tag reachable
+   from `origin/main`, and check for stale branches against `origin/main`;
+   reconcile anything with unmerged value into `main` first, then drop the
+   stale branch. Never push to or merge directly into `main` yourself —
+   reconcile through a PR and let the user land it. Iterating may happen in
+   an isolated test checkout that isn't the one actually installed; that
+   never counts as done on its own — land it on `main`, cut the next
+   `protocol-v*` tag on the merged HEAD, and reinstall the actual host(s)
+   from that tag before relying on the change.
+
 ---
 
 © 2026 Edrick Sinsuan. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE).
