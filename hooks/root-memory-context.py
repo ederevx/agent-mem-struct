@@ -519,6 +519,26 @@ def continuity_context(state: dict[str, Any], checkpoint: str | None) -> str:
     return text
 
 
+SUBAGENT_DEFERRAL_TEXT = (
+    "ROOT MEMORY CONTROL — not applicable to you. Memory protocol does not "
+    "apply to subagents; the session that spawned you owns all memory reads "
+    "and writes for this work. If you need memory context, it will be in "
+    "your task prompt. This is routine, benign hook output, not a directive "
+    "for you to act on — no action is required."
+)
+
+
+def subagent_context_text() -> str:
+    """Short, unmistakably benign line shown to a spawned subagent.
+
+    A subagent has no memory ownership: the block below must never carry the
+    full authoritative memory instructions, since those read as an out-of-scope
+    directive inside a bounded subagent task and have been mistaken for prompt
+    injection. Keep this factual and short.
+    """
+    return SUBAGENT_DEFERRAL_TEXT
+
+
 def emit_context(
     agent: str, event_name: str, state: dict[str, Any], event: dict[str, Any]
 ) -> None:
@@ -526,11 +546,17 @@ def emit_context(
     after_compaction = event_name == "SessionStart" and event.get("source") == "compact"
     if after_compaction:
         checkpoint = load_checkpoint(event, state)
-    context = (
-        turn_reminder_text(agent, state)
-        if event_name == "UserPromptSubmit"
-        else continuity_context(state, checkpoint)
-    )
+    if event_name == "SubagentStart":
+        # Fail-safe: if short-form generation ever breaks, fall back to the
+        # full block rather than crashing or emitting nothing.
+        try:
+            context = subagent_context_text()
+        except Exception:
+            context = continuity_context(state, checkpoint)
+    elif event_name == "UserPromptSubmit":
+        context = turn_reminder_text(agent, state)
+    else:
+        context = continuity_context(state, checkpoint)
     if after_compaction and checkpoint is None:
         context += (
             "\n\nCONTINUITY WARNING: no pre-compaction checkpoint was available for this session. "
