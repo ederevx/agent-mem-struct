@@ -547,12 +547,7 @@ def emit_context(
     if after_compaction:
         checkpoint = load_checkpoint(event, state)
     if event_name == "SubagentStart":
-        # Fail-safe: if short-form generation ever breaks, fall back to the
-        # full block rather than crashing or emitting nothing.
-        try:
-            context = subagent_context_text()
-        except Exception:
-            context = continuity_context(state, checkpoint)
+        context = subagent_context_text()
     elif event_name == "UserPromptSubmit":
         context = turn_reminder_text(agent, state)
     else:
