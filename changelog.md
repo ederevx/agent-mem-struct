@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-05T18:39:40-04:00 — restore the operational-rule version handshake
+
+The shared-scope change and the release-tag revision changed `RULES.md`
+semantically without advancing `Structure-Version`. The specification covers
+both rules and structure, so an unchanged tree layout does not exempt a rules
+change from versioning. Advance the canonical marker and add a migration that
+adopts both revisions without moving memory content. The migration also repairs
+agent-owned entry instructions still pointing to the removed structural alias;
+Codex's installed `AGENTS.md` contained that stale path.
+
 ## 2026-09-05T17:54:04-04:00 — retire `protocol-v*` checkout tags for `v1.x`
 
 Rule 9's checkout-currency convention named `protocol-v*` as this repo's
