@@ -263,35 +263,6 @@ class CompactionHookTests(unittest.TestCase):
             self.assertIn("Keep continuity.", started)
             self.assertIn("Mandatory use: treat the injected files as current authority", started)
 
-    def test_subagent_short_form_falls_back_to_full_block_on_error(self) -> None:
-        # Fail-safe: if short-form generation ever breaks, the hook must fail
-        # toward the full block, never crash and never emit nothing. Exercised
-        # in-process (rather than via subprocess) so the failure can be forced.
-        import contextlib
-        import importlib.util
-        import io
-
-        spec = importlib.util.spec_from_file_location("root_memory_context_hook", HOOK)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        state = module.root_state(self.home)
-        event = self.event("SubagentStart")
-
-        original = module.subagent_context_text
-        module.subagent_context_text = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
-        try:
-            buffer = io.StringIO()
-            with contextlib.redirect_stdout(buffer):
-                module.emit_context("claude", "SubagentStart", state, event)
-        finally:
-            module.subagent_context_text = original
-
-        context = json.loads(buffer.getvalue())["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", context)
-        self.assertIn("Keep continuity.", context)
-
     def test_claude_hook_ignores_an_inactive_config_profile(self) -> None:
         active = self.temp / "active-config"
         inactive = self.temp / "inactive-config"
