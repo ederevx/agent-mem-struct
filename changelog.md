@@ -4,6 +4,33 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-05T18:39:40-04:00 — restore the operational-rule version handshake
+
+The shared-scope change and the release-tag revision changed `RULES.md`
+semantically without advancing `Structure-Version`. The specification covers
+both rules and structure, so an unchanged tree layout does not exempt a rules
+change from versioning. Advance the canonical marker and add a migration that
+adopts both revisions without moving memory content. The migration also repairs
+agent-owned entry instructions still pointing to the removed structural alias;
+Codex's installed `AGENTS.md` contained that stale path.
+
+## 2026-09-05T17:54:04-04:00 — retire `protocol-v*` checkout tags for `v1.x`
+
+Rule 9's checkout-currency convention named `protocol-v*` as this repo's
+release tag scheme. The owner retired that scheme across every hook-supplying
+repo in favor of a single `v1.x` convention, cut per repo on merged `HEAD`
+with `x` continuing that repo's own iteration count. Rule 9 now says `v1.x`.
+
+This repo's existing `protocol-v1` and `protocol-v2` tags are retained as-is:
+not renamed, moved, or deleted. The owner backfilled `v1.x` onto those same
+commits, so `v1.0`=`protocol-v1` and `v1.1`=`protocol-v2` — the two schemes
+are fully parallel over this repo's whole tagged history, not one
+continuing from where the other stopped. `protocol-v*` is retired as of
+this rule; the next new tag is `v1.2`. A checkout pinned to `protocol-v1`
+or `protocol-v2` predates this rule, which is expected, not a mismatch to
+reconcile. Nothing else in `RULES.md`, `STRUCTURE.md`, or `MIGRATION.md`
+referenced the old scheme by name.
+
 ## 2026-08-27T09:35:43-04:00 — shared memory is always read
 
 Agents read the shared half only during memory work, so canonical Mandatory
