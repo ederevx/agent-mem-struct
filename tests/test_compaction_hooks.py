@@ -217,8 +217,9 @@ class CompactionHookTests(unittest.TestCase):
         subagent = json.loads(
             invoke("codex", self.home, self.event("SubagentStart")).stdout
         )["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
-        self.assertIn("Keep continuity.", subagent)
+        self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
+        self.assertNotIn("Keep continuity.", subagent)
+        self.assertIn("does not apply to subagents", subagent)
 
     def test_claude_prompt_refresh_does_not_repeat_root_bodies(self) -> None:
         started = json.loads(
@@ -233,6 +234,63 @@ class CompactionHookTests(unittest.TestCase):
         self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", refreshed)
         self.assertNotIn("Keep continuity.", refreshed)
         self.assertIn("read the shared scope", refreshed)
+
+    def test_subagent_start_gets_short_deferral_not_full_block(self) -> None:
+        # A subagent must never be told it owns memory reads/writes: the full
+        # authoritative block reads as an out-of-scope directive inside a
+        # bounded subagent task, and has been mistaken for prompt injection.
+        for agent in ("claude", "codex"):
+            subagent = json.loads(
+                invoke(agent, self.home, self.event("SubagentStart")).stdout
+            )["hookSpecificOutput"]["additionalContext"]
+            self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
+            self.assertNotIn("--- BEGIN ROOT RULES.md ---", subagent)
+            self.assertNotIn("Keep continuity.", subagent)
+            self.assertIn("does not apply to subagents", subagent)
+            self.assertIn("the session that spawned you owns all memory reads", subagent)
+            self.assertIn("task prompt", subagent)
+
+    def test_main_session_block_is_unchanged_by_the_subagent_scoping(self) -> None:
+        # SessionStart/UserPromptSubmit must keep receiving byte-for-byte the
+        # same full-block behavior as before subagents were scoped out.
+        for agent in ("claude", "codex"):
+            started = json.loads(
+                invoke(agent, self.home, self.event("SessionStart")).stdout
+            )["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("ROOT MEMORY CONTROL", started)
+            self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
+            self.assertIn("--- BEGIN ROOT RULES.md ---", started)
+            self.assertIn("Keep continuity.", started)
+            self.assertIn("Mandatory use: treat the injected files as current authority", started)
+
+    def test_subagent_short_form_falls_back_to_full_block_on_error(self) -> None:
+        # Fail-safe: if short-form generation ever breaks, the hook must fail
+        # toward the full block, never crash and never emit nothing. Exercised
+        # in-process (rather than via subprocess) so the failure can be forced.
+        import contextlib
+        import importlib.util
+        import io
+
+        spec = importlib.util.spec_from_file_location("root_memory_context_hook", HOOK)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        state = module.root_state(self.home)
+        event = self.event("SubagentStart")
+
+        original = module.subagent_context_text
+        module.subagent_context_text = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                module.emit_context("claude", "SubagentStart", state, event)
+        finally:
+            module.subagent_context_text = original
+
+        context = json.loads(buffer.getvalue())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", context)
+        self.assertIn("Keep continuity.", context)
 
     def test_claude_hook_ignores_an_inactive_config_profile(self) -> None:
         active = self.temp / "active-config"
