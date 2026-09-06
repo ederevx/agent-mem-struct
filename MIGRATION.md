@@ -27,6 +27,23 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-09-05T18:39:40-04:00 — adopt revised operational rules
+
+No memory-tree content migration is required. Semantic changes to `RULES.md`
+require a protocol-version update even when the memory layout stays the same.
+
+1. Read current `RULES.md`, including the always-read shared scope in rule 2
+   and the `v1.x` release-tag convention in rule 9. The earlier rule-2 change
+   did not advance the marker; this migration covers both changes.
+2. Resolve `Structure:` from root `memory/MEMORY.md`; correct any agent-owned
+   entry instructions still naming the removed `memory/STRUCTURE.md` alias.
+   Do not recreate that duplicate alias.
+3. Confirm that the installed protocol revision is the intended merged release
+   before adopting its rules. Existing `protocol-v*` tags remain historical;
+   their names do not themselves indicate a stale memory-tree marker.
+4. After these checks, advance only this agent's root `Structure-Version:`
+   marker to `2026-09-05T18:39:40-04:00`.
+
 ## 2026-08-26T12:39:09-04:00 — stop restating attribution trailers in `STRUCTURE.md`
 
 No memory-tree content migration is required. This revision removes a
