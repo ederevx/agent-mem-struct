@@ -2,7 +2,8 @@
 
 Shared structural specification for a cross-agent persistent memory tree with
 mandatory scoped conventions, on-demand nodes, deterministic per-file semantic
-logs, and a structure-first leaf model.
+logs, optional same-name attachment directories for materially significant
+files or scripts, and a structure-first leaf model.
 
 The protocol documents have distinct roles:
 

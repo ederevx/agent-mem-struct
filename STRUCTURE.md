@@ -1,4 +1,4 @@
-Structure-Version: 2026-09-08T22:24:14-04:00
+Structure-Version: 2026-09-09T17:17:31-04:00
 
 # Memory structure
 
@@ -188,6 +188,45 @@ inbound links; rename the same-named log counterpart with it.
 Project/topic records split by coherent **subject and activity performed**, not
 an arbitrary size threshold. Keep one coherent subject/activity together even
 when long and split when the subject or activity changes.
+
+### Optional significant files
+
+A node leaf may own one optional attachment directory for files or scripts
+whose exact content is materially significant to the memory. The directory is
+a direct sibling of the leaf and its name is exactly the leaf filename stem:
+
+```text
+nodes/
+├── warm-reset.md
+├── warm-reset/
+│   ├── reproduce.sh
+│   └── patched-header.bin
+└── log/
+    └── warm-reset.md
+```
+
+The attachment directory belongs to the leaf. It is not a memory group or
+node collection, contains no `MEMORY.md`, and does not introduce another
+`[[link]]` identity. A node collection and a leaf attachment directory cannot
+share the same path. The node describes why each retained item matters, its
+provenance, and any safety or usage constraints; use relative Markdown links
+from the node when direct navigation is useful.
+
+Attachments hold durable current material that would lose important fidelity
+if rewritten into the Markdown node. Store real files in the memory tree, not
+symlinks to external paths. Do not use attachments for secrets, replaceable
+downloads, caches, routine generated output, or files kept only for
+convenience. Create the directory only when it contains at least one qualifying
+item. Its contents inherit the node's `local/` or `shared/` write boundary.
+Storing a script does not authorize executing it; normal trust and permission
+rules still apply.
+
+Rename or move an attachment directory with its leaf and remove it when the
+active leaf is retired. Attachment directories do not receive copies under
+`log/`; record the meaning of superseded or removed attachments in the leaf's
+paired log. Git preserves byte-level history when the owning memory scope
+tracks the attachments; the protocol does not require historical file copies.
+`requires_read` continues to name active memory files, not attachments.
 
 ### Optional `requires_read`
 

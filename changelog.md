@@ -4,6 +4,35 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-09T17:17:31-04:00 — add node-owned significant files
+
+Memory nodes could preserve a distilled description of a significant script or
+file, but had no canonical place for the exact material itself. Agents either
+left important artifacts outside the memory tree or placed them in ad hoc
+directories whose ownership, scope, and lifecycle were ambiguous.
+
+- Added one optional attachment directory directly beside a node leaf, named
+  exactly for the leaf stem: `warm-reset.md` owns `warm-reset/`.
+- Reserved that path for the leaf so it cannot simultaneously be a memory
+  group or node collection, and excluded `MEMORY.md` from attachments.
+- Limited attachments to durable files and scripts whose exact content is
+  materially significant. Secrets, caches, routine outputs, replaceable
+  downloads, convenience copies, and symlinks to external paths remain outside
+  memory.
+- Made the leaf explain attachment significance, provenance, and safety or
+  usage constraints, keeping Markdown as the authoritative context rather than
+  turning the directory into an opaque file dump.
+- Bound attachment rename, movement, retirement, and write permissions to the
+  owning leaf. Storing a script does not authorize its execution. Attachment
+  contents have no `log/` mirror: the paired node log records semantic
+  transitions and Git retains byte-level history when the scope tracks them.
+
+The migration is opt-in for existing artifacts, except that pre-existing
+same-stem leaf/directory collisions must be disambiguated before the reserved
+path is used. This entry was re-sequenced onto the 2026-09-08 structure
+version rather than landing directly after 2026-09-06, since it was cherry-
+picked from an orphaned branch after the newer revision had already merged.
+
 ## 2026-09-08T22:24:14-04:00 — grant subagents equal, read-only root memory access
 
 Previously `SubagentStart` gave a spawned subagent only a short deferral line
