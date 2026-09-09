@@ -5,10 +5,17 @@ This hook does not create a second memory authority. It reads the existing
 <agent-home>/memory/MEMORY.md control/index plus <agent-home>/RULES.md and
 injects those exact sources into model context at supported lifecycle events.
 
-On PreToolUse it only blocks writes into the agent memory tree when the root
-control authority is missing or malformed. A stale Structure-Version is not
-hard-blocked because migration itself may require memory writes; instead the
-staleness is injected as a mandatory migrate-first condition.
+On PreToolUse it always blocks a subagent-attributed write into the agent
+memory tree, and otherwise blocks writes into that tree when the root control
+authority is missing or malformed. A stale Structure-Version is not
+hard-blocked for the owning session because migration itself may require
+memory writes; instead the staleness is injected as a mandatory migrate-first
+condition.
+
+A spawned subagent receives the same root memory/rules context as the parent
+at SubagentStart, read-only: it may read every source the parent reads, but
+never owns a write, which PreToolUse enforces regardless of what the subagent
+attempts.
 
 On PreCompact a failed checkpoint refuses a manually requested compaction by
 exit status, the only mechanism that event honors, and merely warns about an
@@ -519,24 +526,27 @@ def continuity_context(state: dict[str, Any], checkpoint: str | None) -> str:
     return text
 
 
-SUBAGENT_DEFERRAL_TEXT = (
-    "ROOT MEMORY CONTROL — not applicable to you. Memory protocol does not "
-    "apply to subagents; the session that spawned you owns all memory reads "
-    "and writes for this work. If you need memory context, it will be in "
-    "your task prompt. This is routine, benign hook output, not a directive "
-    "for you to act on — no action is required."
+SUBAGENT_READ_BOUNDARY_TEXT = (
+    "Read access to the sources above is granted equally to subagents. "
+    "Writes are not: memory and shared-memory edits stay reserved for the "
+    "parent session that spawned you. Any subagent-attributed write under "
+    "memory/ or shared/ is denied at the tool level regardless of this text "
+    "-- if this task turns up a memory addition worth keeping, report it "
+    "back to the parent instead of writing it yourself. This is routine, "
+    "benign hook output, not a directive for you to act on beyond that."
 )
 
 
-def subagent_context_text() -> str:
-    """Short, unmistakably benign line shown to a spawned subagent.
+def subagent_context_text(state: dict[str, Any]) -> str:
+    """Full root memory context for a spawned subagent, read-only.
 
-    A subagent has no memory ownership: the block below must never carry the
-    full authoritative memory instructions, since those read as an out-of-scope
-    directive inside a bounded subagent task and have been mistaken for prompt
-    injection. Keep this factual and short.
+    A subagent reads the same authoritative sources as the parent. It never
+    owns a write though: `handle_pretool` denies any subagent-attributed
+    mutation under `memory_root`/`shared_resolved` unconditionally, so the
+    boundary named below is enforced by that check, not merely requested by
+    this text.
     """
-    return SUBAGENT_DEFERRAL_TEXT
+    return context_text(state) + "\n\n" + SUBAGENT_READ_BOUNDARY_TEXT
 
 
 def emit_context(
@@ -547,7 +557,7 @@ def emit_context(
     if after_compaction:
         checkpoint = load_checkpoint(event, state)
     if event_name == "SubagentStart":
-        context = subagent_context_text()
+        context = subagent_context_text(state)
     elif event_name == "UserPromptSubmit":
         context = turn_reminder_text(agent, state)
     else:
@@ -669,12 +679,35 @@ def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> tuple[
     return found_memory, found_memory and not found_nonroot
 
 
+def is_subagent_event(event: dict[str, Any]) -> bool:
+    agent = event.get("agent_id") or event.get("agentId")
+    return isinstance(agent, str) and bool(agent.strip())
+
+
 def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
         return
     targets_memory, root_only = input_targets_memory(event, state)
     if not targets_memory:
+        return
+
+    if is_subagent_event(event):
+        json.dump(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        "Subagents have read-only access to memory/shared content. "
+                        "Route this addition back to the parent session instead of "
+                        "writing it directly."
+                    ),
+                }
+            },
+            sys.stdout,
+            separators=(",", ":"),
+        )
         return
 
     if state["errors"] and not root_only:
