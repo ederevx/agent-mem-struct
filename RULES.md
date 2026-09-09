@@ -44,7 +44,10 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
 
 7. **Respect write boundaries.** Other agents' `local/` trees are read-only.
    Shared edits use the common `.shared/` tree, are narrowly staged, and are
-   committed and pushed to its private remote before the turn ends.
+   committed and pushed to its private remote before the turn ends. A
+   subagent reads the same root memory and rules as the parent that spawned
+   it but never writes memory or shared content; route any needed addition
+   back to the parent instead.
 
 8. **Keep protocol documents focused.** `STRUCTURE.md` defines shape and
    invariants, `MIGRATION.md` handles version changes, and `changelog.md`
