@@ -4,6 +4,28 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-08T22:24:14-04:00 — grant subagents equal, read-only root memory access
+
+Previously `SubagentStart` gave a spawned subagent only a short deferral line
+("memory protocol does not apply to subagents"), withholding the actual
+`memory/MEMORY.md`/`RULES.md` content, while nothing at the hook level
+actually stopped a subagent from writing into `memory/`/`shared/` — the
+boundary was advisory only, honored by a subagent choosing not to act on it.
+Live use surfaced both halves of that gap: a subagent asked to do memory work
+correctly declined by citing the deferral text (showing the advisory-only
+write boundary worked this time, but was never guaranteed to), while the same
+deferral also meant a subagent had no way to read the authoritative sources
+directly even for read-only purposes.
+
+This revision splits the two concerns and enforces the one that matters:
+`SubagentStart` now emits the same full root context the parent gets
+(`subagent_context_text` wraps `context_text`), so subagents have equal read
+access, and `handle_pretool` unconditionally denies any subagent-attributed
+(`agent_id`-bearing) write under `memory_root`/`shared_resolved`, regardless
+of root-validity or staleness state — a hook-level deny, not an honor system.
+`RULES.md` rule 7 documents the resulting boundary: read equally, write
+never, route additions back to the parent.
+
 ## 2026-09-05T18:39:40-04:00 — restore the operational-rule version handshake
 
 The shared-scope change and the release-tag revision changed `RULES.md`

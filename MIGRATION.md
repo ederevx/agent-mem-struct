@@ -27,6 +27,21 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-09-08T22:24:14-04:00 — grant subagents read-only root memory access
+
+No memory-tree content migration is required. This revision changes rule 7
+(`RULES.md`) and the hook behavior it documents; the memory layout itself is
+unchanged.
+
+1. Read current `RULES.md` rule 7: a subagent now reads the same root
+   `memory/MEMORY.md`, `RULES.md`, and `STRUCTURE.md` content the parent
+   reads, but never writes memory or shared content — any needed addition is
+   routed back to the parent instead.
+2. No agent-owned convention or node content changes as a result of this
+   revision; it is a rules-and-hook-behavior change only.
+3. After confirming step 1, advance only this agent's root
+   `Structure-Version:` marker to `2026-09-08T22:24:14-04:00`.
+
 ## 2026-09-05T18:39:40-04:00 — adopt revised operational rules
 
 No memory-tree content migration is required. Semantic changes to `RULES.md`

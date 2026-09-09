@@ -217,9 +217,9 @@ class CompactionHookTests(unittest.TestCase):
         subagent = json.loads(
             invoke("codex", self.home, self.event("SubagentStart")).stdout
         )["hookSpecificOutput"]["additionalContext"]
-        self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
-        self.assertNotIn("Keep continuity.", subagent)
-        self.assertIn("does not apply to subagents", subagent)
+        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
+        self.assertIn("Keep continuity.", subagent)
+        self.assertIn("granted equally to subagents", subagent)
 
     def test_claude_prompt_refresh_does_not_repeat_root_bodies(self) -> None:
         started = json.loads(
@@ -235,20 +235,50 @@ class CompactionHookTests(unittest.TestCase):
         self.assertNotIn("Keep continuity.", refreshed)
         self.assertIn("read the shared scope", refreshed)
 
-    def test_subagent_start_gets_short_deferral_not_full_block(self) -> None:
-        # A subagent must never be told it owns memory reads/writes: the full
-        # authoritative block reads as an out-of-scope directive inside a
-        # bounded subagent task, and has been mistaken for prompt injection.
+    def test_subagent_start_gets_full_read_only_context(self) -> None:
+        # A subagent reads the same authoritative sources as the parent; the
+        # read-only boundary is stated explicitly since a subagent never owns
+        # a write (enforced separately by handle_pretool, not by this text).
         for agent in ("claude", "codex"):
             subagent = json.loads(
                 invoke(agent, self.home, self.event("SubagentStart")).stdout
             )["hookSpecificOutput"]["additionalContext"]
-            self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
-            self.assertNotIn("--- BEGIN ROOT RULES.md ---", subagent)
-            self.assertNotIn("Keep continuity.", subagent)
-            self.assertIn("does not apply to subagents", subagent)
-            self.assertIn("the session that spawned you owns all memory reads", subagent)
-            self.assertIn("task prompt", subagent)
+            self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
+            self.assertIn("--- BEGIN ROOT RULES.md ---", subagent)
+            self.assertIn("Keep continuity.", subagent)
+            self.assertIn("granted equally to subagents", subagent)
+            self.assertIn("reserved for the parent session", subagent)
+            self.assertIn("report it back to the parent", subagent)
+
+    def test_subagent_attributed_writes_into_memory_are_always_denied(self) -> None:
+        # Even against an otherwise-valid, non-stale root, a subagent-
+        # attributed write into memory/ or shared/ must be denied outright.
+        target = self.home / "memory" / "local" / "note.md"
+        event = self.event("PreToolUse")
+        event["agent_id"] = "worker-1"
+        event.update({
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(target), "content": "x"},
+        })
+        output = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(
+            output["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertIn(
+            "read-only", output["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+
+    def test_non_subagent_writes_into_valid_memory_are_not_blocked_here(self) -> None:
+        # The subagent write-gate must not fire for the owning (non-worker)
+        # session; the pre-existing root-validity/staleness checks still own
+        # that path, unchanged.
+        target = self.home / "memory" / "local" / "note.md"
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(target), "content": "x"},
+        })
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
     def test_main_session_block_is_unchanged_by_the_subagent_scoping(self) -> None:
         # SessionStart/UserPromptSubmit must keep receiving byte-for-byte the
