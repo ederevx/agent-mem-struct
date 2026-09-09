@@ -358,6 +358,27 @@ class CompactionHookTests(unittest.TestCase):
             "deny",
         )
 
+    def test_node_attachment_writes_are_guarded(self) -> None:
+        invalid_home = self.temp / "invalid-home"
+        attachment = (
+            invalid_home
+            / "memory"
+            / "local"
+            / "nodes"
+            / "warm-reset"
+            / "reproduce.sh"
+        )
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "apply_patch",
+            "tool_input": {"patch": f"*** Update File: {attachment}"},
+        })
+        output = json.loads(invoke("codex", invalid_home, event).stdout)
+        self.assertEqual(
+            output["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
+
     def test_embedded_script_writes_are_guarded_across_heredoc_lines(self) -> None:
         invalid_home = self.temp / "invalid-home"
         target = invalid_home / "memory" / "local" / "note.md"

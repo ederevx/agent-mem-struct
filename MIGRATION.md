@@ -27,6 +27,36 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-09-09T17:17:31-04:00 — add node-owned significant files
+
+This revision reserves a same-stem sibling directory as optional current
+attachment storage for a node leaf. Existing nodes need no attachment
+directory, and empty directories must not be created.
+
+1. For each existing leaf that already relies on materially significant files
+   or scripts stored elsewhere in its memory scope, decide whether their exact
+   content belongs with the node. Do not migrate secrets, replaceable
+   downloads, caches, routine generated output, or convenience copies.
+2. When adopting an item, create `<leaf-stem>/` directly beside
+   `<leaf-stem>.md`, store the real file there rather than a symlink to an
+   external path, and update the node to describe its significance, provenance,
+   and safety or usage constraints. Update any links to the old location.
+3. Inspect every existing same-stem leaf/directory pair. A directory containing
+   `MEMORY.md` or acting as a node collection is not an attachment directory;
+   rename either the collection or leaf, along with its paired log and inbound
+   links, before using the reserved attachment path.
+4. Do not create attachment counterparts under `log/`. If a migrated item
+   supersedes previously current material, record the semantic transition in
+   the leaf's existing paired log. Git remains the byte-level history when the
+   owning memory scope tracks the attachment.
+5. Validate that each attachment directory is a direct sibling named exactly
+   for its active leaf, contains at least one qualifying item and no
+   `MEMORY.md` or external symlink, and follows the leaf's `local/` or `shared/`
+   write boundary.
+6. Commit and push any shared-tree content migration before advancing its
+   owning agent's marker. Then advance only that agent's root
+   `Structure-Version:` to `2026-09-09T17:17:31-04:00`.
+
 ## 2026-09-08T22:24:14-04:00 — grant subagents read-only root memory access
 
 No memory-tree content migration is required. This revision changes rule 7

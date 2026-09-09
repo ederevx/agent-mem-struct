@@ -21,15 +21,19 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
    on-demand: load only the relevant index, active nodes, and explicitly
    required context.
 
-3. **Keep current truth separate from history.** Active `.md` files hold only
-   current state. Before every semantic edit, preserve any state made
-   non-current in the same-named `log/<file>.md`; logs are historical,
-   non-authoritative, and on-demand. Use no `archive/`, active-body `## Log`,
-   lifecycle history metadata, or `log/log/`; Git handles mechanical edits.
+3. **Keep current truth separate from history.** Active `.md` files and node
+   attachments hold only current state. Before every semantic edit, preserve
+   any state made non-current in the same-named `log/<file>.md`; logs are
+   historical, non-authoritative, and on-demand. Use no `archive/`, active-body
+   `## Log`, lifecycle history metadata, or `log/log/`; Git handles mechanical
+   edits and tracked attachment bytes.
 
-4. **Maintain active/log pairs.** Create and rename an active `.md` and its
-   same-named log counterpart together, updating links on rename. A log may
-   remain after its active identity is intentionally retired.
+4. **Maintain node-owned paths.** Create and rename an active `.md` and its
+   same-named log counterpart together, updating links on rename. Keep only
+   materially significant real files or scripts in an optional sibling
+   directory named exactly for the leaf stem; document them in the node and
+   move or remove that directory with the leaf. A log may remain after
+   retirement.
 
 5. **Honor prerequisites and routing.** `requires_read` is a hard prerequisite;
    unavailable prerequisites block edits, and frontmatter exists only for
