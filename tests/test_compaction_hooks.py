@@ -108,11 +108,12 @@ class CompactionHookTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.temp)
 
-    def event(self, name: str, trigger: str = "auto") -> dict[str, object]:
-        return {
+    def event(
+        self, name: str, trigger: str = "auto", *, agent: str = "codex"
+    ) -> dict[str, object]:
+        event: dict[str, object] = {
             "hook_event_name": name,
             "session_id": "session-1",
-            "turn_id": "turn-1",
             "cwd": str(self.temp),
             "model": "test-model",
             # Codex labels the compaction trigger `trigger`, Claude `triggered_by`.
@@ -120,6 +121,10 @@ class CompactionHookTests(unittest.TestCase):
             "triggered_by": trigger,
             "transcript_path": str(self.transcript),
         }
+        event["prompt_id" if agent == "claude" else "turn_id"] = (
+            "prompt-1" if agent == "claude" else "turn-1"
+        )
+        return event
 
     def test_codex_compaction_restores_at_session_start(self) -> None:
         result = invoke("codex", self.home, self.event("PreCompact"))
@@ -144,11 +149,13 @@ class CompactionHookTests(unittest.TestCase):
         self.assertFalse(checkpoint.exists())
 
     def test_claude_precompact_then_compact_session_start_reinjects(self) -> None:
-        result = invoke("claude", self.home, self.event("PreCompact"))
+        result = invoke(
+            "claude", self.home, self.event("PreCompact", agent="claude")
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
 
-        event = self.event("SessionStart")
+        event = self.event("SessionStart", agent="claude")
         event["source"] = "compact"
         result = invoke("claude", self.home, event)
         output = json.loads(result.stdout)
@@ -163,7 +170,9 @@ class CompactionHookTests(unittest.TestCase):
         # PreCompact honors no JSON decision field; only a non-zero exit blocks it.
         event = self.event("PreCompact", "manual")
         event["transcript_path"] = str(self.temp / "missing.jsonl")
-        claude = invoke("claude", self.home, event)
+        claude_event = self.event("PreCompact", "manual", agent="claude")
+        claude_event["transcript_path"] = event["transcript_path"]
+        claude = invoke("claude", self.home, claude_event)
         self.assertEqual(claude.returncode, 2)
         self.assertEqual(claude.stdout, "")
         self.assertIn("Compaction blocked", claude.stderr)
@@ -176,7 +185,11 @@ class CompactionHookTests(unittest.TestCase):
 
     def test_manual_precompact_blocks_when_root_control_is_invalid(self) -> None:
         (self.home / "RULES.md").unlink()
-        result = invoke("claude", self.home, self.event("PreCompact", "manual"))
+        result = invoke(
+            "claude",
+            self.home,
+            self.event("PreCompact", "manual", agent="claude"),
+        )
         self.assertEqual(result.returncode, 2)
         self.assertIn("root memory control is invalid", result.stderr)
 
@@ -186,7 +199,12 @@ class CompactionHookTests(unittest.TestCase):
         event = self.event("PreCompact", "auto")
         event["transcript_path"] = str(self.temp / "missing.jsonl")
         for agent in ("claude", "codex"):
-            result = invoke(agent, self.home, event)
+            result = invoke(
+                agent,
+                self.home,
+                self.event("PreCompact", "auto", agent=agent)
+                | {"transcript_path": event["transcript_path"]},
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             message = json.loads(result.stdout)["systemMessage"]
             self.assertIn("without a continuity checkpoint", message)
@@ -194,7 +212,7 @@ class CompactionHookTests(unittest.TestCase):
 
     def test_precompact_trigger_is_read_from_either_host_key(self) -> None:
         for key in ("trigger", "triggered_by"):
-            event = self.event("PreCompact", "auto")
+            event = self.event("PreCompact", "auto", agent="claude")
             event.pop("trigger")
             event.pop("triggered_by")
             event[key] = "auto"
@@ -204,7 +222,7 @@ class CompactionHookTests(unittest.TestCase):
             self.assertIn("systemMessage", json.loads(result.stdout))
 
     def test_unlabelled_precompact_trigger_is_treated_as_manual(self) -> None:
-        event = self.event("PreCompact")
+        event = self.event("PreCompact", agent="claude")
         event.pop("trigger")
         event.pop("triggered_by")
         event["transcript_path"] = str(self.temp / "missing.jsonl")
@@ -243,10 +261,16 @@ class CompactionHookTests(unittest.TestCase):
 
     def test_claude_prompt_refresh_does_not_repeat_root_bodies(self) -> None:
         started = json.loads(
-            invoke("claude", self.home, self.event("SessionStart")).stdout
+            invoke(
+                "claude", self.home, self.event("SessionStart", agent="claude")
+            ).stdout
         )["hookSpecificOutput"]["additionalContext"]
         refreshed = json.loads(
-            invoke("claude", self.home, self.event("UserPromptSubmit")).stdout
+            invoke(
+                "claude",
+                self.home,
+                self.event("UserPromptSubmit", agent="claude"),
+            ).stdout
         )["hookSpecificOutput"]["additionalContext"]
         self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
         self.assertIn("Keep continuity.", started)
@@ -255,13 +279,25 @@ class CompactionHookTests(unittest.TestCase):
         self.assertNotIn("Keep continuity.", refreshed)
         self.assertIn("read the shared scope", refreshed)
 
+    def test_claude_session_start_before_first_prompt_needs_no_prompt_id(self) -> None:
+        event = self.event("SessionStart", agent="claude")
+        event.pop("prompt_id")
+        result = invoke("claude", self.home, event)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("ROOT MEMORY CONTROL", context)
+
     def test_subagent_start_gets_full_read_only_context(self) -> None:
         # A subagent reads the same authoritative sources as the parent; the
         # read-only boundary is stated explicitly since a subagent never owns
         # a write (enforced separately by handle_pretool, not by this text).
         for agent in ("claude", "codex"):
             subagent = json.loads(
-                invoke(agent, self.home, self.event("SubagentStart")).stdout
+                invoke(
+                    agent,
+                    self.home,
+                    self.event("SubagentStart", agent=agent),
+                ).stdout
             )["hookSpecificOutput"]["additionalContext"]
             self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
             self.assertIn("--- BEGIN ROOT RULES.md ---", subagent)
@@ -344,6 +380,118 @@ class CompactionHookTests(unittest.TestCase):
         self.assertIn("Verify first.", first["reason"])
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
+    def test_claude_uses_prompt_id_for_receipts(self) -> None:
+        event = self.event("PreToolUse", agent="claude")
+        event.update({
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(self.temp / "result.txt")},
+        })
+        first = json.loads(invoke("claude", self.home, event).stdout)
+        self.assertEqual(
+            first["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertEqual(invoke("claude", self.home, event).stdout, "")
+        event["prompt_id"] = "prompt-2"
+        renewed = json.loads(invoke("claude", self.home, event).stdout)
+        self.assertEqual(
+            renewed["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    def test_codex_receipts_remain_turn_scoped(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(self.temp / "result.txt")},
+        })
+        self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+        event["turn_id"] = "turn-2"
+        self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+
+    def test_claude_stop_uses_prompt_id_and_allows_retry(self) -> None:
+        event = self.event("Stop", agent="claude")
+        first = json.loads(invoke("claude", self.home, event).stdout)
+        self.assertEqual(first["decision"], "block")
+        self.assertEqual(invoke("claude", self.home, event).stdout, "")
+        event["prompt_id"] = "prompt-2"
+        event["stop_hook_active"] = True
+        self.assertEqual(invoke("claude", self.home, event).stdout, "")
+
+    def test_subagent_stop_is_convention_gated(self) -> None:
+        for agent in ("codex", "claude"):
+            event = self.event("SubagentStop", agent=agent)
+            event.update({"agent_id": "worker-1", "stop_hook_active": False})
+            first = json.loads(invoke(agent, self.home, event).stdout)
+            self.assertEqual(first["decision"], "block")
+            self.assertEqual(invoke(agent, self.home, event).stdout, "")
+            identity_key = "prompt_id" if agent == "claude" else "turn_id"
+            event[identity_key] = "second-attempt"
+            event["stop_hook_active"] = True
+            self.assertEqual(invoke(agent, self.home, event).stdout, "")
+
+    def test_subagent_receipts_are_isolated_by_agent_id(self) -> None:
+        for agent in ("codex", "claude"):
+            first = self.event("SubagentStop", agent=agent)
+            first["agent_id"] = "worker-1"
+            second = dict(first)
+            second["agent_id"] = "worker-2"
+            self.assertEqual(
+                json.loads(invoke(agent, self.home, first).stdout)["decision"],
+                "block",
+            )
+            self.assertEqual(invoke(agent, self.home, first).stdout, "")
+            self.assertEqual(
+                json.loads(invoke(agent, self.home, second).stdout)["decision"],
+                "block",
+            )
+
+    def test_repeated_stop_without_host_identity_does_not_loop_forever(self) -> None:
+        event = self.event("Stop", agent="claude")
+        event.pop("prompt_id")
+        first = json.loads(invoke("claude", self.home, event).stdout)
+        self.assertEqual(first["decision"], "block")
+        event["stop_hook_active"] = True
+        self.assertEqual(invoke("claude", self.home, event).stdout, "")
+
+    def test_repeated_stop_never_blocks_when_root_state_is_invalid(self) -> None:
+        (self.home / "RULES.md").unlink()
+        for agent in ("codex", "claude"):
+            event = self.event("SubagentStop", agent=agent)
+            event.update({"agent_id": "worker-1", "stopHookActive": True})
+            self.assertEqual(invoke(agent, self.home, event).stdout, "")
+
+    def test_completion_outputs_use_only_supported_control_keys(self) -> None:
+        for agent in ("codex", "claude"):
+            for event_name in ("Stop", "SubagentStop"):
+                event = self.event(event_name, agent=agent)
+                if event_name == "SubagentStop":
+                    event["agent_id"] = "worker-schema"
+                output = json.loads(invoke(agent, self.home, event).stdout)
+                self.assertEqual(set(output), {"decision", "reason"})
+                self.assertEqual(output["decision"], "block")
+
+    def test_pretool_deny_output_uses_supported_control_keys(self) -> None:
+        for agent in ("codex", "claude"):
+            event = self.event("PreToolUse", agent=agent)
+            event.update({
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(self.temp / f"{agent}.txt")},
+            })
+            output = json.loads(invoke(agent, self.home, event).stdout)
+            self.assertEqual(set(output), {"hookSpecificOutput"})
+            specific = output["hookSpecificOutput"]
+            self.assertEqual(
+                set(specific),
+                {
+                    "hookEventName",
+                    "permissionDecision",
+                    "permissionDecisionReason",
+                    "additionalContext",
+                },
+            )
+            self.assertEqual(specific["hookEventName"], "PreToolUse")
+            self.assertEqual(specific["permissionDecision"], "deny")
+
     def test_canonical_document_drift_blocks_mutation(self) -> None:
         canonical = self.temp / "canonical"
         canonical.mkdir()
@@ -382,6 +530,18 @@ class CompactionHookTests(unittest.TestCase):
         reason = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("lacks stable session_id and turn_id", reason)
 
+    def test_missing_claude_prompt_identity_fails_closed(self) -> None:
+        event = self.event("PreToolUse", agent="claude")
+        event.pop("prompt_id")
+        event.update({
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(self.temp / "result.txt")},
+        })
+        reason = json.loads(invoke("claude", self.home, event).stdout)[
+            "hookSpecificOutput"
+        ]["permissionDecisionReason"]
+        self.assertIn("lacks stable session_id and prompt_id", reason)
+
     def test_unknown_action_tool_is_convention_gated(self) -> None:
         event = self.event("PreToolUse")
         event.update({"tool_name": "OpaqueExecutor", "tool_input": {"target": str(self.temp / "result.txt")}})
@@ -393,7 +553,9 @@ class CompactionHookTests(unittest.TestCase):
         # same full-block behavior as before subagents were scoped out.
         for agent in ("claude", "codex"):
             started = json.loads(
-                invoke(agent, self.home, self.event("SessionStart")).stdout
+                invoke(
+                    agent, self.home, self.event("SessionStart", agent=agent)
+                ).stdout
             )["hookSpecificOutput"]["additionalContext"]
             self.assertIn("ROOT MEMORY CONTROL", started)
             self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
@@ -537,7 +699,7 @@ class CompactionHookTests(unittest.TestCase):
             )
 
     def test_compact_session_start_warns_when_precompact_did_not_run(self) -> None:
-        event = self.event("SessionStart")
+        event = self.event("SessionStart", agent="claude")
         event["session_id"] = "never-checkpointed"
         event["source"] = "compact"
         result = invoke("claude", self.home, event)
@@ -573,8 +735,8 @@ class CompactionHookTests(unittest.TestCase):
             self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
 
     def test_consumed_checkpoint_is_not_reinjected_again(self) -> None:
-        invoke("claude", self.home, self.event("PreCompact"))
-        event = self.event("SessionStart")
+        invoke("claude", self.home, self.event("PreCompact", agent="claude"))
+        event = self.event("SessionStart", agent="claude")
         event["source"] = "compact"
         first = json.loads(invoke("claude", self.home, event).stdout)
         self.assertIn(
@@ -622,6 +784,9 @@ class InstallerTests(unittest.TestCase):
                 "env": {"KEEP": "yes"},
                 "hooks": {
                     "Stop": [{"hooks": [{"type": "command", "command": "keep"}]}],
+                    "SubagentStop": [{
+                        "hooks": [{"type": "command", "command": "keep-subagent"}]
+                    }],
                     "PostCompact": [{
                         "hooks": [{
                             "type": "command",
@@ -657,12 +822,17 @@ class InstallerTests(unittest.TestCase):
         data = json.loads(config.read_text(encoding="utf-8"))
         self.assertTrue(data["unrelated"])
         self.assertEqual(data["hooks"]["Stop"][0]["hooks"][0]["command"], "keep")
+        self.assertEqual(
+            data["hooks"]["SubagentStop"][0]["hooks"][0]["command"],
+            "keep-subagent",
+        )
         if manager == CLAUDE_MANAGER:
             self.assertEqual(data["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
         for event in (
             "SessionStart",
             "UserPromptSubmit",
             "SubagentStart",
+            "SubagentStop",
             "PreCompact",
             "PreToolUse",
             "Stop",
@@ -717,7 +887,11 @@ class InstallerTests(unittest.TestCase):
             cwd=self.temp,
         )
         data = json.loads(config.read_text(encoding="utf-8"))
-        self.assertEqual(set(data["hooks"]), {"Stop"})
+        self.assertEqual(set(data["hooks"]), {"Stop", "SubagentStop"})
+        self.assertEqual(
+            data["hooks"]["SubagentStop"][0]["hooks"][0]["command"],
+            "keep-subagent",
+        )
         self.assertEqual(data["env"], {"KEEP": "yes"})
         self.assertFalse(checkpoint_dir.exists())
         self.assertFalse(receipt_dir.exists())

@@ -74,6 +74,7 @@ SUPPORTED_EVENTS = {
     "SessionStart",
     "UserPromptSubmit",
     "SubagentStart",
+    "SubagentStop",
     "PreCompact",
     "PreToolUse",
     "Stop",
@@ -392,23 +393,30 @@ def convention_receipt_dir(state: dict[str, Any]) -> Path:
     return state["home"] / ".agent-mem-struct" / "convention-receipts"
 
 
-def event_identity(event: dict[str, Any]) -> str | None:
+def event_identity(event: dict[str, Any], state: dict[str, Any]) -> str | None:
     session = event.get("session_id") or event.get("sessionId")
-    turn = event.get("turn_id") or event.get("turnId")
+    if state.get("agent") == "claude":
+        turn = event.get("prompt_id") or event.get("promptId")
+    else:
+        turn = event.get("turn_id") or event.get("turnId")
     if not isinstance(session, str) or not session.strip():
         return None
     if not isinstance(turn, str) or not turn.strip():
         return None
     agent = event.get("agent_id") or event.get("agentId") or "parent"
-    raw = "\0".join(str(value) for value in (session, turn, agent))
-    readable = "--".join(safe_identity(value)[:32] for value in (session, turn, agent))
+    host = state.get("agent") or "unknown"
+    raw = "\0".join(str(value) for value in (host, session, turn, agent))
+    readable = "--".join(
+        safe_identity(value)[:32] for value in (host, session, turn, agent)
+    )
     return readable + "--" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def convention_receipt_path(event: dict[str, Any], state: dict[str, Any]) -> Path:
-    identity = event_identity(event)
+    identity = event_identity(event, state)
     if identity is None:
-        raise ValueError("hook event lacks a stable session_id and turn_id")
+        expected = "prompt_id" if state.get("agent") == "claude" else "turn_id"
+        raise ValueError(f"hook event lacks a stable session_id and {expected}")
     return convention_receipt_dir(state) / f"{identity}.json"
 
 
@@ -611,8 +619,12 @@ def acknowledge_receipt(
 def convention_gate(
     event: dict[str, Any], state: dict[str, Any], *, scoped: bool
 ) -> tuple[bool, str]:
-    if event_identity(event) is None:
-        return False, "Convention acknowledgment cannot be recorded: hook event lacks stable session_id and turn_id."
+    if event_identity(event, state) is None:
+        expected = "prompt_id" if state.get("agent") == "claude" else "turn_id"
+        return False, (
+            "Convention acknowledgment cannot be recorded: hook event lacks stable "
+            f"session_id and {expected}."
+        )
     digest, body, paths, source_digests = convention_bundle(event, state, scoped=scoped)
     if digest is None or body is None:
         return False, body or "required convention bundle could not be built"
@@ -1101,6 +1113,11 @@ def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
 
 
 def handle_stop(event: dict[str, Any], state: dict[str, Any]) -> None:
+    # Both hosts set this flag when re-entering Stop/SubagentStop after a hook
+    # already continued the turn. A second block can form an unbounded loop,
+    # including when root state or the event identity cannot be repaired.
+    if event.get("stop_hook_active") is True or event.get("stopHookActive") is True:
+        return
     if state["errors"]:
         reason = (
             "Turn completion blocked because root memory control or mandatory shared "
@@ -1139,6 +1156,7 @@ def main() -> int:
         ):
             return 0
     state = root_state(home, canonical_root)
+    state["agent"] = args.agent
 
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
         prune_convention_receipts(state)
@@ -1158,7 +1176,7 @@ def main() -> int:
     if event_name == "PreToolUse":
         handle_pretool(event, state)
         return 0
-    if event_name == "Stop":
+    if event_name in {"Stop", "SubagentStop"}:
         handle_stop(event, state)
         return 0
     return 0
