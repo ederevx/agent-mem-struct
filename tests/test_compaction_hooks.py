@@ -33,6 +33,24 @@ def make_home(path: Path) -> None:
     )
     (path / "RULES.md").write_text("# Rules\n\nKeep continuity.\n", encoding="utf-8")
     (path / "STRUCTURE.md").write_text("Structure-Version: test-v1\n", encoding="utf-8")
+    shared = path / "memory" / "shared"
+    shared.mkdir()
+    (shared / "MEMORY.md").write_text(
+        "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n",
+        encoding="utf-8",
+    )
+    local = path / "memory" / "local"
+    local.mkdir()
+    (local / "MEMORY.md").write_text(
+        "# Local\n\n**Scope:** this agent\n\n## Mandatory conventions\n\n(none)\n",
+        encoding="utf-8",
+    )
+
+
+def make_install_memory_home(path: Path) -> None:
+    make_home(path)
+    (path / "RULES.md").write_bytes((REPO / "RULES.md").read_bytes())
+    (path / "STRUCTURE.md").write_bytes((REPO / "STRUCTURE.md").read_bytes())
 
 
 def make_transcript(path: Path) -> None:
@@ -62,8 +80,10 @@ def invoke(
     *,
     config_home: Path | None = None,
     environment: dict[str, str] | None = None,
+    canonical_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = [sys.executable, str(HOOK), "--agent", agent, "--home", str(home)]
+    command.extend(("--canonical-root", str(canonical_root or home)))
     if config_home is not None:
         command.extend(("--config-home", str(config_home)))
     return subprocess.run(
@@ -269,16 +289,104 @@ class CompactionHookTests(unittest.TestCase):
         )
 
     def test_non_subagent_writes_into_valid_memory_are_not_blocked_here(self) -> None:
-        # The subagent write-gate must not fire for the owning (non-worker)
-        # session; the pre-existing root-validity/staleness checks still own
-        # that path, unchanged.
+        # The owning session receives the exact convention bundle once. Its
+        # retry acknowledges that digest and may proceed.
         target = self.home / "memory" / "local" / "note.md"
         event = self.event("PreToolUse")
         event.update({
             "tool_name": "Write",
             "tool_input": {"file_path": str(target), "content": "x"},
         })
+        first = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(first["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("Convention acknowledgment required", first["hookSpecificOutput"]["permissionDecisionReason"])
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_changed_convention_digest_requires_a_new_acknowledgment(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+        shared = self.home / "memory" / "shared" / "MEMORY.md"
+        shared.write_text(shared.read_text(encoding="utf-8") + "- Recheck changed rules.\n", encoding="utf-8")
+        changed = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(changed["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_new_prompt_resets_even_a_reused_turn_receipt(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+        invoke("codex", self.home, self.event("UserPromptSubmit"))
+        reset = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(reset["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_scoped_memory_mutation_loads_ancestor_conventions(self) -> None:
+        local = self.home / "memory" / "local"
+        child = local / "submemory" / "project"
+        child.mkdir(parents=True)
+        (local / "MEMORY.md").write_text(
+            "# Local\n\n## Mandatory conventions\n\n- Keep local.\n", encoding="utf-8"
+        )
+        (child / "MEMORY.md").write_text(
+            "# Project\n\n## Mandatory conventions\n\n- Test project.\n", encoding="utf-8"
+        )
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(child / "note.md")}})
+        reason = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("Keep local.", reason)
+        self.assertIn("Test project.", reason)
+
+    def test_stop_requires_acknowledgment_then_allows_retry(self) -> None:
+        event = self.event("Stop")
+        first = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(first["decision"], "block")
+        self.assertIn("Verify first.", first["reason"])
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_canonical_document_drift_blocks_mutation(self) -> None:
+        canonical = self.temp / "canonical"
+        canonical.mkdir()
+        (canonical / "RULES.md").write_text("# Canonical rules\n", encoding="utf-8")
+        (canonical / "STRUCTURE.md").write_text("Structure-Version: test-v2\n", encoding="utf-8")
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        output = json.loads(invoke("codex", self.home, event, canonical_root=canonical).stdout)
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("differs from canonical", output["hookSpecificOutput"]["permissionDecisionReason"])
+
+        event["tool_input"] = {"file_path": str(self.home / "memory" / "MEMORY.md")}
+        root_output = json.loads(
+            invoke("codex", self.home, event, canonical_root=canonical).stdout
+        )
+        self.assertEqual(root_output["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_requires_read_cannot_escape_memory_roots(self) -> None:
+        secret = self.temp / "secret.txt"
+        secret.write_text("DO-NOT-INJECT", encoding="utf-8")
+        target = self.home / "memory" / "local" / "note.md"
+        target.write_text(
+            f"---\nrequires_read:\n  - {secret}\n---\n\n# Note\n",
+            encoding="utf-8",
+        )
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
+        reason = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("escapes the active memory roots", reason)
+        self.assertNotIn("DO-NOT-INJECT", reason)
+
+    def test_missing_turn_identity_fails_closed(self) -> None:
+        event = self.event("PreToolUse")
+        event.pop("turn_id")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        reason = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("lacks stable session_id and turn_id", reason)
+
+    def test_unknown_action_tool_is_convention_gated(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "OpaqueExecutor", "tool_input": {"target": str(self.temp / "result.txt")}})
+        output = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_main_session_block_is_unchanged_by_the_subagent_scoping(self) -> None:
         # SessionStart/UserPromptSubmit must keep receiving byte-for-byte the
@@ -394,16 +502,27 @@ class CompactionHookTests(unittest.TestCase):
                 output["hookSpecificOutput"]["permissionDecision"], "deny", command
             )
 
-    def test_embedded_script_reads_are_not_guarded(self) -> None:
-        invalid_home = self.temp / "invalid-home"
-        target = invalid_home / "memory" / "local" / "note.md"
+    def test_embedded_script_reads_require_convention_acknowledgment(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
         for command in (
             f"python3 -c \"print(open('{target}').read())\"",
             f"python3 - <<'PY'\nprint(open('{target}').read())\nPY",
         ):
             event = self.event("PreToolUse")
+            event["turn_id"] = "turn-" + str(abs(hash(command)))
             event.update({"tool_name": "Bash", "tool_input": {"command": command}})
-            self.assertEqual(invoke("codex", invalid_home, event).stdout, "", command)
+            first = json.loads(invoke("codex", self.home, event).stdout)
+            self.assertEqual(first["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertEqual(invoke("codex", self.home, event).stdout, "", command)
+
+    def test_interpreter_indirect_mutation_is_convention_gated(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "Bash",
+            "tool_input": {"command": "python3 -c \"import os; os.system('touch result')\""},
+        })
+        output = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_checkpoint_state_tree_is_private_at_every_level(self) -> None:
         owned = self.home / ".agent-mem-struct"
@@ -515,6 +634,9 @@ class InstallerTests(unittest.TestCase):
             encoding="utf-8",
         )
         command = [sys.executable, str(manager), "install", "--home", str(home), *extra]
+        if checkpoint_home is not None:
+            (checkpoint_home / "RULES.md").write_bytes((REPO / "RULES.md").read_bytes())
+            (checkpoint_home / "STRUCTURE.md").write_bytes((REPO / "STRUCTURE.md").read_bytes())
         if manager == CODEX_MANAGER:
             (home / "config.toml").write_text("model = \"keep-model\"\n", encoding="utf-8")
             (home / "AGENTS.md").write_text("Keep native instructions.\n", encoding="utf-8")
@@ -543,6 +665,7 @@ class InstallerTests(unittest.TestCase):
             "SubagentStart",
             "PreCompact",
             "PreToolUse",
+            "Stop",
         ):
             owned = [
                 hook
@@ -572,9 +695,20 @@ class InstallerTests(unittest.TestCase):
             )
 
         checkpoint_root = checkpoint_home or home
+        self.assertEqual(
+            (checkpoint_root / "RULES.md").read_bytes(),
+            (REPO / "RULES.md").read_bytes(),
+        )
+        self.assertEqual(
+            (checkpoint_root / "STRUCTURE.md").read_bytes(),
+            (REPO / "STRUCTURE.md").read_bytes(),
+        )
         checkpoint_dir = checkpoint_root / ".agent-mem-struct" / "compaction-checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         (checkpoint_dir / "orphan.json").write_text("{}\n", encoding="utf-8")
+        receipt_dir = checkpoint_root / ".agent-mem-struct" / "convention-receipts"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        (receipt_dir / "orphan.json").write_text("{}\n", encoding="utf-8")
         subprocess.run(
             [sys.executable, str(manager), "uninstall", "--home", str(home)],
             check=True,
@@ -586,6 +720,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(set(data["hooks"]), {"Stop"})
         self.assertEqual(data["env"], {"KEEP": "yes"})
         self.assertFalse(checkpoint_dir.exists())
+        self.assertFalse(receipt_dir.exists())
         self.assertFalse((home / ".agent-mem-struct").exists())
         self.assertFalse((checkpoint_root / ".agent-mem-struct").exists())
         if manager == CODEX_MANAGER:
@@ -596,6 +731,44 @@ class InstallerTests(unittest.TestCase):
 
     def test_codex_installer_is_additive_and_idempotent(self) -> None:
         self.check_manager(CODEX_MANAGER, "hooks.json", [])
+
+    def test_codex_installer_refuses_foreign_root_documents(self) -> None:
+        home = self.temp / "foreign-root"
+        home.mkdir()
+        rules = home / "RULES.md"
+        rules.write_text("# Personal rules\n\nKeep this.\n", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(CODEX_MANAGER), "install", "--home", str(home)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Root document differs from canonical", result.stderr)
+        self.assertEqual(rules.read_text(encoding="utf-8"), "# Personal rules\n\nKeep this.\n")
+        self.assertFalse((home / "hooks.json").exists())
+
+    def test_codex_installer_refreshes_only_with_explicit_flag(self) -> None:
+        home = self.temp / "managed-stale-root"
+        home.mkdir()
+        (home / "RULES.md").write_text(
+            "# Memory rules\n\nOld.\n\n© 2026 Edrick Sinsuan\n", encoding="utf-8"
+        )
+        (home / "STRUCTURE.md").write_text(
+            "Structure-Version: old\n\n# Memory structure\n\n© 2026 Edrick Sinsuan\n",
+            encoding="utf-8",
+        )
+        command = [
+            sys.executable,
+            str(CODEX_MANAGER),
+            "install",
+            "--home",
+            str(home),
+            "--refresh-root-documents",
+        ]
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        self.assertEqual((home / "RULES.md").read_bytes(), (REPO / "RULES.md").read_bytes())
+        self.assertEqual((home / "STRUCTURE.md").read_bytes(), (REPO / "STRUCTURE.md").read_bytes())
 
     def test_codex_uninstall_restores_existing_native_memory_setting(self) -> None:
         for prior in ("true", "false"):
@@ -688,8 +861,8 @@ class InstallerTests(unittest.TestCase):
         old_memory = self.temp / "old-memory"
         new_memory = self.temp / "new-memory"
         home.mkdir()
-        make_home(old_memory)
-        make_home(new_memory)
+        make_install_memory_home(old_memory)
+        make_install_memory_home(new_memory)
         command = [sys.executable, str(CLAUDE_MANAGER), "install", "--home", str(home)]
         subprocess.run(
             [*command, "--memory-home", str(old_memory)],
@@ -712,7 +885,7 @@ class InstallerTests(unittest.TestCase):
         home = self.temp / "claude-existing-auto-memory"
         memory_home = self.temp / "claude-existing-memory"
         home.mkdir()
-        make_home(memory_home)
+        make_install_memory_home(memory_home)
         settings = home / "settings.json"
         settings.write_text(
             json.dumps({"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}}),

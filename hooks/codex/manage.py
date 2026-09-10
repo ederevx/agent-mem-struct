@@ -18,6 +18,7 @@ from manage_common import (  # noqa: E402
     hook_groups,
     load_json,
     read_marker,
+    refresh_root_documents,
     remove_checkpoints,
     remove_install_backup,
     replace_owned_hooks,
@@ -43,6 +44,7 @@ def parse_args() -> argparse.Namespace:
         "--home",
         default=os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"),
     )
+    parser.add_argument("--refresh-root-documents", action="store_true")
     return parser.parse_args()
 
 
@@ -149,7 +151,7 @@ def restore_native_memory(text: str, marker: dict[str, Any]) -> str:
     return text
 
 
-def install(home: Path, hook: Path) -> None:
+def install(home: Path, hook: Path, *, refresh_documents: bool = False) -> None:
     hooks_path = home / "hooks.json"
     config_path = home / "config.toml"
     marker_file = marker_path(home)
@@ -168,6 +170,9 @@ def install(home: Path, hook: Path) -> None:
     )
     settings = load_json(hooks_path)
     replace_owned_hooks(settings, hook_groups("codex", home, home, hook))
+    refresh_root_documents(
+        home, HOOK_ROOT.parent, allow_refresh=refresh_documents
+    )
 
     try:
         tomllib.loads(config_text)
@@ -217,7 +222,7 @@ def main() -> int:
     if not hook.exists():
         raise SystemExit(f"Shared hook not found: {hook}")
     if args.action == "install":
-        install(home, hook)
+        install(home, hook, refresh_documents=args.refresh_root_documents)
     else:
         uninstall(home)
     return 0
