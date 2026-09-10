@@ -4,6 +4,24 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-10T19:55:00-04:00 — exclude historical logs from convention discovery
+
+Scoped convention discovery descended into every directory containing a
+`MEMORY.md`. Historical `log/MEMORY.md` files and node-collection routing
+indexes were consequently rejected for lacking mandatory conventions. Even
+`git log` inside shared memory could resolve its subcommand to the historical
+directory and encounter this failure.
+
+- Restrict inherited convention discovery to active memory groups, preserving
+  their rules for targets inside node collections and historical logs.
+- Do not interpret historical frontmatter as independent `requires_read`
+  prerequisites. Active prerequisites retain their existing validation.
+- Cover log writes, Git history commands, node indexes, and genuine malformed
+  group manifests with regression tests for both hosts.
+
+This corrects the hook's interpretation of the existing memory model. No
+canonical rule change or `Structure-Version` migration is required.
+
 ## 2026-09-10T02:27:40-04:00 — align convention gates with host hook schemas
 
 The convention receipt introduced in the prior release assumed every host
