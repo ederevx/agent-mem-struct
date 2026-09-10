@@ -5,12 +5,12 @@ This hook does not create a second memory authority. It reads the existing
 <agent-home>/memory/MEMORY.md control/index plus <agent-home>/RULES.md and
 injects those exact sources into model context at supported lifecycle events.
 
-On PreToolUse it always blocks a subagent-attributed write into the agent
-memory tree, and otherwise blocks writes into that tree when the root control
-authority is missing or malformed. A stale Structure-Version is not
-hard-blocked for the owning session because migration itself may require
-memory writes; instead the staleness is injected as a mandatory migrate-first
-condition.
+On PreToolUse it blocks a subagent-attributed write into the agent memory tree,
+fails closed for unknown or mutating actions when root control is invalid, and
+requires hash-bound convention delivery and acknowledgment before action. A
+stale Structure-Version is not hard-blocked for the owning session because
+migration itself may require memory writes; instead the staleness is injected
+as a mandatory migrate-first condition.
 
 A spawned subagent receives the same root memory/rules context as the parent
 at SubagentStart, read-only: it may read every source the parent reads, but
@@ -20,10 +20,12 @@ attempts.
 On PreCompact a failed checkpoint refuses a manually requested compaction by
 exit status, the only mechanism that event honors, and merely warns about an
 automatic one so the session is never stranded at its context ceiling.
+Stop applies the same convention receipt to read-only turns before completion.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -66,12 +68,15 @@ CHECKPOINT_MAX_AGE = 7 * 24 * 60 * 60
 CHECKPOINT_RESTORE_MAX_AGE = 24 * 60 * 60
 CHECKPOINT_TEMP_MAX_AGE = 60 * 60
 CHECKPOINT_MAX_FILES = 256
+RECEIPT_MAX_AGE = 7 * 24 * 60 * 60
+RECEIPT_MAX_FILES = 512
 SUPPORTED_EVENTS = {
     "SessionStart",
     "UserPromptSubmit",
     "SubagentStart",
     "PreCompact",
     "PreToolUse",
+    "Stop",
 }
 
 
@@ -80,6 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent", choices=("codex", "claude"), required=True)
     parser.add_argument("--home", required=True)
     parser.add_argument("--config-home")
+    parser.add_argument("--canonical-root")
     return parser.parse_args()
 
 
@@ -143,15 +149,19 @@ def path_from_string(value: str, cwd: Path) -> Path | None:
     return candidate
 
 
-def root_state(home: Path) -> dict[str, Any]:
+def root_state(home: Path, canonical_root: Path) -> dict[str, Any]:
     memory_root = home / "memory"
     root_memory = memory_root / "MEMORY.md"
     root_rules = home / "RULES.md"
     expected_structure = home / "STRUCTURE.md"
+    canonical_rules = canonical_root / "RULES.md"
+    canonical_structure = canonical_root / "STRUCTURE.md"
 
     memory_text, memory_error = read_text(root_memory)
     rules_text, rules_error = read_text(root_rules)
     structure_text, structure_error = read_text(expected_structure)
+    canonical_rules_text, canonical_rules_error = read_text(canonical_rules)
+    canonical_structure_text, canonical_structure_error = read_text(canonical_structure)
 
     errors: list[str] = []
     if memory_error:
@@ -160,6 +170,22 @@ def root_state(home: Path) -> dict[str, Any]:
         errors.append(f"root RULES.md unavailable: {rules_error}")
     if structure_error:
         errors.append(f"root STRUCTURE.md unavailable: {structure_error}")
+    if canonical_rules_error:
+        errors.append(f"canonical RULES.md unavailable: {canonical_rules_error}")
+    if canonical_structure_error:
+        errors.append(f"canonical STRUCTURE.md unavailable: {canonical_structure_error}")
+    if rules_text is not None and canonical_rules_text is not None and rules_text != canonical_rules_text:
+        errors.append(
+            f"root RULES.md differs from canonical {canonical_rules}; reinstall or refresh the root document"
+        )
+    if (
+        structure_text is not None
+        and canonical_structure_text is not None
+        and structure_text != canonical_structure_text
+    ):
+        errors.append(
+            f"root STRUCTURE.md differs from canonical {canonical_structure}; reinstall or refresh the root document"
+        )
 
     applied = None
     canonical = None
@@ -189,14 +215,14 @@ def root_state(home: Path) -> dict[str, Any]:
             except Exception:
                 errors.append(f"could not resolve declared Structure target: {declared}")
 
-    if structure_text is not None:
-        version_match = VERSION_RE.search(structure_text)
+    if canonical_structure_text is not None:
+        version_match = VERSION_RE.search(canonical_structure_text)
         if not version_match:
             errors.append("canonical STRUCTURE.md is missing `Structure-Version:`")
         else:
             canonical = version_match.group(1)
 
-    canonical_dir = expected_structure.resolve(strict=False).parent
+    canonical_dir = canonical_root
     migration = canonical_dir / "MIGRATION.md"
     stale = bool(applied and canonical and applied != canonical)
 
@@ -204,6 +230,25 @@ def root_state(home: Path) -> dict[str, Any]:
     shared_resolved = shared.resolve(strict=False)
     shared_available = shared_resolved.is_dir()
     shared_git_backed = (shared_resolved / ".git").exists()
+    shared_memory = shared_resolved / "MEMORY.md"
+    shared_text, shared_error = read_text(shared_memory)
+    if shared_error:
+        errors.append(f"shared conventions unavailable: {shared_error}")
+    elif "## Mandatory conventions" not in shared_text:
+        errors.append(
+            f"shared conventions malformed: {shared_memory} lacks `## Mandatory conventions`"
+        )
+
+    repair_paths: list[Path] = []
+    for error in errors:
+        if error.startswith("root memory"):
+            repair_paths.append(root_memory)
+        if error.startswith("root RULES.md"):
+            repair_paths.append(root_rules)
+        if error.startswith("root STRUCTURE.md"):
+            repair_paths.append(expected_structure)
+        if error.startswith("shared conventions"):
+            repair_paths.append(shared_memory)
 
     return {
         "home": home,
@@ -216,12 +261,15 @@ def root_state(home: Path) -> dict[str, Any]:
         "shared_resolved": shared_resolved,
         "shared_available": shared_available,
         "shared_git_backed": shared_git_backed,
+        "shared_memory": shared_memory,
+        "shared_text": shared_text,
         "memory_text": memory_text,
         "rules_text": rules_text,
         "applied": applied,
         "canonical": canonical,
         "stale": stale,
         "errors": errors,
+        "repair_paths": repair_paths,
     }
 
 
@@ -260,6 +308,13 @@ def context_text(state: dict[str, Any]) -> str:
         lines.extend(("", "--- BEGIN ROOT memory/MEMORY.md ---", state["memory_text"].rstrip(), "--- END ROOT memory/MEMORY.md ---"))
     if state["rules_text"] is not None:
         lines.extend(("", "--- BEGIN ROOT RULES.md ---", state["rules_text"].rstrip(), "--- END ROOT RULES.md ---"))
+    if state["shared_text"] is not None:
+        lines.extend((
+            "",
+            "--- BEGIN SHARED MEMORY.md ---",
+            state["shared_text"].rstrip(),
+            "--- END SHARED MEMORY.md ---",
+        ))
 
     lines.extend(
         (
@@ -291,7 +346,9 @@ def turn_reminder_text(agent: str, state: dict[str, Any]) -> str:
         )
     lines.append(
         "For each substantive new task, follow the already-loaded root rules and "
-        "read the shared scope before relevant nodes."
+        "read the shared scope before relevant nodes. The first mutation or turn "
+        "completion for a new convention digest is intentionally refused once; "
+        "read the injected bundle and retry to acknowledge it."
     )
     if agent == "codex":
         lines.append(
@@ -329,6 +386,250 @@ def safe_identity(value: Any) -> str:
 
 def checkpoint_dir(state: dict[str, Any]) -> Path:
     return state["home"] / ".agent-mem-struct" / "compaction-checkpoints"
+
+
+def convention_receipt_dir(state: dict[str, Any]) -> Path:
+    return state["home"] / ".agent-mem-struct" / "convention-receipts"
+
+
+def event_identity(event: dict[str, Any]) -> str | None:
+    session = event.get("session_id") or event.get("sessionId")
+    turn = event.get("turn_id") or event.get("turnId")
+    if not isinstance(session, str) or not session.strip():
+        return None
+    if not isinstance(turn, str) or not turn.strip():
+        return None
+    agent = event.get("agent_id") or event.get("agentId") or "parent"
+    raw = "\0".join(str(value) for value in (session, turn, agent))
+    readable = "--".join(safe_identity(value)[:32] for value in (session, turn, agent))
+    return readable + "--" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def convention_receipt_path(event: dict[str, Any], state: dict[str, Any]) -> Path:
+    identity = event_identity(event)
+    if identity is None:
+        raise ValueError("hook event lacks a stable session_id and turn_id")
+    return convention_receipt_dir(state) / f"{identity}.json"
+
+
+def remove_convention_receipt(event: dict[str, Any], state: dict[str, Any]) -> None:
+    try:
+        convention_receipt_path(event, state).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
+def prune_convention_receipts(state: dict[str, Any]) -> None:
+    directory = convention_receipt_dir(state)
+    now = time.time()
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    survivors: list[tuple[float, Path]] = []
+    for entry in entries:
+        try:
+            if entry.is_symlink() or not entry.is_file():
+                continue
+            modified = entry.stat().st_mtime
+            age = now - modified
+            if age > (CHECKPOINT_TEMP_MAX_AGE if ".tmp." in entry.name else RECEIPT_MAX_AGE):
+                entry.unlink()
+            elif entry.suffix == ".json":
+                survivors.append((modified, entry))
+        except OSError:
+            continue
+    survivors.sort(key=lambda item: item[0], reverse=True)
+    for _, entry in survivors[RECEIPT_MAX_FILES:]:
+        try:
+            entry.unlink()
+        except OSError:
+            pass
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
+
+
+def manifest_chain(candidate: Path, state: dict[str, Any]) -> list[Path]:
+    resolved = candidate.resolve(strict=False)
+    roots = (
+        (state["shared_resolved"], state["shared_resolved"]),
+        ((state["memory_root"] / "local").resolve(strict=False), state["memory_root"] / "local"),
+    )
+    for resolved_root, display_root in roots:
+        if not under(resolved, resolved_root):
+            continue
+        relative = resolved.relative_to(resolved_root)
+        directory_parts = relative.parts[:-1] if candidate.suffix else relative.parts
+        manifests = [display_root / "MEMORY.md"]
+        current = display_root
+        for part in directory_parts:
+            current /= part
+            manifest = current / "MEMORY.md"
+            if manifest.exists():
+                manifests.append(manifest)
+        return manifests
+    return []
+
+
+def required_reads(path: Path, state: dict[str, Any]) -> tuple[list[Path], str | None]:
+    if path.suffix.lower() != ".md" or not path.exists():
+        return [], None
+    text, error = read_text(path)
+    if error or text is None or not text.startswith("---\n"):
+        return [], None
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return [], None
+    frontmatter = text[4:end]
+    match = re.search(r"(?ms)^requires_read:\s*\n((?:\s+-\s+[^\n]+\n?)+)", frontmatter)
+    if not match:
+        return [], None
+    result: list[Path] = []
+    for value in re.findall(r"(?m)^\s+-\s+(.+?)\s*$", match.group(1)):
+        required = Path(value.strip().strip("'\""))
+        candidate = required if required.is_absolute() else path.parent / required
+        resolved = candidate.resolve(strict=False)
+        active_root = next(
+            (
+                root.resolve(strict=False)
+                for root in (state["memory_root"], state["shared_resolved"])
+                if under(resolved, root)
+            ),
+            None,
+        )
+        if active_root is None:
+            return [], f"requires_read escapes the active memory roots: {candidate}"
+        if "log" in resolved.relative_to(active_root).parts:
+            return [], f"requires_read points to non-authoritative log memory: {candidate}"
+        if candidate.suffix.lower() != ".md" or not candidate.is_file():
+            return [], f"requires_read is not an active memory Markdown file: {candidate}"
+        result.append(candidate)
+    return result, None
+
+
+def convention_bundle(
+    event: dict[str, Any], state: dict[str, Any], *, scoped: bool
+) -> tuple[str | None, str | None, list[Path], dict[str, str]]:
+    paths = [state["shared_memory"]]
+    prerequisite_error = None
+    if scoped:
+        tool_input = event.get("tool_input")
+        cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+        if isinstance(tool_input, dict):
+            for raw in target_strings(tool_input):
+                for candidate in candidate_paths(raw, cwd):
+                    paths.extend(manifest_chain(candidate, state))
+                    prerequisites, error = required_reads(candidate, state)
+                    paths.extend(prerequisites)
+                    prerequisite_error = prerequisite_error or error
+
+    if prerequisite_error:
+        return None, prerequisite_error, [], {}
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    chunks: list[str] = []
+    source_digests: dict[str, str] = {}
+    for path in paths:
+        key = os.path.normcase(str(path.resolve(strict=False)))
+        if key in seen:
+            continue
+        seen.add(key)
+        text, error = read_text(path)
+        if error or text is None:
+            return None, f"required convention source unavailable: {error or path}", unique, {}
+        if path.name == "MEMORY.md" and "## Mandatory conventions" not in text:
+            return None, f"required convention manifest is malformed: {path}", unique, {}
+        unique.append(path)
+        source_digests[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        chunks.append(f"--- BEGIN {path} ---\n{text.rstrip()}\n--- END {path} ---")
+        prerequisites, error = required_reads(path, state)
+        if error:
+            return None, error, unique, {}
+        paths.extend(prerequisites)
+    body = "\n\n".join(chunks)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return digest, body, unique, source_digests
+
+
+def read_receipt(event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    path = convention_receipt_path(event, state)
+    try:
+        if path.parent.is_symlink() or not under(path.parent, state["home"]):
+            return {}
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            return {}
+        if path.exists() and path.stat().st_size > 1024 * 1024:
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def receipt_is_current(
+    event: dict[str, Any], state: dict[str, Any], source_digests: dict[str, str]
+) -> bool:
+    acknowledged = read_receipt(event, state).get("sources")
+    return isinstance(acknowledged, dict) and all(
+        acknowledged.get(path) == digest for path, digest in source_digests.items()
+    )
+
+
+def acknowledge_receipt(
+    event: dict[str, Any], state: dict[str, Any], source_digests: dict[str, str]
+) -> None:
+    directory = convention_receipt_dir(state)
+    if directory.is_symlink() or not under(directory, state["home"]):
+        raise OSError(f"unsafe convention receipt directory: {directory}")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(directory.parent, 0o700)
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    path = convention_receipt_path(event, state)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise OSError(f"unsafe convention receipt path: {path}")
+    prior = read_receipt(event, state).get("sources")
+    sources = dict(prior) if isinstance(prior, dict) else {}
+    sources.update(source_digests)
+    temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
+    temporary.write_text(
+        json.dumps({"sources": sources}, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    os.replace(temporary, path)
+
+
+def convention_gate(
+    event: dict[str, Any], state: dict[str, Any], *, scoped: bool
+) -> tuple[bool, str]:
+    if event_identity(event) is None:
+        return False, "Convention acknowledgment cannot be recorded: hook event lacks stable session_id and turn_id."
+    digest, body, paths, source_digests = convention_bundle(event, state, scoped=scoped)
+    if digest is None or body is None:
+        return False, body or "required convention bundle could not be built"
+    if receipt_is_current(event, state, source_digests):
+        return True, ""
+    try:
+        acknowledge_receipt(event, state, source_digests)
+    except (OSError, ValueError) as exc:
+        return False, f"Convention acknowledgment could not be recorded safely: {exc}"
+    listing = ", ".join(str(path) for path in paths)
+    reason = (
+        "Convention acknowledgment required before continuing. The authoritative "
+        f"sources for this action are now injected ({listing}). Read and obey them, "
+        "then retry the same action; that retry is the explicit acknowledgment of "
+        f"this exact bundle (sha256:{digest}).\n\n{body}"
+    )
+    return False, reason
 
 
 def checkpoint_path(event: dict[str, Any], state: dict[str, Any]) -> Path:
@@ -634,18 +935,30 @@ def handle_precompact(agent: str, event: dict[str, Any], state: dict[str, Any]) 
     return 0
 
 
-def tool_is_mutating(tool_name: str, tool_input: dict[str, Any]) -> bool:
+READ_ONLY_TOOL_TOKENS = ("read", "view", "get", "list", "search", "find", "status")
+SHELL_TOOL_NAMES = {"bash", "powershell", "shell", "exec_command", "command"}
+SHELL_READ_ONLY_RE = re.compile(
+    r"^\s*(?:pwd|ls|dir|cat|head|tail|stat|where|which|rg|grep|find|"
+    r"Get-Content|Get-ChildItem|Select-String|Test-Path|Resolve-Path|"
+    r"git\s+(?:status|diff|log|show|grep|rev-parse|branch\s+--list))\b",
+    re.IGNORECASE,
+)
+
+
+def tool_requires_acknowledgment(tool_name: str, tool_input: dict[str, Any]) -> bool:
     name = tool_name.lower()
     if any(token in name for token in ("write", "edit", "patch", "delete", "remove", "rename", "move", "create", "update")):
         return True
-    if name in {"bash", "powershell", "shell", "exec_command", "command"} or "shell" in name:
+    if name in SHELL_TOOL_NAMES or "shell" in name:
         command = "\n".join(all_strings(tool_input))
         if SHELL_MUTATION_RE.search(command) or REDIRECT_RE.search(command):
             return True
-        return bool(
-            INTERPRETER_RE.search(command) and SCRIPT_MUTATION_RE.search(command)
-        )
-    return False
+        if INTERPRETER_RE.search(command) and SCRIPT_MUTATION_RE.search(command):
+            return True
+        if re.search(r"[;&|`]|\$\(|\r|\n", command):
+            return True
+        return not bool(SHELL_READ_ONLY_RE.match(command))
+    return not any(token in name for token in READ_ONLY_TOOL_TOKENS)
 
 
 def candidate_paths(raw: str, cwd: Path) -> Iterable[Path]:
@@ -679,6 +992,31 @@ def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> tuple[
     return found_memory, found_memory and not found_nonroot
 
 
+def input_targets_only_repair_paths(event: dict[str, Any], state: dict[str, Any]) -> bool:
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict) or not state["repair_paths"]:
+        return False
+    cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+    allowed = {
+        os.path.normcase(str(path.resolve(strict=False))) for path in state["repair_paths"]
+    }
+    found = False
+    for raw in target_strings(tool_input):
+        candidates: list[Path] = []
+        direct = path_from_string(raw, cwd)
+        if direct is not None:
+            candidates.append(direct)
+        for value in re.findall(r"(?m)^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", raw):
+            candidate = path_from_string(value, cwd)
+            if candidate is not None:
+                candidates.append(candidate)
+        for candidate in candidates:
+            found = True
+            if os.path.normcase(str(candidate.resolve(strict=False))) not in allowed:
+                return False
+    return found
+
+
 def is_subagent_event(event: dict[str, Any]) -> bool:
     agent = event.get("agent_id") or event.get("agentId")
     return isinstance(agent, str) and bool(agent.strip())
@@ -688,11 +1026,8 @@ def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
         return
-    targets_memory, root_only = input_targets_memory(event, state)
-    if not targets_memory:
-        return
-
-    if is_subagent_event(event):
+    targets_memory, _ = input_targets_memory(event, state)
+    if targets_memory and is_subagent_event(event):
         json.dump(
             {
                 "hookSpecificOutput": {
@@ -710,17 +1045,37 @@ def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
         )
         return
 
-    if state["errors"] and not root_only:
+    if state["errors"] and not input_targets_only_repair_paths(event, state):
         json.dump(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
-                        "Memory mutation blocked because root memory control is unavailable or malformed. "
+                        "Mutation blocked because root memory control or mandatory shared conventions "
+                        "are unavailable, malformed, or differ from the canonical hook checkout. "
                         + " | ".join(state["errors"])
                         + ". Repair/read the root control files first."
                     ),
+                }
+            },
+            sys.stdout,
+            separators=(",", ":"),
+        )
+        return
+
+    if state["errors"]:
+        return
+
+    allowed, reason = convention_gate(event, state, scoped=targets_memory)
+    if not allowed:
+        json.dump(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                    "additionalContext": reason,
                 }
             },
             sys.stdout,
@@ -745,6 +1100,19 @@ def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
         )
 
 
+def handle_stop(event: dict[str, Any], state: dict[str, Any]) -> None:
+    if state["errors"]:
+        reason = (
+            "Turn completion blocked because root memory control or mandatory shared "
+            "conventions are invalid. " + " | ".join(state["errors"])
+        )
+        json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
+        return
+    allowed, reason = convention_gate(event, state, scoped=False)
+    if not allowed:
+        json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
+
+
 def main() -> int:
     args = parse_args()
     home = Path(args.home).expanduser().resolve(strict=False)
@@ -752,6 +1120,11 @@ def main() -> int:
         Path(args.config_home).expanduser().resolve(strict=False)
         if args.config_home
         else None
+    )
+    canonical_root = (
+        Path(args.canonical_root).expanduser().resolve(strict=False)
+        if args.canonical_root
+        else Path(__file__).resolve().parents[1]
     )
     if not config_is_active(args.agent, config_home):
         return 0
@@ -761,13 +1134,16 @@ def main() -> int:
         return 0
     if event_name == "PreToolUse":
         tool_input = event.get("tool_input")
-        if not isinstance(tool_input, dict) or not tool_is_mutating(
+        if not isinstance(tool_input, dict) or not tool_requires_acknowledgment(
             str(event.get("tool_name") or ""), tool_input
         ):
             return 0
-    state = root_state(home)
+    state = root_state(home, canonical_root)
 
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
+        prune_convention_receipts(state)
+        if not (event_name == "SessionStart" and event.get("source") == "compact"):
+            remove_convention_receipt(event, state)
         if event_name != "UserPromptSubmit":
             keep = (
                 checkpoint_path(event, state)
@@ -781,6 +1157,9 @@ def main() -> int:
         return handle_precompact(args.agent, event, state)
     if event_name == "PreToolUse":
         handle_pretool(event, state)
+        return 0
+    if event_name == "Stop":
+        handle_stop(event, state)
         return 0
     return 0
 

@@ -4,6 +4,32 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-10T01:14:13-04:00 — enforce convention delivery and acknowledgment
+
+The root hook could remind an agent to read shared conventions without proving
+that the authoritative source was current or reached the task. On Windows,
+Git's atomic replacement could also detach root hardlinks: the deployed root
+documents and their internal version marker agreed with each other while both
+were older than the hook checkout.
+
+- Compare deployed root rules and structure content with the canonical
+  files beside the running hook. Preserve correctly targeted symlinks, refuse
+  mismatched regular files by default, and require an explicit installer flag
+  to refresh a known managed copy.
+- Load the shared mandatory-convention manifest into session and subagent
+  context, and fail closed when it is absent or malformed.
+- Build per-action convention bundles from shared rules, scoped ancestor
+  manifests, and leaf `requires_read` prerequisites.
+- Persist private, per-session/turn source-hash receipts. The first mutation or
+  completion attempt for a new digest is refused with the exact bundle; the
+  retry is the acknowledgment, and any source change invalidates it.
+- Add a `Stop` hook so read-only work cannot silently finish without receiving
+  and acknowledging the shared convention bundle.
+
+This strengthens the additive hook layer only. It does not change the memory
+tree shape or canonical operational rules, so no `Structure-Version` migration
+is required.
+
 ## 2026-09-09T17:17:31-04:00 — add node-owned significant files
 
 Memory nodes could preserve a distilled description of a significant script or

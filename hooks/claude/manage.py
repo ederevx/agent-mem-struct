@@ -16,6 +16,7 @@ from manage_common import (  # noqa: E402
     hook_groups,
     load_json,
     read_marker,
+    refresh_root_documents,
     remove_checkpoints,
     remove_install_backup,
     replace_owned_hooks,
@@ -35,6 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--home",
         default=os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"),
     )
+    parser.add_argument("--refresh-root-documents", action="store_true")
     parser.add_argument(
         "--memory-home",
         help="Agent root containing memory/MEMORY.md, RULES.md, and STRUCTURE.md",
@@ -86,7 +88,9 @@ def restore_native_memory(settings: dict[str, Any], marker: dict[str, Any]) -> N
         settings.pop("env", None)
 
 
-def install(home: Path, memory_home: Path, hook: Path) -> None:
+def install(
+    home: Path, memory_home: Path, hook: Path, *, refresh_documents: bool = False
+) -> None:
     settings_path = home / "settings.json"
     marker_file = marker_path(home)
     secure_dir(marker_file.parent)
@@ -100,6 +104,9 @@ def install(home: Path, memory_home: Path, hook: Path) -> None:
     settings = load_json(settings_path)
     previous_auto_memory = disable_native_memory(settings, previous_marker)
     replace_owned_hooks(settings, hook_groups("claude", home, memory_home, hook))
+    refresh_root_documents(
+        memory_home, HOOK_ROOT.parent, allow_refresh=refresh_documents
+    )
     save_json(settings_path, settings)
     save_json(
         marker_file,
@@ -153,7 +160,12 @@ def main() -> int:
     if not hook.exists():
         raise SystemExit(f"Shared hook not found: {hook}")
     if args.action == "install":
-        install(home, memory_home, hook)
+        install(
+            home,
+            memory_home,
+            hook,
+            refresh_documents=args.refresh_root_documents,
+        )
     else:
         uninstall(home, memory_home)
     return 0

@@ -19,6 +19,7 @@ EVENT_LABELS = {
     "SubagentStart": "load root for subagent",
     "PreCompact": "checkpoint context before compaction",
     "PreToolUse": "guard memory mutation",
+    "Stop": "verify convention acknowledgment",
 }
 
 
@@ -69,6 +70,7 @@ def backup_once(source: Path, backup: Path) -> None:
 def remove_checkpoints(home: Path) -> None:
     state = home / ".agent-mem-struct"
     shutil.rmtree(state / "compaction-checkpoints", ignore_errors=True)
+    shutil.rmtree(state / "convention-receipts", ignore_errors=True)
     try:
         state.rmdir()
     except OSError:
@@ -86,6 +88,41 @@ def remove_install_backup(home: Path, name: str) -> None:
 
 def _quote(value: str) -> str:
     return '"' + value.replace('"', '\\"') + '"'
+
+
+def refresh_root_documents(
+    home: Path, canonical_root: Path, *, allow_refresh: bool = False
+) -> None:
+    """Refresh detached Windows copies and validate POSIX-style root links."""
+    for name in ("RULES.md", "STRUCTURE.md"):
+        source = canonical_root / name
+        target = home / name
+        if not source.is_file():
+            raise SystemExit(f"Canonical root document is unavailable: {source}")
+        if target.is_symlink():
+            if target.resolve(strict=False) != source.resolve(strict=False):
+                raise SystemExit(
+                    f"Refusing to replace root symlink {target}; it resolves outside {source}"
+                )
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and target.read_bytes() == source.read_bytes():
+            continue
+        if target.exists():
+            if not allow_refresh:
+                raise SystemExit(
+                    f"Root document differs from canonical: {target}. Re-run with "
+                    "--refresh-root-documents only if this is a managed agent-mem-struct copy."
+                )
+            existing = target.read_text(encoding="utf-8", errors="replace")
+            heading = "# Memory rules" if name == "RULES.md" else "# Memory structure"
+            if heading not in existing or "© 2026 Edrick Sinsuan" not in existing:
+                raise SystemExit(
+                    f"Refusing to overwrite foreign root document {target}; move it or configure the correct memory home"
+                )
+        temporary = target.with_suffix(target.suffix + ".agent-mem-struct.tmp")
+        temporary.write_bytes(source.read_bytes())
+        os.replace(temporary, target)
 
 
 def strip_owned_hooks(settings: dict[str, Any]) -> None:
@@ -127,7 +164,8 @@ def hook_groups(
     command = (
         f"{_quote(sys.executable)} {_quote(str(hook))} --agent {agent} "
         f"--home {_quote(str(memory_home))} "
-        f"--config-home {_quote(str(config_home))}"
+        f"--config-home {_quote(str(config_home))} "
+        f"--canonical-root {_quote(str(hook.resolve(strict=False).parents[1]))}"
     )
     groups: dict[str, list[dict[str, Any]]] = {}
     for event, label in EVENT_LABELS.items():
