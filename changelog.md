@@ -4,6 +4,27 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-10T02:27:40-04:00 — align convention gates with host hook schemas
+
+The convention receipt introduced in the prior release assumed every host
+identified a user turn with `turn_id`. Claude Code instead supplies
+`prompt_id`, so its mutating-tool and completion hooks could never acknowledge
+the delivered bundle. Completion callbacks could then repeat indefinitely.
+
+- Key Codex receipts by `session_id` and `turn_id`, and Claude receipts by
+  `session_id` and `prompt_id`, retaining `agent_id` isolation for subagents.
+- Require Claude Code 2.1.196 or newer, where the stable per-prompt identity is
+  available; older hosts fail closed instead of sharing receipts across turns.
+- Install and handle `SubagentStop` for both hosts so subagent completion is
+  subject to the same convention acknowledgment as the parent session.
+- Honor `stop_hook_active` before every completion check and never issue a
+  second block, including when root state or the event identity is invalid.
+- Test realistic host-specific payloads, per-prompt and per-agent receipt
+  isolation, exact decision schemas, and additive install/uninstall behavior.
+
+This is a hook compatibility correction. It does not change the memory tree or
+canonical operational rules, so no `Structure-Version` migration is required.
+
 ## 2026-09-10T01:14:13-04:00 — enforce convention delivery and acknowledgment
 
 The root hook could remind an agent to read shared conventions without proving

@@ -82,6 +82,7 @@ Installed events:
 - `SessionStart`
 - `UserPromptSubmit`
 - `SubagentStart`
+- `SubagentStop`
 - `PreCompact`
 - `PreToolUse`
 - `Stop`
@@ -108,6 +109,10 @@ python3 hooks/codex/manage.py uninstall
 
 ## Claude Code only
 
+Claude Code 2.1.196 or newer is required. The convention gate uses the
+per-user-prompt `prompt_id` added in that release; on an older host it fails
+closed rather than reusing an acknowledgment across prompts.
+
 From the repository root:
 
 ```sh
@@ -131,6 +136,7 @@ Installed events:
 - `SessionStart`
 - `UserPromptSubmit`
 - `SubagentStart`
+- `SubagentStop`
 - `PreCompact`
 - `PreToolUse`
 - `Stop`
@@ -201,11 +207,18 @@ unless `--refresh-root-documents` explicitly authorizes replacing a known
 managed copy. At runtime, later content drift blocks mutations and turn
 completion until the installed root authority is repaired.
 
-Convention receipts are private, per-session/turn files. A denial delivers the
-exact current bundle; retrying acknowledges only the recorded source hashes.
+Convention receipts are private, per-session/turn files. Codex keys them by
+`session_id` and `turn_id`; Claude keys them by `session_id` and `prompt_id`.
+Subagent receipts additionally include `agent_id`. A denial delivers the exact
+current bundle; retrying acknowledges only the recorded source hashes.
 Changing any source invalidates that part of the receipt. For memory writes,
 the bundle expands from shared conventions through each existing ancestor
 `MEMORY.md` and any declared `requires_read` files.
+
+`Stop` and `SubagentStop` block only the first unacknowledged completion
+attempt. If the host re-enters either event with `stop_hook_active` set, the
+hook never blocks again, preventing a continuation loop even when root state
+or event identity is damaged.
 
 When shared memory is available, the injected context directs agents to edit
 the resolved shared tree under the existing paired-log and narrow

@@ -17,6 +17,7 @@ EVENT_LABELS = {
     "SessionStart": "load root at session start",
     "UserPromptSubmit": "remind root each turn",
     "SubagentStart": "load root for subagent",
+    "SubagentStop": "verify subagent convention acknowledgment",
     "PreCompact": "checkpoint context before compaction",
     "PreToolUse": "guard memory mutation",
     "Stop": "verify convention acknowledgment",
