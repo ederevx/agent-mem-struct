@@ -373,6 +373,122 @@ class CompactionHookTests(unittest.TestCase):
         self.assertIn("Keep local.", reason)
         self.assertIn("Test project.", reason)
 
+    def test_historical_log_uses_active_group_conventions_only(self) -> None:
+        local = self.home / "memory" / "local"
+        group = local / "submemory" / "project"
+        log = group / "nodes" / "log"
+        log.mkdir(parents=True)
+        (local / "MEMORY.md").write_text(
+            "# Local\n\n## Mandatory conventions\n\n- Keep local.\n", encoding="utf-8"
+        )
+        (group / "MEMORY.md").write_text(
+            "# Project\n\n## Mandatory conventions\n\n- Keep project.\n",
+            encoding="utf-8",
+        )
+        (group / "nodes" / "MEMORY.md").write_text(
+            "# Project nodes\n\n- [[note]]\n", encoding="utf-8"
+        )
+        (log / "MEMORY.md").write_text(
+            "# Log: MEMORY\n\n---\nrequires_read:\n  - missing.md\n---\n",
+            encoding="utf-8",
+        )
+        target = log / "note.md"
+        target.write_text(
+            "---\nrequires_read:\n  - missing.md\n---\n\n# Historical note\n",
+            encoding="utf-8",
+        )
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event.update({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
+                reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("Keep local.", reason)
+                self.assertIn("Keep project.", reason)
+                self.assertNotIn("Project nodes", reason)
+                self.assertNotIn("missing.md", reason)
+                self.assertEqual(invoke(agent, self.home, event).stdout, "")
+
+    def test_log_cwd_does_not_make_log_manifest_authoritative(self) -> None:
+        local = self.home / "memory" / "local"
+        log = local / "log"
+        log.mkdir()
+        (local / "MEMORY.md").write_text(
+            "# Local\n\n## Mandatory conventions\n\n- Keep local.\n", encoding="utf-8"
+        )
+        (log / "MEMORY.md").write_text("# Log: MEMORY\n", encoding="utf-8")
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event["cwd"] = str(log)
+                event.update({"tool_name": "Write", "tool_input": {"file_path": "note.md"}})
+                reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("Keep local.", reason)
+                self.assertNotIn("required convention manifest is malformed", reason)
+                self.assertEqual(invoke(agent, self.home, event).stdout, "")
+
+    def test_git_log_from_shared_symlink_log_keeps_active_manifest(self) -> None:
+        shared_alias = self.home / "memory" / "shared"
+        shared_target = self.temp / "shared-target"
+        shutil.rmtree(shared_alias)
+        shared_target.mkdir()
+        shared_alias.symlink_to(shared_target, target_is_directory=True)
+        (shared_target / "MEMORY.md").write_text(
+            "# Shared\n\n## Mandatory conventions\n\n- Keep shared.\n", encoding="utf-8"
+        )
+        log = shared_target / "log"
+        log.mkdir()
+        (log / "MEMORY.md").write_text("# Log: MEMORY\n", encoding="utf-8")
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event["cwd"] = str(shared_alias)
+                event.update({
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": "git log --oneline --graph --date-order --all; true"
+                    },
+                })
+                reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("Keep shared.", reason)
+                self.assertNotIn("required convention manifest is malformed", reason)
+                self.assertEqual(invoke(agent, self.home, event).stdout, "")
+
+    def test_nested_node_collections_never_become_group_manifests(self) -> None:
+        local = self.home / "memory" / "local"
+        collection = local / "nodes" / "submemory" / "topic"
+        collection.mkdir(parents=True)
+        (collection / "MEMORY.md").write_text("# Topic index\n", encoding="utf-8")
+        target = collection / "note.md"
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event.update({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
+                reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertNotIn("required convention manifest is malformed", reason)
+                self.assertNotIn("Topic index", reason)
+                self.assertEqual(invoke(agent, self.home, event).stdout, "")
+
+    def test_active_node_prerequisites_and_group_validation_remain_strict(self) -> None:
+        local = self.home / "memory" / "local"
+        node = local / "nodes" / "note.md"
+        node.parent.mkdir(exist_ok=True)
+        node.write_text(
+            "---\nrequires_read:\n  - missing.md\n---\n\n# Note\n", encoding="utf-8"
+        )
+        group = local / "submemory" / "broken"
+        group.mkdir(parents=True)
+        (group / "MEMORY.md").write_text("# Broken\n", encoding="utf-8")
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event.update({"tool_name": "Write", "tool_input": {"file_path": str(node)}})
+                reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("requires_read is not an active memory Markdown file", reason)
+
+                event["tool_input"] = {"file_path": str(group / "note.md")}
+                reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("required convention manifest is malformed", reason)
+
     def test_stop_requires_acknowledgment_then_allows_retry(self) -> None:
         event = self.event("Stop")
         first = json.loads(invoke("codex", self.home, event).stdout)

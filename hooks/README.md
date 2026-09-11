@@ -212,8 +212,11 @@ Convention receipts are private, per-session/turn files. Codex keys them by
 Subagent receipts additionally include `agent_id`. A denial delivers the exact
 current bundle; retrying acknowledges only the recorded source hashes.
 Changing any source invalidates that part of the receipt. For memory writes,
-the bundle expands from shared conventions through each existing ancestor
-`MEMORY.md` and any declared `requires_read` files.
+the bundle expands from shared conventions through active ancestor group
+manifests and any declared `requires_read` files. Node-collection indexes and
+historical `log/MEMORY.md` files are not convention manifests. Targets beneath
+`nodes/` or `log/` retain their enclosing group conventions; historical logs
+do not introduce independent prerequisites.
 
 `Stop` and `SubagentStop` block only the first unacknowledged completion
 attempt. If the host re-enters either event with `stop_hook_active` set, the

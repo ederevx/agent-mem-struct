@@ -472,16 +472,28 @@ def manifest_chain(candidate: Path, state: dict[str, Any]) -> list[Path]:
         directory_parts = relative.parts[:-1] if candidate.suffix else relative.parts
         manifests = [display_root / "MEMORY.md"]
         current = display_root
-        for part in directory_parts:
-            current /= part
+        index = 0
+        # Only a contiguous submemory/<name> chain denotes scoped groups.
+        # Once traversal enters nodes/, log/, or an attachment, any MEMORY.md
+        # there is a routing index or historical counterpart, not authority.
+        while index + 1 < len(directory_parts) and directory_parts[index] == "submemory":
+            current /= directory_parts[index]
+            current /= directory_parts[index + 1]
             manifest = current / "MEMORY.md"
             if manifest.exists():
                 manifests.append(manifest)
+            index += 2
         return manifests
     return []
 
 
 def required_reads(path: Path, state: dict[str, Any]) -> tuple[list[Path], str | None]:
+    resolved = path.resolve(strict=False)
+    for root in (state["memory_root"], state["shared_resolved"]):
+        root_resolved = root.resolve(strict=False)
+        if under(resolved, root_resolved) and "log" in resolved.relative_to(root_resolved).parts:
+            # Logs are non-authoritative history and cannot add prerequisites.
+            return [], None
     if path.suffix.lower() != ".md" or not path.exists():
         return [], None
     text, error = read_text(path)
