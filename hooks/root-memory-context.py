@@ -959,12 +959,16 @@ def handle_precompact(agent: str, event: dict[str, Any], state: dict[str, Any]) 
     return 0
 
 
-READ_ONLY_TOOL_TOKENS = ("read", "view", "get", "list", "search", "find", "status")
+READ_ONLY_TOOL_TOKENS = (
+    "read", "view", "get", "list", "search", "find", "status", "grep", "glob",
+)
 SHELL_TOOL_NAMES = {"bash", "powershell", "shell", "exec_command", "command"}
 SHELL_READ_ONLY_RE = re.compile(
-    r"^\s*(?:pwd|ls|dir|cat|head|tail|stat|where|which|rg|grep|find|"
+    r"^\s*(?:(?:pwd|ls|dir|cat|head|tail|stat|where|which|rg|grep|find|"
     r"Get-Content|Get-ChildItem|Select-String|Test-Path|Resolve-Path|"
-    r"git\s+(?:status|diff|log|show|grep|rev-parse|branch\s+--list))\b",
+    r"git\s+(?:status|diff|log|show|grep|rev-parse|branch\s+--list))\b|"
+    r"sed\s+-n\s+(['\"]?)\d+(?:,\d+)?p\1\s+(?:--\s+)?"
+    r"(?!-)\S+(?:\s+(?!-)\S+)*\s*$)",
     re.IGNORECASE,
 )
 
@@ -995,25 +999,19 @@ def candidate_paths(raw: str, cwd: Path) -> Iterable[Path]:
             yield candidate
 
 
-def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> tuple[bool, bool]:
+def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> bool:
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
-        return False, False
+        return False
     cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
     memory_root: Path = state["memory_root"]
-    root_memory: Path = state["root_memory"]
     shared_resolved: Path = state["shared_resolved"]
 
-    found_memory = False
-    found_nonroot = False
     for raw in target_strings(tool_input):
         for candidate in candidate_paths(raw, cwd):
             if under(candidate, memory_root) or under(candidate, shared_resolved):
-                found_memory = True
-                if candidate.resolve(strict=False) != root_memory.resolve(strict=False):
-                    found_nonroot = True
-
-    return found_memory, found_memory and not found_nonroot
+                return True
+    return False
 
 
 def input_targets_only_repair_paths(event: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -1046,45 +1044,35 @@ def is_subagent_event(event: dict[str, Any]) -> bool:
     return isinstance(agent, str) and bool(agent.strip())
 
 
+def deny_pretool(reason: str, *, context: bool = False) -> None:
+    output: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    }
+    if context:
+        output["additionalContext"] = reason
+    json.dump({"hookSpecificOutput": output}, sys.stdout, separators=(",", ":"))
+
+
 def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
         return
-    targets_memory, _ = input_targets_memory(event, state)
+    targets_memory = input_targets_memory(event, state)
     if targets_memory and is_subagent_event(event):
-        json.dump(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        "Subagents have read-only access to memory/shared content. "
-                        "Route this addition back to the parent session instead of "
-                        "writing it directly."
-                    ),
-                }
-            },
-            sys.stdout,
-            separators=(",", ":"),
+        deny_pretool(
+            "Subagents have read-only access to memory/shared content. "
+            "Route this addition back to the parent session instead of writing it directly."
         )
         return
 
     if state["errors"] and not input_targets_only_repair_paths(event, state):
-        json.dump(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        "Mutation blocked because root memory control or mandatory shared conventions "
-                        "are unavailable, malformed, or differ from the canonical hook checkout. "
-                        + " | ".join(state["errors"])
-                        + ". Repair/read the root control files first."
-                    ),
-                }
-            },
-            sys.stdout,
-            separators=(",", ":"),
+        deny_pretool(
+            "Mutation blocked because root memory control or mandatory shared conventions "
+            "are unavailable, malformed, or differ from the canonical hook checkout. "
+            + " | ".join(state["errors"])
+            + ". Repair/read the root control files first."
         )
         return
 
@@ -1093,18 +1081,7 @@ def handle_pretool(event: dict[str, Any], state: dict[str, Any]) -> None:
 
     allowed, reason = convention_gate(event, state, scoped=targets_memory)
     if not allowed:
-        json.dump(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                    "additionalContext": reason,
-                }
-            },
-            sys.stdout,
-            separators=(",", ":"),
-        )
+        deny_pretool(reason, context=True)
         return
 
     if state["stale"]:
