@@ -306,23 +306,46 @@ class CompactionHookTests(unittest.TestCase):
             self.assertIn("reserved for the parent session", subagent)
             self.assertIn("report it back to the parent", subagent)
 
-    def test_subagent_attributed_writes_into_memory_are_always_denied(self) -> None:
-        # Even against an otherwise-valid, non-stale root, a subagent-
-        # attributed write into memory/ or shared/ must be denied outright.
+    def test_subagent_memory_access_is_read_only(self) -> None:
         target = self.home / "memory" / "local" / "note.md"
-        event = self.event("PreToolUse")
-        event["agent_id"] = "worker-1"
-        event.update({
-            "tool_name": "Write",
-            "tool_input": {"file_path": str(target), "content": "x"},
-        })
-        output = json.loads(invoke("codex", self.home, event).stdout)
-        self.assertEqual(
-            output["hookSpecificOutput"]["permissionDecision"], "deny"
+        cases = (
+            ("Read", {"file_path": str(target)}, True),
+            ("Grep", {"path": str(target), "pattern": "note"}, True),
+            ("Glob", {"path": str(target), "pattern": "*.md"}, True),
+            ("Bash", {"command": f"cat {target}"}, True),
+            ("Bash", {"command": f"sed -n '1,20p' {target}"}, True),
+            ("exec_command", {"cmd": f"sed -n '1,20p' {target}"}, True),
+            ("Write", {"file_path": str(target), "content": "x"}, False),
+            ("Bash", {"command": f"sed -ni '1,20p' {target}"}, False),
+            ("Bash", {"command": f"sed -n '1,20p' {target} -i"}, False),
+            ("Bash", {"command": f"sed -n '1,20p' {target} --in-place"}, False),
+            ("Bash", {"command": f"sed -e '1e id' {target}"}, False),
+            ("Bash", {"command": f"sed -n '1,20p' {target} -e '1e id'"}, False),
+            ("Bash", {"command": f"sed -n 'w {target}' input"}, False),
+            ("Bash", {"command": f"printf x > {target}"}, False),
+            ("OpaqueExecutor", {"target": str(target)}, False),
         )
-        self.assertIn(
-            "read-only", output["hookSpecificOutput"]["permissionDecisionReason"]
-        )
+        for agent in ("claude", "codex"):
+            for tool_name, tool_input, allowed in cases:
+                with self.subTest(agent=agent, tool=tool_name, input=tool_input):
+                    event = self.event("PreToolUse", agent=agent)
+                    event.update({
+                        "agent_id": "worker-1",
+                        "tool_name": tool_name,
+                        "tool_input": tool_input,
+                    })
+                    result = invoke(agent, self.home, event)
+                    if allowed:
+                        self.assertEqual(result.stdout, "")
+                    else:
+                        output = json.loads(result.stdout)
+                        self.assertEqual(
+                            output["hookSpecificOutput"]["permissionDecision"], "deny"
+                        )
+                        self.assertIn(
+                            "read-only",
+                            output["hookSpecificOutput"]["permissionDecisionReason"],
+                        )
 
     def test_non_subagent_writes_into_valid_memory_are_not_blocked_here(self) -> None:
         # The owning session receives the exact convention bundle once. Its
