@@ -9,11 +9,13 @@ The canonical chain remains unchanged:
 ```text
 <agent-home>/memory/MEMORY.md
   -> Structure: ../STRUCTURE.md
+  -> Shared: <absolute native path>
 <agent-home>/RULES.md
 ```
 
-`STRUCTURE.md`, `RULES.md`, `MIGRATION.md`, the root memory tree, and the
-existing structural symlinks remain authoritative.
+`STRUCTURE.md`, `RULES.md`, `MIGRATION.md`, and the root memory tree remain
+authoritative. Root `STRUCTURE.md` and `RULES.md` are protected
+installer-managed regular-file copies on every platform.
 
 ## What the hook does
 
@@ -21,38 +23,45 @@ The shared hook `root-memory-context.py`:
 
 1. reads the agent's existing root `memory/MEMORY.md`;
 2. resolves and validates its `Structure:` target against root `STRUCTURE.md`;
-3. reads root `RULES.md`;
-4. compares the applied and canonical `Structure-Version` values;
-5. verifies the installed root rules and structure content against the
-   canonical documents beside the running hook, catching detached Windows
-   hardlinks and stale copies that a version-only comparison misses;
-6. injects the exact current root memory, rules, and shared mandatory
+3. for a current-version root, parses `Shared:` as a literal, unquoted absolute
+   native path without expansion, locates that exact pre-existing physical
+   directory, rejects a terminal symlink, junction, or reparse-point alias,
+   and validates its root mandatory conventions while allowing ancestor path
+   components to resolve normally;
+4. reads root `RULES.md`;
+5. compares the applied and canonical `Structure-Version` values;
+6. verifies the installed root rules and structure content against the
+   canonical documents beside the running hook, catching detached hardlinks
+   and stale copies that a version-only comparison misses;
+7. injects the exact current root memory, rules, and shared mandatory
    conventions at session start; each later
    user turn receives only a compact authority/task-boundary reminder instead
    of another copy of both files;
-7. injects the same root context into spawned subagents;
-8. gates mutating and unknown actions, including writes embedded in an
+8. injects the same root context into spawned subagents;
+9. gates mutating and unknown actions, including writes embedded in an
    interpreter one-liner or heredoc rather than a shell redirect, and fails
    closed when the root authority is missing or malformed;
-9. builds a hash-bound convention bundle for each mutation, adding ancestor
+10. builds a hash-bound convention bundle for each mutation, adding ancestor
    group manifests and `requires_read` prerequisites for scoped memory writes;
-10. refuses the first mutation or turn completion for each new bundle, injects
+11. refuses the first mutation or turn completion for each new bundle, injects
     its exact sources, and treats a same-turn retry as explicit acknowledgment;
-11. reports a stale structure as a mandatory migrate-first condition without
-   hard-blocking the migration itself;
-12. exposes the stable shared-memory alias and its resolved target, including
-   whether the target is an available Git worktree, so requested durable
-   cross-agent records can be inserted directly instead of remaining only in
-   a session or artifact upload;
-13. writes a bounded, per-session continuity checkpoint immediately before
+12. reports a stale structure as a mandatory migrate-first condition without
+    hard-blocking the migration itself;
+13. exposes the declared shared-memory directory, including whether it is an
+    available Git worktree, so requested durable cross-agent records can be
+    inserted directly instead of remaining only in a session or artifact
+    upload;
+14. writes a bounded, per-session continuity checkpoint immediately before
     manual or automatic compaction, refusing a manual compaction it cannot
     checkpoint and warning about an automatic one;
-14. restores that checkpoint together with the authoritative root memory after
+15. restores that checkpoint together with the authoritative root memory after
     compaction at the compact-sourced session start; and
-15. deletes a checkpoint after successful restoration and scavenges
+16. deletes a checkpoint after successful restoration and scavenges
     crash-orphaned checkpoints after seven days.
 
-It does **not** create another `MEMORY.md`, `RULES.md`, or `STRUCTURE.md`.
+The runtime hook creates no documents. The installer manages only the two root
+`RULES.md` and `STRUCTURE.md` copies described above; it does not add another
+`MEMORY.md`, create a shared directory, or add aliases under `memory/`.
 
 ## Codex only
 
@@ -62,12 +71,21 @@ From the repository root:
 python3 hooks/codex/manage.py install
 ```
 
-If an older Windows installation left detached regular-file copies of the root
-documents, refresh them explicitly:
+This also deploys managed regular-file copies of root `RULES.md` and
+`STRUCTURE.md`. A reinstall safely refreshes an unchanged installer-owned copy
+and replaces a legacy matching root symlink. It refuses foreign files,
+user-edited copies, and symlinks to other targets rather than overwriting them.
+
+For a known managed regular copy installed before ownership markers existed,
+one explicit bootstrap may be needed:
 
 ```sh
 python3 hooks/codex/manage.py install --refresh-root-documents
 ```
+
+Use this only after confirming the untracked copy was not edited. The flag
+cannot override edit protection for an already tracked copy and still refuses
+a foreign document.
 
 This non-destructively merges protocol-owned handlers into:
 
@@ -119,9 +137,12 @@ From the repository root:
 python3 hooks/claude/manage.py install
 ```
 
-Use `--refresh-root-documents` only to replace a known managed, detached copy;
-without that explicit flag, the installer refuses any mismatched regular root
-document.
+This also deploys managed regular-file copies of root `RULES.md` and
+`STRUCTURE.md`. Reinstall behavior and conflict protection are the same as for
+Codex: only unchanged owned copies and legacy matching root symlinks are
+refreshed or replaced automatically. The same one-time
+`--refresh-root-documents` bootstrap applies to a confirmed pre-marker managed
+regular copy.
 
 This non-destructively merges protocol-owned handlers into:
 
@@ -159,13 +180,14 @@ python3 hooks/claude/manage.py uninstall
 
 ## Migration from the text-only integration
 
-No memory-tree migration and no `Structure-Version` bump are required for this
-hook layer because the canonical memory shape and operational rules are not
-changed.
+Installing the hook layer does not independently require a memory-tree
+migration. The root-document and explicit-shared-path policy is versioned by
+the canonical protocol; follow the newest applicable `MIGRATION.md` entry
+before advancing the agent's marker.
 
-Keep the existing root structural links described by the main protocol. Add
-only the appropriate runtime hook installation for each agent. The two agents
-are independent; installing one does not configure the other.
+Keep the managed root copies described by the main protocol. Add only the
+appropriate runtime hook installation for each agent. The two agents are
+independent; installing one does not configure the other.
 
 ## Failure behavior
 
@@ -201,11 +223,21 @@ A stale but valid `Structure-Version` remains writable so the agent can apply
 `MIGRATION.md`; the hook injects the stale-state warning and the canonical
 migration path on every relevant context refresh.
 
-The installer creates missing root documents and preserves a root symlink only
-when it resolves to the canonical source. It refuses mismatched regular files
-unless `--refresh-root-documents` explicitly authorizes replacing a known
-managed copy. At runtime, later content drift blocks mutations and turn
+On every platform, the installer creates managed regular-file copies. It
+replaces a legacy root symlink only when the link still resolves to the
+corresponding canonical source. Reinstallation refreshes only an unchanged
+installer-owned copy; it refuses a foreign file, a user-edited copy, or a link
+to another target. At runtime, later content drift blocks mutations and turn
 completion until the installed root authority is repaired.
+
+There is no `memory/shared` alias or copy. The root `Shared:` value is accepted
+only when it is literal, unquoted, absolute in native syntax, and names a
+pre-existing physical directory with valid mandatory conventions. The declared
+terminal directory must not itself be a symlink, junction, or other
+reparse-point alias; ancestor components may resolve normally. Missing or
+invalid values are reported with the canonical checkout's `.shared/` directory
+as a possible discovery hint; the installer and hook never create that
+directory, fall back to it, or silently substitute it.
 
 Convention receipts are private, per-session/turn files. Codex keys them by
 `session_id` and `turn_id`; Claude keys them by `session_id` and `prompt_id`.
@@ -223,8 +255,8 @@ attempt. If the host re-enters either event with `stop_hook_active` set, the
 hook never blocks again, preventing a continuation loop even when root state
 or event identity is damaged.
 
-When shared memory is available, the injected context directs agents to edit
-the resolved shared tree under the existing paired-log and narrow
+When declared shared memory is valid, the injected context directs agents to
+edit that exact shared tree under the existing paired-log and narrow
 commit-and-push rules. It also keeps raw dumps and complete logs in artifact
 storage: an artifact upload and a distilled shared-memory update are separate
 durability steps, not substitutes for one another.

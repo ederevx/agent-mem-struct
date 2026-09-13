@@ -104,8 +104,9 @@ def install(
     settings = load_json(settings_path)
     previous_auto_memory = disable_native_memory(settings, previous_marker)
     replace_owned_hooks(settings, hook_groups("claude", home, memory_home, hook))
-    refresh_root_documents(
-        memory_home, HOOK_ROOT.parent, allow_refresh=refresh_documents
+    root_documents = refresh_root_documents(
+        memory_home, HOOK_ROOT.parent, allow_refresh=refresh_documents,
+        previous_documents=previous_marker.get("rootDocuments"),
     )
     save_json(settings_path, settings)
     save_json(
@@ -113,6 +114,7 @@ def install(
         {
             "memoryHome": str(memory_home),
             "previousAutoMemoryDisable": previous_auto_memory,
+            "rootDocuments": root_documents,
         },
     )
 

@@ -8,17 +8,24 @@ be concise, action-oriented, non-duplicative, and operationally complete.
 Consolidate existing rules when possible; put rationale, examples, and history
 in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
 
-1. **Check protocol control.** Read root `memory/MEMORY.md`, resolve its
+1. **Check protocol control.** Read root `memory/MEMORY.md`, resolve
    `Structure: ../STRUCTURE.md`, and compare `Structure-Version` with canonical
-   `STRUCTURE.md`. If stale, apply `MIGRATION.md` in order before memory work;
-   then read root `RULES.md`.
+   `STRUCTURE.md`; if stale, apply `MIGRATION.md` in order before memory work.
+   At the current version, require a literal, unquoted `Shared:` absolute native
+   path with no expansion and a pre-existing physical shared root whose
+   `MEMORY.md` provides valid mandatory conventions. Reject a declared terminal
+   directory that is itself a symlink, junction, or reparse-point alias;
+   ancestor components may resolve normally. Report a missing or invalid
+   target; the canonical `.shared/` is a discovery hint only—never create or
+   fall back to it, and use no `memory/shared` alias or copy. Then read root
+   `RULES.md`.
 
-2. **Apply mandatory scope before nodes.** Always read the shared half —
-   `shared/MEMORY.md` and its mandatory groups — at the start of every session
-   and task, memory work or not; its conventions bind every agent. Then read
-   every applicable group `MEMORY.md` from the `local/` or `shared/` half-root
-   through the target and obey all **Mandatory conventions**. Nodes are
-   on-demand: load only the relevant index, active nodes, and explicitly
+2. **Apply mandatory scope before nodes.** Always read the declared shared
+   root's `MEMORY.md` and mandatory groups at the start of every session and
+   task, memory work or not; its conventions bind every agent. Then read every
+   applicable group `MEMORY.md` from `memory/local/` or the declared shared
+   half-root through the target and obey all **Mandatory conventions**. Nodes
+   are on-demand: load only the relevant index, active nodes, and explicitly
    required context.
 
 3. **Keep current truth separate from history.** Active `.md` files and node
@@ -40,18 +47,18 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
    non-empty prerequisites. Indexes describe what nodes contain, not factual
    conclusions that duplicate node truth.
 
-6. **Classify by structure.** Choose `local/` versus `shared/`, then the
-   narrowest applicable group. Standing behavior belongs in concise,
-   operationally complete **Mandatory conventions**; facts, decisions,
-   rationale, and project records belong in on-demand nodes. Required behavior
-   must never be hidden in a rationale node.
+6. **Classify by structure.** Choose private `memory/local/` versus the
+   declared shared root, then the narrowest applicable group. Standing behavior
+   belongs in concise, operationally complete **Mandatory conventions**;
+   facts, decisions, rationale, and project records belong in on-demand nodes.
+   Required behavior must never be hidden in a rationale node.
 
 7. **Respect write boundaries.** Other agents' `local/` trees are read-only.
-   Shared edits use the common `.shared/` tree, are narrowly staged, and are
-   committed and pushed to its private remote before the turn ends. A
-   subagent reads the same root memory and rules as the parent that spawned
-   it but never writes memory or shared content; route any needed addition
-   back to the parent instead.
+   Shared edits use exactly the root `Shared:` target, are narrowly staged, and
+   are committed and pushed to its private remote before the turn ends. A
+   subagent reads the same root memory and rules as the parent that spawned it
+   but never writes memory or shared content; route any needed addition back to
+   the parent instead.
 
 8. **Keep protocol documents focused.** `STRUCTURE.md` defines shape and
    invariants, `MIGRATION.md` handles version changes, and `changelog.md`

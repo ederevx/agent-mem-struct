@@ -17,26 +17,39 @@ private memory while sharing one common-memory subtree.
 
 ## Using this
 
-Clone the repository and create two structural-document symlinks at each agent
-root:
+Clone the repository, then run the appropriate hook installer for each agent.
+On every platform, the installer deploys protected managed copies of the two
+root structural documents:
 
-```sh
-ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/STRUCTURE.md
-ln -sf ~/agent-mem-struct/RULES.md     <agent-home>/RULES.md
+```text
+<agent-home>/STRUCTURE.md
+<agent-home>/RULES.md
 ```
 
+Reinstalling safely refreshes an unchanged installer-owned copy and replaces a
+legacy root symlink that still points to the corresponding canonical document.
+It does not overwrite a foreign or user-edited document; resolve that conflict
+explicitly and rerun the installer.
+
 The agent's root `memory/MEMORY.md` points to `../STRUCTURE.md`, records the
-applied `Structure-Version`, and is checked on every memory task. The agent then
-reads the root `RULES.md` before scoped memory work. If the version is stale,
-follow `MIGRATION.md` first.
+applied `Structure-Version`, and declares the real shared directory as a
+literal, unquoted `Shared: <absolute native path>`. The agent and hook validate
+that pre-existing physical directory and its mandatory conventions. The
+declared terminal directory must not itself be a symlink, junction, or other
+reparse-point alias, though ancestor path components may resolve normally.
+They never create it, fall back to another directory, or expand `~` or
+environment variables. If the version is stale, follow `MIGRATION.md` first,
+then read root `RULES.md` before scoped memory work.
 
 `RULES.md` is intentionally compact mandatory context. New rules should be
 consolidated where possible; rationale and examples belong outside the routine
 checklist.
 
-The separate `memory/shared` symlink is part of shared-memory data topology, not
-a duplicate structural-document link. Do not add `memory/STRUCTURE.md` or
-`memory/RULES.md` aliases.
+Do not create a `memory/shared` alias or copy. The `Shared:` declaration is the
+only shared-root locator. When it is missing or invalid, diagnostics may name
+the canonical checkout's `.shared/` directory as a discovery hint, but neither
+the installer nor runtime may create it, select it as a fallback, or silently
+substitute it. Do not add `memory/STRUCTURE.md` or `memory/RULES.md` aliases.
 
 ## License
 

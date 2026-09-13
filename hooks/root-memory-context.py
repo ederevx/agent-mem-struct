@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import time
 from collections import deque
@@ -63,6 +64,9 @@ SCRIPT_MUTATION_RE = re.compile(
     re.IGNORECASE,
 )
 TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "cmd", "patch", "cwd")
+PATCH_HEADER_RE = re.compile(
+    r"(?m)^\*\*\* (?:Add File|Update File|Delete File|Move to):[ \t]*(.*?)[ \t]*\r?$"
+)
 CHECKPOINT_TEXT_LIMIT = 3500
 CHECKPOINT_MAX_AGE = 7 * 24 * 60 * 60
 CHECKPOINT_RESTORE_MAX_AGE = 24 * 60 * 60
@@ -150,6 +154,51 @@ def path_from_string(value: str, cwd: Path) -> Path | None:
     return candidate
 
 
+def declared_shared(memory_text: str | None, memory_root: Path) -> tuple[Path | None, str | None]:
+    """Read one literal native directory from the root control header.
+
+    An invalid declaration never becomes a scope or an authorized repair target.
+    Discovery belongs to the agent; this loader does not search or create paths.
+    """
+    header = re.split(r"\n[ \t]*\n", memory_text or "", maxsplit=1)[0]
+    declarations = re.findall(r"(?m)^Shared:[ \t]*(.*)$", header)
+    if len(declarations) != 1:
+        return None, "requires exactly one `Shared: <absolute native path>` in its control header"
+    value = declarations[0].strip()
+    if (
+        not value or len(value) > 4096 or any(ord(char) < 32 for char in value)
+        or value.startswith(("'", '"', "~")) or value.endswith(("'", '"'))
+        or re.search(r"\$(?:[A-Za-z_][A-Za-z_0-9]*|\{)|%[^%]+%", value)
+    ):
+        return None, "must be an unquoted literal path without environment or tilde expansion"
+    normalized = value.replace("\\", "/")
+    if (
+        re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", value)
+        or normalized.startswith(("//?/", "//./", "/??/"))
+        or (os.name != "nt" and (re.match(r"^[A-Za-z]:", value) or value.startswith("\\") or normalized.startswith("//")))
+    ):
+        return None, "must be a native directory path, not a URI, device, or foreign-platform path"
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        return None, "must be an absolute native directory path"
+    try:
+        if candidate.is_symlink() or (
+            os.name == "nt" and candidate.exists()
+            and candidate.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            return None, "must name the physical directory directly, not a symlink or junction/reparse alias"
+        resolved = candidate.resolve(strict=False)
+        if resolved.parent == resolved:
+            return None, "must not name a filesystem root"
+        if under(resolved, memory_root) or under(memory_root, resolved):
+            return None, "must not overlap the agent private memory tree"
+        if not resolved.is_dir():
+            return None, f"directory is missing or is not a directory: {candidate}"
+    except (OSError, ValueError, RuntimeError) as exc:
+        return None, f"directory cannot be resolved: {exc}"
+    return resolved, None
+
+
 def root_state(home: Path, canonical_root: Path) -> dict[str, Any]:
     memory_root = home / "memory"
     root_memory = memory_root / "MEMORY.md"
@@ -227,18 +276,28 @@ def root_state(home: Path, canonical_root: Path) -> dict[str, Any]:
     migration = canonical_dir / "MIGRATION.md"
     stale = bool(applied and canonical and applied != canonical)
 
-    shared = memory_root / "shared"
-    shared_resolved = shared.resolve(strict=False)
-    shared_available = shared_resolved.is_dir()
-    shared_git_backed = (shared_resolved / ".git").exists()
-    shared_memory = shared_resolved / "MEMORY.md"
-    shared_text, shared_error = read_text(shared_memory)
+    discovery_hint = (
+        f"Look for the existing shared directory at {canonical_root / '.shared'} "
+        "and check its MEMORY.md; this is a discovery hint only. "
+        "If absent, inspect the documented checkout location or ask the user. "
+        "Declare the verified absolute directory in root memory/MEMORY.md; "
+        "do not create a replacement or silently fall back."
+    )
+    shared_resolved, shared_error = declared_shared(memory_text, memory_root)
+    shared_available = shared_resolved is not None
+    shared_git_backed = bool(shared_resolved and (shared_resolved / ".git").exists())
+    shared_memory = shared_resolved / "MEMORY.md" if shared_resolved else None
+    shared_text = None
     if shared_error:
-        errors.append(f"shared conventions unavailable: {shared_error}")
-    elif "## Mandatory conventions" not in shared_text:
-        errors.append(
-            f"shared conventions malformed: {shared_memory} lacks `## Mandatory conventions`"
-        )
+        errors.append(f"root memory Shared {shared_error}. {discovery_hint}")
+    elif shared_memory is not None:
+        shared_text, shared_error = read_text(shared_memory)
+        if shared_error:
+            errors.append(f"shared conventions unavailable: {shared_error}. {discovery_hint}")
+        elif not re.search(r"(?m)^## Mandatory conventions[ \t]*$", shared_text or ""):
+            errors.append(
+                f"shared conventions malformed: {shared_memory} lacks `## Mandatory conventions`. {discovery_hint}"
+            )
 
     repair_paths: list[Path] = []
     for error in errors:
@@ -248,7 +307,8 @@ def root_state(home: Path, canonical_root: Path) -> dict[str, Any]:
             repair_paths.append(root_rules)
         if error.startswith("root STRUCTURE.md"):
             repair_paths.append(expected_structure)
-        if error.startswith("shared conventions"):
+        if error.startswith("shared conventions") and shared_memory is not None:
+            repair_paths.append(root_memory)
             repair_paths.append(shared_memory)
 
     return {
@@ -258,7 +318,7 @@ def root_state(home: Path, canonical_root: Path) -> dict[str, Any]:
         "root_rules": root_rules,
         "structure": expected_structure,
         "migration": migration,
-        "shared": shared,
+        "shared": shared_resolved,
         "shared_resolved": shared_resolved,
         "shared_available": shared_available,
         "shared_git_backed": shared_git_backed,
@@ -281,8 +341,7 @@ def context_text(state: dict[str, Any]) -> str:
         f"Root memory: {state['root_memory']}",
         f"Root rules: {state['root_rules']}",
         f"Canonical structure: {state['structure']}",
-        f"Direct shared-memory alias: {state['shared']}",
-        f"Resolved shared-memory target: {state['shared_resolved']}",
+        f"Declared shared-memory directory: {state['shared_resolved'] or 'unavailable; repair the Shared header'}",
     ]
 
     if state["shared_available"]:
@@ -466,7 +525,7 @@ def manifest_chain(candidate: Path, state: dict[str, Any]) -> list[Path]:
         ((state["memory_root"] / "local").resolve(strict=False), state["memory_root"] / "local"),
     )
     for resolved_root, display_root in roots:
-        if not under(resolved, resolved_root):
+        if resolved_root is None or not under(resolved, resolved_root):
             continue
         relative = resolved.relative_to(resolved_root)
         directory_parts = relative.parts[:-1] if candidate.suffix else relative.parts
@@ -490,6 +549,8 @@ def manifest_chain(candidate: Path, state: dict[str, Any]) -> list[Path]:
 def required_reads(path: Path, state: dict[str, Any]) -> tuple[list[Path], str | None]:
     resolved = path.resolve(strict=False)
     for root in (state["memory_root"], state["shared_resolved"]):
+        if root is None:
+            continue
         root_resolved = root.resolve(strict=False)
         if under(resolved, root_resolved) and "log" in resolved.relative_to(root_resolved).parts:
             # Logs are non-authoritative history and cannot add prerequisites.
@@ -515,7 +576,7 @@ def required_reads(path: Path, state: dict[str, Any]) -> tuple[list[Path], str |
             (
                 root.resolve(strict=False)
                 for root in (state["memory_root"], state["shared_resolved"])
-                if under(resolved, root)
+                if root is not None and under(resolved, root)
             ),
             None,
         )
@@ -532,6 +593,8 @@ def required_reads(path: Path, state: dict[str, Any]) -> tuple[list[Path], str |
 def convention_bundle(
     event: dict[str, Any], state: dict[str, Any], *, scoped: bool
 ) -> tuple[str | None, str | None, list[Path], dict[str, str]]:
+    if state["shared_memory"] is None:
+        return None, "shared directory declaration is invalid", [], {}
     paths = [state["shared_memory"]]
     prerequisite_error = None
     if scoped:
@@ -586,7 +649,8 @@ def read_receipt(event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    return data if isinstance(data, dict) else {}
+    shared_root = os.path.normcase(str(state["shared_resolved"]))
+    return data if isinstance(data, dict) and data.get("shared_root") == shared_root else {}
 
 
 def receipt_is_current(
@@ -618,7 +682,10 @@ def acknowledge_receipt(
     sources.update(source_digests)
     temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
     temporary.write_text(
-        json.dumps({"sources": sources}, separators=(",", ":")) + "\n",
+        json.dumps({
+            "shared_root": os.path.normcase(str(state["shared_resolved"])),
+            "sources": sources,
+        }, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
     try:
@@ -993,6 +1060,20 @@ def candidate_paths(raw: str, cwd: Path) -> Iterable[Path]:
     direct = path_from_string(raw, cwd)
     if direct is not None:
         yield direct
+    # apply_patch paths are line-delimited rather than shell arguments. Extract
+    # the complete header value before the fallback token scan splits spaces.
+    for value in PATCH_HEADER_RE.findall(raw):
+        candidate = path_from_string(value, cwd)
+        if candidate is not None:
+            yield candidate
+    # Preserve complete quoted arguments (including Windows backslashes). The
+    # broad token scan below still handles unquoted paths and patch headers.
+    # shlex's POSIX escaping would corrupt native Windows paths.
+    for pattern in (r'"([^"\r\n]*)"', r"'([^'\r\n]*)'"):
+        for value in re.findall(pattern, raw):
+            candidate = path_from_string(value, cwd)
+            if candidate is not None:
+                yield candidate
     for token in re.split(r"[\s,;(){}\[\]|&<>]+", raw):
         candidate = path_from_string(token, cwd)
         if candidate is not None:
@@ -1005,11 +1086,11 @@ def input_targets_memory(event: dict[str, Any], state: dict[str, Any]) -> bool:
         return False
     cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
     memory_root: Path = state["memory_root"]
-    shared_resolved: Path = state["shared_resolved"]
+    shared_resolved: Path | None = state["shared_resolved"]
 
     for raw in target_strings(tool_input):
         for candidate in candidate_paths(raw, cwd):
-            if under(candidate, memory_root) or under(candidate, shared_resolved):
+            if under(candidate, memory_root) or (shared_resolved is not None and under(candidate, shared_resolved)):
                 return True
     return False
 
@@ -1028,7 +1109,7 @@ def input_targets_only_repair_paths(event: dict[str, Any], state: dict[str, Any]
         direct = path_from_string(raw, cwd)
         if direct is not None:
             candidates.append(direct)
-        for value in re.findall(r"(?m)^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$", raw):
+        for value in PATCH_HEADER_RE.findall(raw):
             candidate = path_from_string(value, cwd)
             if candidate is not None:
                 candidates.append(candidate)

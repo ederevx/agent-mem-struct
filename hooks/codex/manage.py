@@ -170,8 +170,9 @@ def install(home: Path, hook: Path, *, refresh_documents: bool = False) -> None:
     )
     settings = load_json(hooks_path)
     replace_owned_hooks(settings, hook_groups("codex", home, home, hook))
-    refresh_root_documents(
-        home, HOOK_ROOT.parent, allow_refresh=refresh_documents
+    root_documents = refresh_root_documents(
+        home, HOOK_ROOT.parent, allow_refresh=refresh_documents,
+        previous_documents=previous_marker.get("rootDocuments"),
     )
 
     try:
@@ -185,6 +186,7 @@ def install(home: Path, hook: Path, *, refresh_documents: bool = False) -> None:
         {
             "configWasPresent": config_was_present,
             "previousNativeMemories": previous_native_memory,
+            "rootDocuments": root_documents,
         },
     )
     print(f"Installed additive Codex root-memory hooks into {hooks_path}")
