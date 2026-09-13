@@ -1,4 +1,4 @@
-Structure-Version: 2026-09-09T17:17:31-04:00
+Structure-Version: 2026-09-13T11:45:07-04:00
 
 # Memory structure
 
@@ -17,12 +17,26 @@ Every agent's root `memory/MEMORY.md` begins with:
 ```text
 Structure-Version: <applied-version>
 Structure: ../STRUCTURE.md
+Shared: <absolute native path>
 ```
 
-`Structure:` points to the structural model symlink at the agent root. The
-agent root also carries a direct `RULES.md` symlink for mandatory routine
-access. The canonical target directory contains `STRUCTURE.md`, `RULES.md`,
-`MIGRATION.md`, and `changelog.md`.
+`Structure:` points to the deployed structural model at the agent root. On
+every platform, root `STRUCTURE.md` and `RULES.md` are protected
+installer-managed regular-file copies. Root `RULES.md` provides mandatory
+routine access, while the canonical repository contains `STRUCTURE.md`,
+`RULES.md`, `MIGRATION.md`, and `changelog.md`.
+
+`Shared:` names the real shared-memory half-root. Its value is a literal,
+unquoted absolute path in the host's native path syntax. It must not depend on
+`~`, environment variables, quoting, or any other expansion. The directory
+must already exist as a physical directory and its root `MEMORY.md` must
+provide valid mandatory conventions. The declared terminal directory must not
+itself be a symlink, junction, or other reparse-point alias; ancestor path
+components may resolve normally. The agent and hook locate and validate exactly
+this path. If it is missing or invalid, they report the failure and may include
+the canonical checkout's `.shared/` directory as a discovery hint, but never
+create a shared tree, fall back to the hint, or silently substitute another
+path.
 
 On every memory task the agent checks this root control header. If the applied
 version differs from canonical `STRUCTURE.md`, it follows `MIGRATION.md` before
@@ -49,10 +63,11 @@ The public `github.com/ederevx/agent-mem-struct` repository contains the four
 structural documents above. Every structural-document change must be committed
 and pushed there before the turn ends.
 
-The shared memory directory, `~/agent-mem-struct/.shared/`, is independently
-version-controlled with its own private remote and is `.gitignore`d by the
-public repository. Every shared-memory edit must be committed and pushed from
-within `.shared/` before the turn ends.
+The real shared memory directory named by root `Shared:` is independently
+version-controlled with its own private remote. When it is the canonical
+checkout's `.shared/` directory, that directory is `.gitignore`d by the public
+repository. Every shared-memory edit must be committed and pushed from within
+the declared shared directory before the turn ends.
 
 Both repositories follow each agent's own commit-attribution convention,
 wherever that agent records it, and keep one commit per logical change. This
@@ -61,35 +76,43 @@ memory is not added to either repository.
 
 ## Discoverability
 
-Each agent keeps only two structural-document symlinks, both at its root:
+Each agent exposes exactly two structural documents at its root:
 
-```sh
-ln -sf ~/agent-mem-struct/STRUCTURE.md <agent-home>/STRUCTURE.md
-ln -sf ~/agent-mem-struct/RULES.md     <agent-home>/RULES.md
+```text
+<agent-home>/STRUCTURE.md
+<agent-home>/RULES.md
 ```
 
-The shared-memory data link remains part of the memory topology, not structural
-document discoverability:
+The hook installer deploys both as protected managed regular-file copies. A
+reinstall refreshes only an unchanged copy previously owned by the installer.
+It also replaces a legacy root symlink when that link still resolves to the
+matching canonical document. A foreign file, a user-edited managed copy, or a
+symlink to any other target is a conflict and must not be overwritten.
 
-```sh
-ln -sf ~/agent-mem-struct/.shared <agent-home>/memory/shared
-```
+Shared-memory discoverability comes only from the literal absolute `Shared:`
+value in root `memory/MEMORY.md`. Do not create a `memory/shared` symlink,
+junction, or copied directory. Root index navigation must point directly to
+the declared shared root's `MEMORY.md`, not to an alias beneath `memory/`.
 
 Do not create duplicate `<agent-home>/memory/STRUCTURE.md` or
-`<agent-home>/memory/RULES.md` symlinks. Root `memory/MEMORY.md` points to
+`<agent-home>/memory/RULES.md` aliases. Root `memory/MEMORY.md` points to
 `../STRUCTURE.md` and monitors the protocol version as described above.
 
-`<agent-home>` and the exact memory-tree root are agent configuration, not part
-of this shared specification.
+`<agent-home>`, the private memory-tree root, and the absolute shared path are
+agent configuration recorded by that agent, not fixed filesystem locations in
+this shared specification.
 
 ## Memory model
 
-The root `memory/` is a control/root index, not a scoped group. It links exactly
-two scoped half-roots:
+The root `memory/` is a control/root index, not a scoped group. It routes to two
+logical scoped half-roots without aliasing the shared directory beneath it:
 
-- **`local/`** — this agent's private real directory. Other agents may read it
-  for cross-agent context but must not create, edit, or delete within it.
-- **`shared/`** — the common writable shared-memory tree.
+- **`memory/local/`** — this agent's private real directory. Other agents may
+  read it for cross-agent context but must not create, edit, or delete within
+  it.
+- **declared shared root** — the common writable shared-memory tree at the
+  absolute path recorded by `Shared:`. Its terminal directory is physical, not
+  an alias; its root index is `<Shared>/MEMORY.md`.
 
 Each scoped memory group may contain:
 
@@ -217,7 +240,8 @@ if rewritten into the Markdown node. Store real files in the memory tree, not
 symlinks to external paths. Do not use attachments for secrets, replaceable
 downloads, caches, routine generated output, or files kept only for
 convenience. Create the directory only when it contains at least one qualifying
-item. Its contents inherit the node's `local/` or `shared/` write boundary.
+item. Its contents inherit the node's private-local or declared-shared write
+boundary.
 Storing a script does not authorize executing it; normal trust and permission
 rules still apply.
 

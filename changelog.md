@@ -4,6 +4,34 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-13T11:45:07-04:00 — manage root documents and declare shared memory
+
+Root protocol documents should have uniform ownership and refresh protection
+without depending on symbolic links. The installer now deploys `RULES.md` and
+`STRUCTURE.md` as protected managed regular-file copies on every platform.
+
+- Reinstalling safely refreshes only unchanged installer-owned copies and
+  replaces legacy root links only when they still resolve to the matching
+  canonical documents.
+- Foreign documents, user-edited managed copies, and links to other targets
+  are preserved as conflicts instead of being overwritten.
+- Root `memory/MEMORY.md` now declares `Shared: <absolute native path>` as a
+  literal, unquoted value with no expansion. The existing target and its
+  mandatory conventions must validate before use. The declared terminal
+  directory must be physical rather than a symlink, junction, or reparse-point
+  alias; ancestor path components may resolve normally.
+- Removed `memory/shared` aliases from the current topology. Migration resolves
+  and records an old alias target before removing only the alias; the shared
+  directory and its content are never removed or copied.
+- A missing or invalid declaration is reported. The canonical checkout's
+  `.shared/` may be shown as a discovery hint, but the installer and hook never
+  create it, fall back to it, or silently substitute it.
+- Root navigation points directly to the declared shared root's `MEMORY.md`.
+  Existing scoped memory content needs no change.
+
+This root-control and discoverability rule changes canonical `STRUCTURE.md` and
+`RULES.md`, so the protocol version advances once for the holistic migration.
+
 ## 2026-09-10T19:55:00-04:00 — exclude historical logs from convention discovery
 
 Scoped convention discovery descended into every directory containing a

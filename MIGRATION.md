@@ -27,6 +27,58 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-09-13T11:45:07-04:00 — manage root documents and declare shared memory
+
+This revision changes each agent's root control/index, but no scoped local or
+shared content. It supersedes every older instruction to keep a
+`memory/shared` alias: shared memory is now located only through an explicit
+absolute `Shared:` declaration. Root structural documents become protected
+installer-managed regular-file copies on every platform.
+
+1. Before removing anything, resolve an existing `<agent-home>/memory/shared`
+   symlink or junction to its exact target and record that target's absolute
+   native path. If that target is itself an alias, continue resolving and
+   declare the physical terminal directory instead. If no alias exists,
+   identify the already configured real shared directory. The canonical
+   checkout's `.shared/` directory is a discovery hint only; do not create it,
+   fall back to it, or silently select it.
+2. Verify the recorded target already exists as a physical directory, is not
+   itself a symlink, junction, or other reparse-point alias, and has a root
+   `MEMORY.md` containing valid mandatory conventions. Ancestor path components
+   may resolve normally. A missing, dangling, aliased, or invalid terminal
+   target blocks this migration.
+3. Add the following literal, unquoted line to root `memory/MEMORY.md`, using
+   the target's absolute native path with no `~`, environment variable, quote,
+   or other expansion syntax:
+
+   ```text
+   Shared: <absolute native path>
+   ```
+
+   Keep `Structure: ../STRUCTURE.md`. Replace alias-based navigation such as
+   `[[shared/MEMORY]]` with navigation directly to the declared target's
+   `MEMORY.md`.
+4. Reinstall the appropriate hook integration from the current canonical
+   checkout. The installer deploys root `STRUCTURE.md` and `RULES.md` as
+   managed regular-file copies and replaces a legacy root symlink only when it
+   still resolves to its matching canonical document.
+5. A known managed regular copy from an installer that predates ownership
+   markers may require one reinstall with `--refresh-root-documents`. Use that
+   bootstrap only after confirming the copy was not edited; it cannot override
+   edit protection for a copy already recorded as installer-owned. Preserve
+   and explicitly resolve any foreign, user-edited, or misdirected target.
+6. Revalidate the exact `Shared:` target and repaired root navigation. Then
+   remove only the `<agent-home>/memory/shared` filesystem alias itself. Never
+   recursively remove the alias path, operate on its resolved path, or remove
+   the shared target or any content beneath it. Do not replace the alias with a
+   copied directory.
+7. Confirm the hook accepts the literal `Shared:` path, locates the same valid
+   shared root, and does not create or fall back to any other directory. No
+   scoped memory, paired log, node, attachment, or convention changes are
+   needed.
+8. After all checks pass, advance only this agent's root `Structure-Version:`
+   to `2026-09-13T11:45:07-04:00`.
+
 ## 2026-09-09T17:17:31-04:00 — add node-owned significant files
 
 This revision reserves a same-stem sibling directory as optional current

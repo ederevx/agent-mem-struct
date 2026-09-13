@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -11,6 +15,7 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -25,26 +30,31 @@ SCRATCH_ROOT = Path(
 )
 
 
-def make_home(path: Path) -> None:
+def make_shared(path: Path) -> Path:
+    path.mkdir(parents=True)
+    (path / "MEMORY.md").write_text(
+        "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n",
+        encoding="utf-8",
+    )
+    return path.resolve()
+
+
+def make_home(path: Path, shared: Path | None = None) -> Path:
+    shared = make_shared(shared or path.parent / f"{path.name} shared memory")
     (path / "memory").mkdir(parents=True)
     (path / "memory" / "MEMORY.md").write_text(
-        "Structure-Version: test-v1\nStructure: ../STRUCTURE.md\n\n# Root\n",
+        f"Structure-Version: test-v1\nStructure: ../STRUCTURE.md\nShared: {shared}\n\n# Root\n",
         encoding="utf-8",
     )
     (path / "RULES.md").write_text("# Rules\n\nKeep continuity.\n", encoding="utf-8")
     (path / "STRUCTURE.md").write_text("Structure-Version: test-v1\n", encoding="utf-8")
-    shared = path / "memory" / "shared"
-    shared.mkdir()
-    (shared / "MEMORY.md").write_text(
-        "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n",
-        encoding="utf-8",
-    )
     local = path / "memory" / "local"
     local.mkdir()
     (local / "MEMORY.md").write_text(
         "# Local\n\n**Scope:** this agent\n\n## Mandatory conventions\n\n(none)\n",
         encoding="utf-8",
     )
+    return shared
 
 
 def make_install_memory_home(path: Path) -> None:
@@ -101,7 +111,7 @@ class CompactionHookTests(unittest.TestCase):
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
         self.temp = Path(tempfile.mkdtemp(prefix="agent-mem-struct-test-", dir=SCRATCH_ROOT))
         self.home = self.temp / "home"
-        make_home(self.home)
+        self.shared = make_home(self.home)
         self.transcript = self.temp / "transcript.jsonl"
         make_transcript(self.transcript)
 
@@ -125,6 +135,167 @@ class CompactionHookTests(unittest.TestCase):
             "prompt-1" if agent == "claude" else "turn-1"
         )
         return event
+
+    def write_root_memory(
+        self, *shared_lines: str, body: str = "# Root\n"
+    ) -> None:
+        header = ["Structure-Version: test-v1", "Structure: ../STRUCTURE.md"]
+        header.extend(shared_lines)
+        (self.home / "memory" / "MEMORY.md").write_text(
+            "\n".join(header) + "\n\n" + body,
+            encoding="utf-8",
+        )
+
+    def mutation(self, target: Path, *, agent: str = "codex") -> dict[str, object]:
+        event = self.event("PreToolUse", agent=agent)
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
+        return event
+
+    def test_declared_external_shared_directory_is_loaded_for_both_agents(self) -> None:
+        self.assertFalse((self.home / "memory" / "shared").exists())
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                context = json.loads(
+                    invoke(agent, self.home, self.event("SessionStart", agent=agent)).stdout
+                )["hookSpecificOutput"]["additionalContext"]
+                self.assertIn(str(self.shared), context)
+                self.assertIn("--- BEGIN SHARED MEMORY.md ---", context)
+                self.assertIn("Verify first.", context)
+                self.assertNotIn("CONTROL ERROR", context)
+
+    def test_shared_declaration_must_be_one_literal_native_external_directory(self) -> None:
+        missing = self.temp / "missing shared"
+        file_target = self.temp / "shared-file"
+        file_target.write_text("not a directory\n", encoding="utf-8")
+        device = r"\\.\NUL" if os.name == "nt" else "/dev/null"
+        foreign = "/tmp/foreign-shared" if os.name == "nt" else r"C:\foreign-shared"
+        cases = {
+            "blank": ("Shared:",),
+            "relative": ("Shared: nearby/shared",),
+            "quoted": (f'Shared: "{self.shared}"',),
+            "tilde": ("Shared: ~/shared",),
+            "environment": ("Shared: %TEMP%\\shared" if os.name == "nt" else "Shared: $TMPDIR/shared",),
+            "uri": (f"Shared: file://{self.shared}",),
+            "device": (f"Shared: {device}",),
+            "foreign-platform": (f"Shared: {foreign}",),
+            "filesystem-root": (f"Shared: {Path(self.home.anchor)}",),
+            "private-memory-root": (f"Shared: {self.home / 'memory'}",),
+            "private-memory-child": (f"Shared: {self.home / 'memory' / 'local'}",),
+            "missing-directory": (f"Shared: {missing}",),
+            "regular-file": (f"Shared: {file_target}",),
+            "duplicate": (f"Shared: {self.shared}", f"Shared: {self.shared}"),
+        }
+        for name, declarations in cases.items():
+            with self.subTest(case=name):
+                self.write_root_memory(*declarations)
+                context = json.loads(
+                    invoke("codex", self.home, self.event("SessionStart")).stdout
+                )["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("CONTROL ERROR", context)
+                self.assertIn("root memory Shared", context)
+                self.assertNotIn("--- BEGIN SHARED MEMORY.md ---", context)
+
+    def test_shared_declaration_in_body_is_not_a_control_header(self) -> None:
+        self.write_root_memory(body=f"# Root\n\nShared: {self.shared}\n")
+        context = json.loads(
+            invoke("codex", self.home, self.event("SessionStart")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("requires exactly one", context)
+        self.assertNotIn("--- BEGIN SHARED MEMORY.md ---", context)
+
+    def test_invalid_shared_declaration_uses_only_canonical_discovery_hint(self) -> None:
+        legacy = self.home / "memory" / "shared"
+        make_shared(legacy)
+        (legacy / "MEMORY.md").write_text(
+            "# Legacy fallback must not load\n\n## Mandatory conventions\n\n- Legacy.\n",
+            encoding="utf-8",
+        )
+        self.write_root_memory()
+        canonical = self.temp / "canonical checkout"
+        canonical.mkdir()
+        (canonical / "RULES.md").write_bytes((self.home / "RULES.md").read_bytes())
+        (canonical / "STRUCTURE.md").write_bytes((self.home / "STRUCTURE.md").read_bytes())
+        context = json.loads(
+            invoke(
+                "codex",
+                self.home,
+                self.event("SessionStart"),
+                canonical_root=canonical,
+            ).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(str(canonical / ".shared"), context)
+        self.assertNotIn("Legacy fallback must not load", context)
+        self.assertNotIn(str(legacy), context)
+
+    def test_invalid_declaration_authorizes_only_parent_root_memory_repair(self) -> None:
+        missing = self.temp / "undeclared missing shared"
+        self.write_root_memory(f"Shared: {missing}")
+
+        self.assertEqual(
+            invoke(
+                "codex",
+                self.home,
+                self.mutation(self.home / "memory" / "MEMORY.md"),
+            ).stdout,
+            "",
+        )
+        denied = json.loads(
+            invoke("codex", self.home, self.mutation(missing / "MEMORY.md")).stdout
+        )
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("root memory Shared", denied["hookSpecificOutput"]["permissionDecisionReason"])
+
+        subagent = self.mutation(self.home / "memory" / "MEMORY.md")
+        subagent["agent_id"] = "worker-repair"
+        denied = json.loads(invoke("codex", self.home, subagent).stdout)
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("read-only", denied["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_parent_can_repair_missing_or_malformed_declared_shared_manifest(self) -> None:
+        manifest = self.shared / "MEMORY.md"
+        for case in ("missing", "malformed"):
+            with self.subTest(case=case):
+                if case == "missing":
+                    manifest.unlink(missing_ok=True)
+                else:
+                    manifest.write_text(
+                        "# Shared\n\n## Mandatory conventions (almost)\n",
+                        encoding="utf-8",
+                    )
+                self.assertEqual(
+                    invoke("codex", self.home, self.mutation(manifest)).stdout,
+                    "",
+                )
+                subagent = self.mutation(manifest)
+                subagent["agent_id"] = f"worker-{case}"
+                denied = json.loads(invoke("codex", self.home, subagent).stdout)
+                self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("read-only", denied["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_terminal_shared_alias_is_rejected_without_windows_privileges(self) -> None:
+        spec = importlib.util.spec_from_file_location("test_declared_shared_hook", HOOK)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        memory_text = (
+            "Structure-Version: test-v1\nStructure: ../STRUCTURE.md\n"
+            f"Shared: {self.shared}\n\n# Root\n"
+        )
+        with mock.patch.object(Path, "is_symlink", autospec=True, return_value=True):
+            declared, error = module.declared_shared(memory_text, self.home / "memory")
+        self.assertIsNone(declared)
+        self.assertIn("symlink or junction/reparse alias", error)
+
+        if os.name == "nt":
+            fake_stat = mock.Mock(st_file_attributes=module.stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            with (
+                mock.patch.object(Path, "is_symlink", autospec=True, return_value=False),
+                mock.patch.object(Path, "exists", autospec=True, return_value=True),
+                mock.patch.object(Path, "lstat", autospec=True, return_value=fake_stat),
+            ):
+                declared, error = module.declared_shared(memory_text, self.home / "memory")
+            self.assertIsNone(declared)
+            self.assertIn("junction/reparse alias", error)
 
     def test_codex_compaction_restores_at_session_start(self) -> None:
         result = invoke("codex", self.home, self.event("PreCompact"))
@@ -366,10 +537,27 @@ class CompactionHookTests(unittest.TestCase):
         event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
         self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
-        shared = self.home / "memory" / "shared" / "MEMORY.md"
+        shared = self.shared / "MEMORY.md"
         shared.write_text(shared.read_text(encoding="utf-8") + "- Recheck changed rules.\n", encoding="utf-8")
         changed = json.loads(invoke("codex", self.home, event).stdout)
         self.assertEqual(changed["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_changed_declared_shared_target_invalidates_receipt_even_with_same_content(self) -> None:
+        event = self.mutation(self.temp / "result.txt")
+        self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+        original = self.shared
+        replacement = self.temp / "replacement shared memory"
+        make_shared(replacement)
+        self.write_root_memory(f"Shared: {replacement.resolve()}")
+        changed = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(changed["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+        self.write_root_memory(f"Shared: {original}")
+        changed_back = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(changed_back["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_new_prompt_resets_even_a_reused_turn_receipt(self) -> None:
         event = self.event("PreToolUse")
@@ -395,6 +583,125 @@ class CompactionHookTests(unittest.TestCase):
         reason = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("Keep local.", reason)
         self.assertIn("Test project.", reason)
+
+    def test_declared_shared_scopes_manifests_and_required_reads(self) -> None:
+        group = self.shared / "submemory" / "project"
+        group.mkdir(parents=True)
+        (group / "MEMORY.md").write_text(
+            "# Project\n\n## Mandatory conventions\n\n- Keep declared project.\n",
+            encoding="utf-8",
+        )
+        prerequisite = group / "prerequisite.md"
+        prerequisite.write_text("# Required\n\nRead declared prerequisite.\n", encoding="utf-8")
+        target = group / "note with spaces.md"
+        target.write_text(
+            "---\nrequires_read:\n  - prerequisite.md\n---\n\n# Note\n",
+            encoding="utf-8",
+        )
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                reason = json.loads(
+                    invoke(agent, self.home, self.mutation(target, agent=agent)).stdout
+                )["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("Verify first.", reason)
+                self.assertIn("Keep declared project.", reason)
+                self.assertIn("Read declared prerequisite.", reason)
+
+    def test_quoted_shell_path_with_spaces_is_scoped_to_declared_shared(self) -> None:
+        group = self.shared / "submemory" / "shell project"
+        group.mkdir(parents=True)
+        (group / "MEMORY.md").write_text(
+            "# Shell project\n\n## Mandatory conventions\n\n- Quote shared targets.\n",
+            encoding="utf-8",
+        )
+        target = group / "note with spaces.md"
+        for agent, tool, command in (
+            (
+                "claude",
+                "Bash",
+                f"python3 -c \"open(r'{target}', 'w').write('x')\"",
+            ),
+            (
+                "codex",
+                "exec_command",
+                f'powershell -Command "Set-Content -LiteralPath \'{target}\' -Value x"',
+            ),
+        ):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event.update({"tool_name": tool, "tool_input": {"command" if tool == "Bash" else "cmd": command}})
+                reason = json.loads(invoke(agent, self.home, event).stdout)[
+                    "hookSpecificOutput"
+                ]["permissionDecisionReason"]
+                self.assertIn("Quote shared targets.", reason)
+
+    def test_apply_patch_headers_preserve_declared_shared_paths_with_spaces(self) -> None:
+        group = self.shared / "submemory" / "patch project"
+        group.mkdir(parents=True)
+        (group / "MEMORY.md").write_text(
+            "# Patch project\n\n## Mandatory conventions\n\n- Guard patch headers.\n",
+            encoding="utf-8",
+        )
+        outside = self.temp / "outside.md"
+        cases = {
+            "Add File": f"*** Add File: {group / 'added note.md'}\n+# Added\n",
+            "Update File": f"*** Update File: {group / 'updated note.md'}\n@@\n-old\n+new\n",
+            "Delete File": f"*** Delete File: {group / 'deleted note.md'}\n",
+            "Move to": (
+                f"*** Update File: {outside}\n"
+                f"*** Move to: {group / 'moved note.md'}\n"
+                "@@\n-old\n+new\n"
+            ),
+        }
+        for index, (header, patch) in enumerate(cases.items()):
+            with self.subTest(header=header):
+                subagent = self.event("PreToolUse")
+                subagent["turn_id"] = f"patch-subagent-{index}"
+                subagent.update(
+                    {
+                        "agent_id": "worker-patch",
+                        "tool_name": "apply_patch",
+                        "tool_input": {"patch": patch},
+                    }
+                )
+                denied = json.loads(invoke("codex", self.home, subagent).stdout)
+                self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("read-only", denied["hookSpecificOutput"]["permissionDecisionReason"])
+
+                parent = dict(subagent)
+                parent.pop("agent_id")
+                parent["turn_id"] = f"patch-parent-{index}"
+                reason = json.loads(invoke("codex", self.home, parent).stdout)[
+                    "hookSpecificOutput"
+                ]["permissionDecisionReason"]
+                self.assertIn("Guard patch headers.", reason)
+
+    def test_declared_shared_parent_and_subagent_access_boundaries(self) -> None:
+        target = self.shared / "note with spaces.md"
+        target.write_text("# Shared note\n", encoding="utf-8")
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                read_event = self.event("PreToolUse", agent=agent)
+                read_event.update(
+                    {
+                        "agent_id": "worker-read",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": str(target)},
+                    }
+                )
+                self.assertEqual(invoke(agent, self.home, read_event).stdout, "")
+
+                write_event = self.mutation(target, agent=agent)
+                write_event["agent_id"] = "worker-write"
+                denied = json.loads(invoke(agent, self.home, write_event).stdout)
+                self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn("read-only", denied["hookSpecificOutput"]["permissionDecisionReason"])
+
+                parent = self.mutation(target, agent=agent)
+                reason = json.loads(invoke(agent, self.home, parent).stdout)[
+                    "hookSpecificOutput"
+                ]["permissionDecisionReason"]
+                self.assertIn("Verify first.", reason)
 
     def test_historical_log_uses_active_group_conventions_only(self) -> None:
         local = self.home / "memory" / "local"
@@ -449,22 +756,17 @@ class CompactionHookTests(unittest.TestCase):
                 self.assertNotIn("required convention manifest is malformed", reason)
                 self.assertEqual(invoke(agent, self.home, event).stdout, "")
 
-    def test_git_log_from_shared_symlink_log_keeps_active_manifest(self) -> None:
-        shared_alias = self.home / "memory" / "shared"
-        shared_target = self.temp / "shared-target"
-        shutil.rmtree(shared_alias)
-        shared_target.mkdir()
-        shared_alias.symlink_to(shared_target, target_is_directory=True)
-        (shared_target / "MEMORY.md").write_text(
+    def test_git_log_from_declared_shared_log_keeps_active_manifest(self) -> None:
+        (self.shared / "MEMORY.md").write_text(
             "# Shared\n\n## Mandatory conventions\n\n- Keep shared.\n", encoding="utf-8"
         )
-        log = shared_target / "log"
+        log = self.shared / "log"
         log.mkdir()
         (log / "MEMORY.md").write_text("# Log: MEMORY\n", encoding="utf-8")
         for agent in ("claude", "codex"):
             with self.subTest(agent=agent):
                 event = self.event("PreToolUse", agent=agent)
-                event["cwd"] = str(shared_alias)
+                event["cwd"] = str(self.shared)
                 event.update({
                     "tool_name": "Bash",
                     "tool_input": {
@@ -1218,6 +1520,252 @@ class InstallerTests(unittest.TestCase):
         subprocess.run([command[0], command[1], "uninstall", *command[2:]], check=True)
         restored = json.loads(settings.read_text(encoding="utf-8"))
         self.assertEqual(restored["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "0")
+
+
+class ManagedRootDocumentTests(unittest.TestCase):
+    """Exercise both manager markers against an isolated canonical checkout."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="root-document-test-", dir=SCRATCH_ROOT))
+        self.canonical = self.temp / "canonical"
+        self.canonical.mkdir()
+        for name, heading in (("RULES.md", "rules"), ("STRUCTURE.md", "structure")):
+            (self.canonical / name).write_text(
+                f"# Memory {heading}\n\nVersion one.\n\n© 2026 Edrick Sinsuan\n",
+                encoding="utf-8",
+            )
+        self.managers = {}
+        for agent, path in (("codex", CODEX_MANAGER), ("claude", CLAUDE_MANAGER)):
+            spec = importlib.util.spec_from_file_location(f"test_{agent}_manager", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self.managers[agent] = module
+        self.common = sys.modules["manage_common"]
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp)
+
+    def install(
+        self, agent: str, *, home: Path | None = None,
+        memory_home: Path | None = None, refresh: bool = False,
+    ) -> Path:
+        home = home or self.temp / agent
+        module = self.managers[agent]
+        with (
+            mock.patch.object(module, "HOOK_ROOT", self.canonical / "hooks"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            hook = self.canonical / "hooks" / "root-memory-context.py"
+            if agent == "codex":
+                module.install(home, hook, refresh_documents=refresh)
+            else:
+                module.install(home, memory_home or home, hook, refresh_documents=refresh)
+        return home
+
+    def marker(self, agent: str) -> dict:
+        return json.loads(self.managers[agent].marker_path(self.temp / agent).read_text(encoding="utf-8"))
+
+    def revise_canonical(self) -> None:
+        for source in self.canonical.glob("*.md"):
+            source.write_bytes(source.read_bytes() + b"\nVersion two.\n")
+
+    def test_fresh_install_and_reinstall_use_tracked_regular_copies(self) -> None:
+        with mock.patch.object(Path, "symlink_to", side_effect=AssertionError("Root documents must never be symlinks")):
+            for agent in self.managers:
+                with self.subTest(agent=agent):
+                    home = self.install(agent)
+                    original_marker = self.marker(agent)
+                    mtimes = {}
+                    for name in ("RULES.md", "STRUCTURE.md"):
+                        target, source = home / name, self.canonical / name
+                        self.assertTrue(target.is_file())
+                        self.assertFalse(target.is_symlink())
+                        self.assertFalse(target.samefile(source))
+                        self.assertEqual(target.read_bytes(), source.read_bytes())
+                        mtimes[name] = target.stat().st_mtime_ns
+                        self.assertEqual(original_marker["rootDocuments"][name], {
+                            "path": str(target.absolute()), "source": str(source.resolve()),
+                            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                        })
+                    self.install(agent)
+                    self.assertEqual(self.marker(agent), original_marker)
+                    for name, mtime in mtimes.items():
+                        self.assertEqual((home / name).stat().st_mtime_ns, mtime)
+
+    def test_unchanged_owned_copies_refresh_on_ordinary_reinstall(self) -> None:
+        for agent in self.managers:
+            self.install(agent)
+        self.revise_canonical()
+        for agent in self.managers:
+            with self.subTest(agent=agent):
+                home = self.install(agent)
+                for name in ("RULES.md", "STRUCTURE.md"):
+                    self.assertEqual((home / name).read_bytes(), (self.canonical / name).read_bytes())
+                    self.assertEqual(self.marker(agent)["rootDocuments"][name]["sha256"],
+                                     hashlib.sha256((home / name).read_bytes()).hexdigest())
+
+    def test_reinstall_adopts_current_copy_when_marker_hash_is_stale(self) -> None:
+        for agent in self.managers:
+            home = self.install(agent)
+            stale_marker = self.marker(agent)
+            self.revise_canonical()
+            # Simulate interruption after the first atomic copy but before the
+            # installation marker was saved.
+            (home / "RULES.md").write_bytes((self.canonical / "RULES.md").read_bytes())
+            self.assertEqual(self.marker(agent), stale_marker)
+
+            with self.subTest(agent=agent):
+                self.install(agent)
+                for name in ("RULES.md", "STRUCTURE.md"):
+                    target = home / name
+                    self.assertEqual(target.read_bytes(), (self.canonical / name).read_bytes())
+                    self.assertEqual(
+                        self.marker(agent)["rootDocuments"][name]["sha256"],
+                        hashlib.sha256(target.read_bytes()).hexdigest(),
+                    )
+
+    def test_edited_owned_copy_refuses_even_explicit_refresh_before_any_replacement(self) -> None:
+        for agent in self.managers:
+            self.install(agent)
+        self.revise_canonical()
+        for agent in self.managers:
+            home = self.temp / agent
+            changed = home / "STRUCTURE.md"
+            changed.write_bytes(changed.read_bytes() + b"User edit.\n")
+            protected = {path: path.read_bytes() for path in (
+                home / "RULES.md", changed, self.managers[agent].marker_path(home),
+                home / ("hooks.json" if agent == "codex" else "settings.json"),
+            )}
+            for refresh in (False, True):
+                with self.subTest(agent=agent, refresh=refresh):
+                    with self.assertRaisesRegex(SystemExit, "user-modified managed"):
+                        self.install(agent, refresh=refresh)
+                    for path, content in protected.items():
+                        self.assertEqual(path.read_bytes(), content)
+
+    def test_identical_legacy_copies_are_adopted_then_automatically_refreshed(self) -> None:
+        for agent in self.managers:
+            home = self.temp / agent
+            home.mkdir()
+            for source in self.canonical.glob("*.md"):
+                (home / source.name).write_bytes(source.read_bytes())
+            self.install(agent)
+        self.revise_canonical()
+        for agent in self.managers:
+            home = self.install(agent)
+            self.assertEqual((home / "RULES.md").read_bytes(), (self.canonical / "RULES.md").read_bytes())
+
+    def test_stale_legacy_copies_require_explicit_refresh_then_are_tracked(self) -> None:
+        for agent in self.managers:
+            home = self.temp / agent
+            home.mkdir()
+            for source in self.canonical.glob("*.md"):
+                (home / source.name).write_bytes(source.read_bytes() + b"Old legacy content.\n")
+            with self.subTest(agent=agent):
+                with self.assertRaisesRegex(SystemExit, "Root document differs from canonical"):
+                    self.install(agent)
+                self.install(agent, refresh=True)
+                self.assertIn("rootDocuments", self.marker(agent))
+        self.revise_canonical()
+        for agent in self.managers:
+            home = self.install(agent)
+            self.assertEqual((home / "RULES.md").read_bytes(), (self.canonical / "RULES.md").read_bytes())
+
+    def test_foreign_copies_refuse_even_explicit_refresh(self) -> None:
+        for agent in self.managers:
+            home = self.temp / agent
+            home.mkdir()
+            rules = home / "RULES.md"
+            rules.write_bytes(b"# Personal rules\nKeep me.\n")
+            with self.subTest(agent=agent):
+                with self.assertRaisesRegex(SystemExit, "foreign root document"):
+                    self.install(agent, refresh=True)
+                self.assertEqual(rules.read_bytes(), b"# Personal rules\nKeep me.\n")
+                self.assertFalse(self.managers[agent].marker_path(home).exists())
+
+    @contextlib.contextmanager
+    def simulated_links(self, destinations: dict[Path, Path]):
+        # Windows CI cannot create file symlinks without extra privileges. Mock
+        # only link metadata; replacement and copied bytes still use real files.
+        original_is_symlink = Path.is_symlink
+        original_resolve = Path.resolve
+        with (
+            mock.patch.object(Path, "is_symlink", autospec=True,
+                              side_effect=lambda path: path in destinations or original_is_symlink(path)),
+            mock.patch.object(Path, "resolve", autospec=True,
+                              side_effect=lambda path, **kwargs: original_resolve(
+                                  destinations.get(path, path), **kwargs)),
+        ):
+            yield
+
+    def test_matching_legacy_links_are_replaced_by_copies(self) -> None:
+        for agent in self.managers:
+            with self.subTest(agent=agent):
+                home = self.temp / agent
+                home.mkdir()
+                destinations = {
+                    home / name: self.canonical / name
+                    for name in ("RULES.md", "STRUCTURE.md")
+                }
+                if os.name == "nt":
+                    for target in destinations:
+                        target.write_bytes(b"legacy link placeholder")
+                    with self.simulated_links(destinations):
+                        self.install(agent)
+                else:
+                    for target, source in destinations.items():
+                        target.symlink_to(source)
+                    self.install(agent)
+                for target, source in destinations.items():
+                    self.assertFalse(target.is_symlink())
+                    self.assertEqual(target.read_bytes(), source.read_bytes())
+                    self.assertIn(target.name, self.marker(agent)["rootDocuments"])
+
+    def test_mismatched_and_dangling_links_are_refused(self) -> None:
+        for agent in self.managers:
+            home = self.temp / agent
+            home.mkdir()
+            target = home / "RULES.md"
+            target.write_bytes(b"unrelated link placeholder")
+            for exists in (False, True):
+                unrelated = self.temp / f"unrelated-{agent}-{exists}.md"
+                if exists:
+                    unrelated.write_bytes(b"unrelated source")
+                with self.subTest(agent=agent, destination_exists=exists):
+                    with self.simulated_links({target: unrelated}):
+                        with self.assertRaisesRegex(SystemExit, "Refusing to replace root symlink"):
+                            self.install(agent, refresh=True)
+                    self.assertEqual(target.read_bytes(), b"unrelated link placeholder")
+
+    def test_claude_marker_cannot_authorize_refresh_in_a_different_memory_home(self) -> None:
+        old = self.temp / "old-memory"
+        self.install("claude", memory_home=old)
+        new = self.temp / "new-memory"
+        new.mkdir()
+        for name in ("RULES.md", "STRUCTURE.md"):
+            (new / name).write_bytes((old / name).read_bytes())
+        self.revise_canonical()
+        with self.assertRaisesRegex(SystemExit, "Root document differs from canonical"):
+            self.install("claude", memory_home=new)
+        self.assertEqual((new / "RULES.md").read_bytes(), (old / "RULES.md").read_bytes())
+
+    def test_install_refuses_to_replace_canonical_documents_themselves(self) -> None:
+        for agent in self.managers:
+            with self.subTest(agent=agent):
+                with self.assertRaisesRegex(SystemExit, "canonical root document itself"):
+                    self.install(agent, home=self.canonical)
+                self.assertFalse((self.canonical / "RULES.md").is_symlink())
+
+    def test_uninstall_leaves_installed_root_documents(self) -> None:
+        for agent, module in self.managers.items():
+            home = self.install(agent)
+            with contextlib.redirect_stdout(io.StringIO()):
+                module.uninstall(home) if agent == "codex" else module.uninstall(home, home)
+            for name in ("RULES.md", "STRUCTURE.md"):
+                self.assertFalse((home / name).is_symlink())
+                self.assertEqual((home / name).read_bytes(), (self.canonical / name).read_bytes())
 
 
 if __name__ == "__main__":
