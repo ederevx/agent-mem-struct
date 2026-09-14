@@ -153,11 +153,19 @@ def uninstall(home: Path, memory_home: Path) -> None:
 def main() -> int:
     args = parse_args()
     home = Path(args.home).expanduser().resolve(strict=False)
-    memory_home = (
-        Path(args.memory_home).expanduser().resolve(strict=False)
-        if args.memory_home
-        else home
-    )
+    if args.memory_home:
+        memory_home = Path(args.memory_home).expanduser().resolve(strict=False)
+    else:
+        # A bare reinstall must not silently move the memory home: the
+        # installed hook command carries the previously chosen one, and
+        # defaulting to the agent home rewrites it to a directory with no
+        # memory tree, failing every later gate. Reuse the installed choice.
+        previous_home = marker_memory_home(read_marker(marker_path(home)))
+        if previous_home is not None:
+            memory_home = previous_home
+            print(f"Reusing the installed memory home: {memory_home}")
+        else:
+            memory_home = home
     hook = HOOK_ROOT / "root-memory-context.py"
     if not hook.exists():
         raise SystemExit(f"Shared hook not found: {hook}")

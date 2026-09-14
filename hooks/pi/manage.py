@@ -195,11 +195,18 @@ def uninstall(home: Path, memory_home: Path) -> None:
 def main() -> int:
     args = parse_args()
     home = Path(args.home).expanduser().resolve(strict=False)
-    memory_home = (
-        Path(args.memory_home).expanduser().resolve(strict=False)
-        if args.memory_home
-        else home
-    )
+    if args.memory_home:
+        memory_home = Path(args.memory_home).expanduser().resolve(strict=False)
+    else:
+        # A bare reinstall must not silently move the memory home; the baked
+        # bridge extension would otherwise start reading a root that has no
+        # memory tree. Reuse the installed choice when one is recorded.
+        previous_home = marker_memory_home(read_marker(marker_path(home)))
+        if previous_home is not None:
+            memory_home = previous_home
+            print(f"Reusing the installed memory home: {memory_home}")
+        else:
+            memory_home = home
     if args.action == "install":
         install(home, memory_home, refresh_documents=args.refresh_root_documents)
     else:

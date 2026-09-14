@@ -1758,6 +1758,59 @@ class ManagedRootDocumentTests(unittest.TestCase):
                     self.install(agent, home=self.canonical)
                 self.assertFalse((self.canonical / "RULES.md").is_symlink())
 
+    def test_bare_reinstall_preserves_installed_memory_home(self) -> None:
+        """Omitting --memory-home must not move an installed memory home."""
+        import importlib.util as _ilu
+
+        pi_spec = _ilu.spec_from_file_location(
+            "ams_pi_manager", REPO / "hooks" / "pi" / "manage.py"
+        )
+        assert pi_spec and pi_spec.loader
+        pi_manager = _ilu.module_from_spec(pi_spec)
+        pi_spec.loader.exec_module(pi_manager)
+        for agent, manager, marker_name in (
+            ("claude", CLAUDE_MANAGER, "claude-root-memory-hook.json"),
+            ("pi", REPO / "hooks" / "pi" / "manage.py", "pi-root-memory-hook.json"),
+        ):
+            with self.subTest(agent=agent):
+                agent_home = self.temp / f"{agent}-agent-home"
+                memory_home = self.temp / f"{agent}-memory-home"
+                agent_home.mkdir()
+                memory_home.mkdir()
+                make_install_memory_home(memory_home)
+                subprocess.run(
+                    [sys.executable, str(manager), "install",
+                     "--home", str(agent_home), "--memory-home", str(memory_home)],
+                    check=True, capture_output=True, text=True, cwd=self.temp,
+                )
+                # A bare reinstall must keep the installed memory home instead
+                # of silently defaulting to the agent home.
+                subprocess.run(
+                    [sys.executable, str(manager), "install", "--home", str(agent_home)],
+                    check=True, capture_output=True, text=True, cwd=self.temp,
+                )
+                marker = json.loads(
+                    (agent_home / ".agent-mem-struct" / marker_name).read_text()
+                )
+                self.assertEqual(marker["memoryHome"], str(memory_home))
+                if agent == "claude":
+                    settings = json.loads((agent_home / "settings.json").read_text())
+                    commands = [
+                        hook["command"]
+                        for groups in settings["hooks"].values()
+                        for group in groups
+                        for hook in group["hooks"]
+                        if "root-memory" in hook["command"]
+                    ]
+                    self.assertTrue(commands)
+                    self.assertIn(str(memory_home), commands[0])
+                else:
+                    bridge = (
+                        agent_home / "extensions" / "agent-mem-struct.ts"
+                    ).read_text()
+                    self.assertIn(str(memory_home), bridge)
+
+
     def test_uninstall_leaves_installed_root_documents(self) -> None:
         for agent, module in self.managers.items():
             home = self.install(agent)
