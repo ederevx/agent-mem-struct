@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Additive root-memory loader/guard for Codex and Claude Code.
+"""Additive root-memory loader/guard for Codex, Claude Code, and Pi.
 
 This hook does not create a second memory authority. It reads the existing
 <agent-home>/memory/MEMORY.md control/index plus <agent-home>/RULES.md and
@@ -87,7 +87,7 @@ SUPPORTED_EVENTS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", choices=("codex", "claude"), required=True)
+    parser.add_argument("--agent", choices=("codex", "claude", "pi"), required=True)
     parser.add_argument("--home", required=True)
     parser.add_argument("--config-home")
     parser.add_argument("--canonical-root")
@@ -416,6 +416,12 @@ def turn_reminder_text(agent: str, state: dict[str, Any]) -> str:
             "generated memories are disabled for this integration; do not treat "
             "$CODEX_HOME/memories/ as a second persistence authority."
         )
+    elif agent == "pi":
+        lines.append(
+            "Pi keeps no native memory store; this tree is the only memory "
+            "authority for this session. A Pi session spawned as a subagent "
+            "must report additions back to its parent instead of writing them."
+        )
     else:
         lines.append(
             "Claude native auto memory is disabled for this integration; do not "
@@ -427,10 +433,14 @@ def turn_reminder_text(agent: str, state: dict[str, Any]) -> str:
 def config_is_active(agent: str, config_home: Path | None) -> bool:
     if config_home is None:
         return True
-    environment = "CODEX_HOME" if agent == "codex" else "CLAUDE_CONFIG_DIR"
-    default = ".codex" if agent == "codex" else ".claude"
+    if agent == "pi":
+        environment, default = "PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"
+    elif agent == "codex":
+        environment, default = "CODEX_HOME", Path.home() / ".codex"
+    else:
+        environment, default = "CLAUDE_CONFIG_DIR", Path.home() / ".claude"
     configured = os.environ.get(environment)
-    active = Path(configured).expanduser() if configured else Path.home() / default
+    active = Path(configured).expanduser() if configured else default
     try:
         return os.path.normcase(str(active.resolve(strict=False))) == os.path.normcase(
             str(config_home.resolve(strict=False))
@@ -804,6 +814,12 @@ def transcript_entry(record: dict[str, Any]) -> str | None:
     if record.get("type") == "last-prompt" and record.get("lastPrompt"):
         return "LATEST USER OBJECTIVE: " + str(record["lastPrompt"])
 
+    kind = record.get("type")
+    if kind == "custom_message" and record.get("content"):
+        return "CONTEXT: " + str(record["content"])
+    if kind == "compaction" and record.get("summary"):
+        return "COMPACTION SUMMARY: " + str(record["summary"])
+
     message = record.get("message")
     if isinstance(message, dict) and message.get("role") in {"user", "assistant"}:
         text = content_text(message.get("content"))
@@ -827,12 +843,43 @@ def transcript_entry(record: dict[str, Any]) -> str | None:
     return None
 
 
+def _select_checkpoint(entries: deque[str]) -> str:
+    """Pack the newest bounded tail of entry texts into one checkpoint body."""
+    selected: list[str] = []
+    used = 0
+    for entry in reversed(entries):
+        clipped = entry[:1200]
+        if selected and used + len(clipped) + 1 > CHECKPOINT_TEXT_LIMIT:
+            continue
+        selected.append(clipped)
+        used += len(clipped) + 1
+        if used >= CHECKPOINT_TEXT_LIMIT:
+            break
+    selected.reverse()
+    return "\n".join(selected)
+
+
 def build_checkpoint(event: dict[str, Any]) -> str:
+    raw_entries = event.get("session_entries")
+    if isinstance(raw_entries, list) and raw_entries:
+        # A host that hands its session entries to the hook directly (the Pi
+        # bridge serializes the compaction event's branchEntries) needs no
+        # transcript file, and may not have one at all.
+        entries: deque[str] = deque(maxlen=80)
+        for record in raw_entries:
+            if not isinstance(record, dict):
+                continue
+            entry = transcript_entry(record)
+            if entry:
+                entries.append(re.sub(r"\s+", " ", entry).strip())
+        if not entries:
+            raise ValueError("no continuity anchors found in session_entries")
+        return _select_checkpoint(entries)
     raw_path = event.get("transcript_path")
     if not isinstance(raw_path, str) or not raw_path:
         raise ValueError("compaction event did not provide transcript_path")
     path = Path(raw_path).expanduser()
-    entries: deque[str] = deque(maxlen=80)
+    entries = deque(maxlen=80)
     with path.open(encoding="utf-8", errors="replace") as transcript:
         for line in transcript:
             try:
@@ -847,18 +894,7 @@ def build_checkpoint(event: dict[str, Any]) -> str:
 
     if not entries:
         raise ValueError(f"no continuity anchors found in transcript {path}")
-    selected: list[str] = []
-    used = 0
-    for entry in reversed(entries):
-        clipped = entry[:1200]
-        if selected and used + len(clipped) + 1 > CHECKPOINT_TEXT_LIMIT:
-            continue
-        selected.append(clipped)
-        used += len(clipped) + 1
-        if used >= CHECKPOINT_TEXT_LIMIT:
-            break
-    selected.reverse()
-    return "\n".join(selected)
+    return _select_checkpoint(entries)
 
 
 def save_checkpoint(event: dict[str, Any], state: dict[str, Any]) -> None:

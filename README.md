@@ -17,7 +17,8 @@ private memory while sharing one common-memory subtree.
 
 ## Using this
 
-Clone the repository, then run the appropriate hook installer for each agent.
+Clone the repository, then run the appropriate hook installer for each agent
+(`hooks/codex/manage.py`, `hooks/claude/manage.py`, or `hooks/pi/manage.py`).
 On every platform, the installer deploys protected managed copies of the two
 root structural documents:
 

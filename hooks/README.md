@@ -178,6 +178,56 @@ Uninstall only these entries:
 python3 hooks/claude/manage.py uninstall
 ```
 
+## Pi only
+
+Pi has no hooks-configuration file, so the integration is a managed TypeScript
+bridge extension instead of JSON hook entries. From the repository root:
+
+```sh
+python3 hooks/pi/manage.py install
+```
+
+The installer deploys two things and never reads or writes Pi's own
+`settings.json`:
+
+- the managed bridge extension at `$PI_CODING_AGENT_DIR/extensions/agent-mem-struct.ts`
+  (default `~/.pi/agent/extensions/agent-mem-struct.ts`), with the hook, memory
+  home, and canonical checkout paths baked in; and
+- the same protected root `RULES.md`/`STRUCTURE.md` copies as the other hosts,
+  with identical refresh and conflict protection (`--refresh-root-documents`
+  bootstraps a confirmed untracked copy).
+
+The bridge maps Pi events onto the hook's event vocabulary:
+
+- `before_agent_start` injects the full root bundle on the first turn of a
+  session and the turn after any compaction (`SessionStart`), and the compact
+  per-turn reminder otherwise (`UserPromptSubmit`); this is the only injectable
+  point Pi offers, so `session_start` and `agent_settled` are deliberately not
+  mapped.
+- `tool_call` drives the `PreToolUse` memory-mutation gate; a denial blocks the
+  call with the convention bundle as the reason, and the same-turn retry
+  acknowledges it — the gate's enforcement contract survives on Pi because Pi
+  can block tool calls. Bridge failures fail open with a notice injected on the
+  next turn rather than silently disabling memory.
+- `session_before_compact` drives `PreCompact` with the session entries passed
+  inline, so checkpoints need no transcript file. A failed checkpoint cancels a
+  manual compaction; an automatic one proceeds with a warning (cancelling an
+  overflow recovery would wedge the session at its context ceiling).
+
+Limitations: Pi exposes no subagent identity on events, so the bridge cannot
+mark a spawned child as read-only the way `SubagentStart` does for the other
+hosts — a Pi subagent session must report memory additions back to its parent
+(enforced only by instruction, not by the hook). Turn-end convention checking
+(`Stop`) has no Pi surface and is intentionally absent; the PreToolUse gate
+remains the enforcement point. A project-local `.pi/extensions/agent-mem-struct.ts`
+shadows the managed copy; remove it if the managed bridge seems inert.
+
+Uninstall removes only the owned bridge and its state:
+
+```sh
+python3 hooks/pi/manage.py uninstall
+```
+
 ## Migration from the text-only integration
 
 Installing the hook layer does not independently require a memory-tree
