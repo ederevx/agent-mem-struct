@@ -4,6 +4,26 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-14T17:57:46-04:00 — add the Pi bridge integration
+
+Pi has no hooks-configuration surface, so the protocol gains a managed
+TypeScript bridge extension that translates Pi lifecycle events into the
+hook's event vocabulary. All context injection happens at the single
+injectable point (`before_agent_start`): the full root bundle on the first
+turn of a session and after compaction, the compact reminder otherwise.
+The convention gate keeps its enforcement contract because Pi can block tool
+calls; `session_start` and `agent_settled` cannot inject or block anything,
+so turn-end checking (`Stop`) is intentionally absent on Pi.
+
+Compaction checkpoints on Pi take the compaction event's session entries
+inline instead of reading a transcript file, and only a manual compaction
+may be cancelled when a checkpoint cannot be saved; an automatic one
+proceeds with a warning so an overflow recovery never wedges the session.
+The bridge fails open on its own failures with a notice injected on the
+next turn rather than silently disabling memory. The installer deploys the
+bridge and the protected root documents; it never reads or writes Pi's own
+`settings.json`.
+
 ## 2026-09-13T11:45:07-04:00 — manage root documents and declare shared memory
 
 Root protocol documents should have uniform ownership and refresh protection
