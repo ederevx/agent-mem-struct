@@ -41,9 +41,21 @@ STRUCTURE_RE = re.compile(r"(?m)^Structure:\s*(\S+)\s*$")
 SHELL_MUTATION_RE = re.compile(
     r"(?:^|[;&|]\s*)(?:"
     r"rm\b|mv\b|cp\b|mkdir\b|rmdir\b|touch\b|"
-    r"sed\s+-i\b|perl\s+-pi\b|patch\b|tee\b|"
+    r"perl\s+-pi\b|patch\b|tee\b|"
     r"git\s+(?:apply|checkout|reset|clean)\b|"
     r"powershell\b[^\n]*(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item)"
+    r")",
+    re.IGNORECASE,
+)
+# sed's mutation surface (in-place flags anywhere in its arguments, or a `w`/`e`
+# one-letter script command) doesn't fit the single command-start anchor above,
+# so it gets its own pattern, still anchored to a `sed` invocation and bounded
+# to that one chained command.
+SED_MUTATION_RE = re.compile(
+    r"(?:^|[;&|]\s*)sed\b(?:(?!;|&|\|).)*?(?:"
+    r"(?:^|[\s,])-[a-zA-Z0-9]*i[a-zA-Z0-9]*(?:\s|=|$)|"
+    r"--in-place\b|"
+    r"(?:^|[;\n'\"]|,|\$|[0-9])\s*[we]\s+\S"
     r")",
     re.IGNORECASE,
 )
@@ -63,7 +75,8 @@ SCRIPT_MUTATION_RE = re.compile(
     r"File\.(?:write|delete|rename)|FileUtils\.",
     re.IGNORECASE,
 )
-TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "command", "cmd", "patch", "cwd")
+TARGET_KEY_TOKENS = ("path", "file", "target", "dest", "patch", "cwd")
+COMMAND_KEY_TOKENS = ("command", "cmd")
 PATCH_HEADER_RE = re.compile(
     r"(?m)^\*\*\* (?:Add File|Update File|Delete File|Move to):[ \t]*(.*?)[ \t]*\r?$"
 )
@@ -128,13 +141,32 @@ def all_strings(value: Any) -> Iterable[str]:
             yield from all_strings(item)
 
 
+def command_is_mutating(command: str) -> bool:
+    if SHELL_MUTATION_RE.search(command) or SED_MUTATION_RE.search(command) or REDIRECT_RE.search(command):
+        return True
+    if INTERPRETER_RE.search(command) and SCRIPT_MUTATION_RE.search(command):
+        return True
+    return False
+
+
 def target_strings(value: Any) -> Iterable[str]:
     if not isinstance(value, dict):
         return
     for key, item in value.items():
         key_lower = str(key).lower()
-        if isinstance(item, str) and any(token in key_lower for token in TARGET_KEY_TOKENS):
-            yield item
+        if isinstance(item, str):
+            if any(token in key_lower for token in COMMAND_KEY_TOKENS):
+                # A command/cmd value is a whole shell line, not a single path:
+                # only its mutating primitives (redirects, rm/mv/sed -i, ...)
+                # can name a write target. Scanning every token unconditionally
+                # treats flags, subcommands, and arguments as candidate paths
+                # too, which false-positives on any read-only command once cwd
+                # sits inside the tree being guarded, since every relative
+                # token then resolves "under" it by construction.
+                if command_is_mutating(item):
+                    yield item
+            elif any(token in key_lower for token in TARGET_KEY_TOKENS):
+                yield item
         elif isinstance(item, dict):
             yield from target_strings(item)
         elif isinstance(item, list):
@@ -1082,9 +1114,7 @@ def tool_requires_acknowledgment(tool_name: str, tool_input: dict[str, Any]) -> 
         return True
     if name in SHELL_TOOL_NAMES or "shell" in name:
         command = "\n".join(all_strings(tool_input))
-        if SHELL_MUTATION_RE.search(command) or REDIRECT_RE.search(command):
-            return True
-        if INTERPRETER_RE.search(command) and SCRIPT_MUTATION_RE.search(command):
+        if command_is_mutating(command):
             return True
         if re.search(r"[;&|`]|\$\(|\r|\n", command):
             return True

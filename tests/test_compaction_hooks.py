@@ -518,6 +518,51 @@ class CompactionHookTests(unittest.TestCase):
                             output["hookSpecificOutput"]["permissionDecisionReason"],
                         )
 
+    def test_read_only_shell_command_under_shared_cwd_is_not_blocked(self) -> None:
+        # Regression: a subagent whose *cwd* happens to sit inside the shared
+        # tree must not have every relative token in an unrelated read-only
+        # command misread as a memory-tree write target merely because
+        # joining it onto that cwd stays inside the tree by construction.
+        outside = self.temp / "device" / "oneplus" / "msm8998-common" / "sepolicy"
+        outside.mkdir(parents=True)
+        command = "cd device/oneplus/msm8998-common && grep -rn TARGET_COPY_OUT sepolicy"
+        for agent, tool, key in (("claude", "Bash", "command"), ("codex", "exec_command", "cmd")):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event["cwd"] = str(self.shared)
+                event.update({
+                    "agent_id": "worker-1",
+                    "tool_name": tool,
+                    "tool_input": {key: command},
+                })
+                first = invoke(agent, self.home, event).stdout
+                if first:
+                    # Only the ordinary once-per-turn convention receipt, never
+                    # the subagent memory-write block, may gate a read-only,
+                    # unrelated-path command.
+                    reason = json.loads(first)["hookSpecificOutput"]["permissionDecisionReason"]
+                    self.assertNotIn("read-only", reason)
+                    self.assertIn("Convention acknowledgment required", reason)
+                self.assertEqual(invoke(agent, self.home, event).stdout, "")
+
+    def test_shell_redirect_into_shared_cwd_target_is_still_blocked(self) -> None:
+        # The fix above must not reopen the hole it closes: a genuine write
+        # primitive aimed at a shared-tree path is still caught.
+        for agent, tool, key in (("claude", "Bash", "command"), ("codex", "exec_command", "cmd")):
+            with self.subTest(agent=agent):
+                event = self.event("PreToolUse", agent=agent)
+                event["cwd"] = str(self.shared)
+                event.update({
+                    "agent_id": "worker-1",
+                    "tool_name": tool,
+                    "tool_input": {key: "printf x >> MEMORY.md"},
+                })
+                output = json.loads(invoke(agent, self.home, event).stdout)
+                self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn(
+                    "read-only", output["hookSpecificOutput"]["permissionDecisionReason"]
+                )
+
     def test_non_subagent_writes_into_valid_memory_are_not_blocked_here(self) -> None:
         # The owning session receives the exact convention bundle once. Its
         # retry acknowledges that digest and may proceed.
