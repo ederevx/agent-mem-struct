@@ -6,6 +6,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,11 @@ REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "hooks" / "root-memory-context.py"
 PI_MANAGER = REPO / "hooks" / "pi" / "manage.py"
 EXTENSION_TEMPLATE = REPO / "hooks" / "pi" / "root-memory-extension.ts"
+
+
+def js_safe(value: str) -> str:
+    """The spelling the installer bakes into the TS bridge (forward slashes)."""
+    return value.replace(os.sep, "/")
 SCRATCH_ROOT = Path(
     os.environ.get(
         "AGENT_MEM_STRUCT_TEST_TMP",
@@ -206,22 +213,25 @@ class PiInstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         extension = self.extension_path(self.pi_home)
         self.assertTrue(extension.is_file())
-        content = extension.read_text(encoding="utf-8")
+        content_bytes = extension.read_bytes()
+        content = content_bytes.decode("utf-8")
         self.assertNotIn("__AMS_", content)
-        self.assertIn(str(HOOK), content)
-        self.assertIn(str(self.memory_home), content)
-        self.assertIn(str(self.pi_home), content)
+        # The bridge bakes paths in a JS-safe (forward-slash) spelling on
+        # every host; compare against that form, not the native one.
+        self.assertIn(js_safe(str(HOOK)), content)
+        self.assertIn(js_safe(str(self.memory_home)), content)
+        self.assertIn(js_safe(str(self.pi_home)), content)
         marker = json.loads((self.pi_home / ".agent-mem-struct" / "pi-root-memory-hook.json").read_text())
         self.assertEqual(marker["memoryHome"], str(self.memory_home))
         self.assertEqual(
             marker["extension"]["sha256"],
-            hashlib.sha256(content.encode()).hexdigest(),
+            hashlib.sha256(content_bytes).hexdigest(),
         )
         self.assertTrue((self.memory_home / "RULES.md").is_file())
         # A refresh produces identical bytes: the deploy is idempotent.
         again = self.run_manager("install", self.pi_home, self.memory_home)
         self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertEqual(extension.read_text(encoding="utf-8"), content)
+        self.assertEqual(extension.read_bytes(), content_bytes)
 
     def test_install_refuses_foreign_extension(self) -> None:
         self.pi_home.mkdir(parents=True)
@@ -247,14 +257,60 @@ class PiInstallerTests(unittest.TestCase):
         self.assertTrue(extension.exists())
         self.assertEqual(extension.read_text(encoding="utf-8"), "// user edited\n")
 
+    def test_baked_paths_survive_js_literal_semantics(self) -> None:
+        """Baked bridge paths must evaluate, in JavaScript, to the real paths.
+
+        Regression: the renderer baked raw Windows paths (single backslashes)
+        into TS double-quoted literals, e.g. "C:\Python314\python.exe".
+        JavaScript drops the backslash of every unknown escape, so the value
+        became C:Python314python.exe, the bridge spawn failed with ENOENT,
+        and the memory gate fell open silently on Windows. Decode each baked
+        literal the way js/jiti would; any lone backslash makes the test fail
+        with the offending constant named.
+        """
+        self.assertEqual(
+            self.run_manager("install", self.pi_home, self.memory_home).returncode, 0
+        )
+        content = self.extension_path(self.pi_home).read_text(encoding="utf-8")
+        expected = {
+            "PYTHON": sys.executable,
+            "HOOK": str(HOOK),
+            "MEMORY_HOME": str(self.memory_home),
+            "CONFIG_HOME": str(self.pi_home),
+            "CANONICAL_ROOT": str(REPO),
+        }
+        for name, native in expected.items():
+            match = re.search(rf'\bconst {name} = "([^"]*)"\s*;', content)
+            self.assertIsNotNone(match, f"missing baked constant {name}")
+            literal = match.group(1)
+            # js only ever consumes a backslash as part of a \\ pair; any odd
+            # run is a swallowed escape that corrupts the path.
+            self.assertEqual(
+                literal.count("\\") % 2, 0,
+                f"{name}: lone backslash in baked literal would be eaten by JS",
+            )
+            decoded = literal.replace("\\\\", "\\")
+            self.assertEqual(decoded, js_safe(native), name)
+
     def test_template_ownership_header_and_syntax(self) -> None:
         text = EXTENSION_TEMPLATE.read_text(encoding="utf-8")
         self.assertTrue(text.startswith("// agent-mem-struct root memory:"))
-        compiled = subprocess.run(
-            ["npx", "--yes", "esbuild", str(EXTENSION_TEMPLATE), "--outfile=/dev/null"],
-            capture_output=True, text=True, check=False,
+        self.assertEqual(
+            self.run_manager("install", self.pi_home, self.memory_home).returncode, 0
         )
-        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        out_root = Path(tempfile.mkdtemp(prefix="ams-esbuild-", dir=SCRATCH_ROOT))
+        for label, source in (
+            ("template", EXTENSION_TEMPLATE),
+            ("installed", self.extension_path(self.pi_home)),
+        ):
+            if not source.is_file():
+                continue
+            compiled = subprocess.run(
+                [shutil.which("npx") or "npx", "--yes", "esbuild", str(source),
+                 "--outfile=" + str(out_root / f"{label}.js")],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(compiled.returncode, 0, label + ": " + compiled.stderr)
 
 
 if __name__ == "__main__":
