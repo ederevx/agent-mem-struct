@@ -63,6 +63,21 @@ def marker_memory_home(marker: dict[str, Any]) -> Path | None:
     return Path(value).expanduser().resolve(strict=False)
 
 
+def _ts_string_literal(value: str) -> bytes:
+    """Spell a path so the generated TS double-quoted literal keeps it intact.
+
+    A raw Windows path embeds single backslashes (``C:\\Users\\...``) into the
+    generated ``const X = "..."`` line. JavaScript treats an unknown escape
+    such as ``\\U`` as the bare letter and silently drops the backslash, so
+    the baked value resolves to a path that never existed: the bridge spawn
+    fails with ENOENT and the memory gate falls open without enforcement.
+    Forward slashes are accepted by every API the bridge reaches (spawn,
+    execFile, and the Python hook's Path handling) and need no escaping, so
+    the literal survives js/jiti parsing byte-for-byte on any host.
+    """
+    return value.replace(os.sep, "/").encode()
+
+
 def render_extension(
     hook: Path, home: Path, memory_home: Path, canonical_root: Path
 ) -> bytes:
@@ -70,11 +85,11 @@ def render_extension(
     if b"__AMS_PYTHON__" not in template:
         raise SystemExit(f"Extension template is missing its placeholders: {TEMPLATE_PATH}")
     replacements = {
-        b"__AMS_PYTHON__": str(sys.executable).encode(),
-        b"__AMS_HOOK__": str(hook.resolve(strict=False)).encode(),
-        b"__AMS_HOME__": str(memory_home).encode(),
-        b"__AMS_CONFIG_HOME__": str(home).encode(),
-        b"__AMS_CANONICAL_ROOT__": str(canonical_root).encode(),
+        b"__AMS_PYTHON__": _ts_string_literal(str(sys.executable)),
+        b"__AMS_HOOK__": _ts_string_literal(str(hook.resolve(strict=False))),
+        b"__AMS_HOME__": _ts_string_literal(str(memory_home)),
+        b"__AMS_CONFIG_HOME__": _ts_string_literal(str(home)),
+        b"__AMS_CANONICAL_ROOT__": _ts_string_literal(str(canonical_root)),
     }
     for token, value in replacements.items():
         if not value:

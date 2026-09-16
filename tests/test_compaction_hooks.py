@@ -1853,7 +1853,9 @@ class ManagedRootDocumentTests(unittest.TestCase):
                     bridge = (
                         agent_home / "extensions" / "agent-mem-struct.ts"
                     ).read_text()
-                    self.assertIn(str(memory_home), bridge)
+                    # The Pi bridge bakes paths in a JS-safe forward-slash
+                    # spelling on every host; compare against that form.
+                    self.assertIn(str(memory_home).replace(os.sep, "/"), bridge)
 
 
     def test_uninstall_leaves_installed_root_documents(self) -> None:
