@@ -316,4 +316,4 @@ Do not store version-to-version procedures here. See
 
 ---
 
-© 2026 Edrick Sinsuan. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE). This notice must be preserved in every copy, fork, or derivative of this file.
+© 2026 Edrick Sinsuan. Licensed under [MIT](LICENSE). This notice must be preserved in every copy, fork, or derivative of this file.

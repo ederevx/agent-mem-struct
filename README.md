@@ -54,11 +54,6 @@ substitute it. Do not add `memory/STRUCTURE.md` or `memory/RULES.md` aliases.
 
 ## License
 
-Licensed under [Creative Commons Attribution 4.0 International
-(CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) — see
-[LICENSE](LICENSE) for the full legal text.
-
-You are free to share and adapt this work for any purpose, including
-commercially, as long as you give appropriate credit. Attribution must name
-the original author and be preserved in every copy or derivative, including
-further edits or forks.
+Licensed under [MIT](LICENSE). The copyright belongs to
+Edrick Sinsuan and, per the MIT terms, the notice must be preserved
+in every copy, fork, or derivative, including further edits or forks.
