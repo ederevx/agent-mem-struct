@@ -78,4 +78,4 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
 
 ---
 
-© 2026 Edrick Sinsuan. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE).
+© 2026 Edrick Sinsuan. Licensed under [MIT](LICENSE).

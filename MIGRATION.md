@@ -363,4 +363,4 @@ Migration procedures moved from `STRUCTURE.md` into this canonical
 
 ---
 
-© 2026 Edrick Sinsuan. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE).
+© 2026 Edrick Sinsuan. Licensed under [MIT](LICENSE).
