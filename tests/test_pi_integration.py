@@ -220,6 +220,74 @@ class PiInstallerTests(unittest.TestCase):
     def extension_path(self, home: Path) -> Path:
         return home / "extensions" / "agent-mem-struct.ts"
 
+    def run_sync(self, home: Path, memory_home: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(PI_MANAGER), "sync-documents",
+             "--home", str(home), "--memory-home", str(memory_home)],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_sync_documents_deploys_missing_and_tracks(self) -> None:
+        (self.memory_home / "RULES.md").unlink()
+        (self.memory_home / "STRUCTURE.md").unlink()
+        result = self.run_sync(self.pi_home, self.memory_home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (self.memory_home / "RULES.md").read_bytes(), (REPO / "RULES.md").read_bytes()
+        )
+        self.assertEqual(
+            (self.memory_home / "STRUCTURE.md").read_bytes(),
+            (REPO / "STRUCTURE.md").read_bytes(),
+        )
+        marker = json.loads(
+            (self.pi_home / ".agent-mem-struct" / "pi-package-root-documents.json").read_text()
+        )
+        self.assertEqual(
+            marker["rootDocuments"]["RULES.md"]["sha256"],
+            hashlib.sha256((REPO / "RULES.md").read_bytes()).hexdigest(),
+        )
+        # A second run is a no-op and installs no bridge or installer marker.
+        again = self.run_sync(self.pi_home, self.memory_home)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertFalse(self.extension_path(self.pi_home).exists())
+        self.assertFalse(
+            (self.pi_home / ".agent-mem-struct" / "pi-root-memory-hook.json").exists()
+        )
+
+    def test_sync_documents_refreshes_a_tracked_unmodified_copy(self) -> None:
+        self.assertEqual(self.run_sync(self.pi_home, self.memory_home).returncode, 0)
+        marker_path = self.pi_home / ".agent-mem-struct" / "pi-package-root-documents.json"
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        stale = "# Memory rules\n\nstale managed body\n"
+        (self.memory_home / "RULES.md").write_text(stale, encoding="utf-8")
+        # A tracked copy whose recorded hash still matches is unmodified, so it
+        # is safe to refresh to the canonical bytes.
+        marker["rootDocuments"]["RULES.md"]["sha256"] = hashlib.sha256(
+            stale.encode()
+        ).hexdigest()
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        refreshed = self.run_sync(self.pi_home, self.memory_home)
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        self.assertEqual(
+            (self.memory_home / "RULES.md").read_bytes(), (REPO / "RULES.md").read_bytes()
+        )
+
+    def test_sync_documents_refuses_a_user_edited_copy(self) -> None:
+        self.assertEqual(self.run_sync(self.pi_home, self.memory_home).returncode, 0)
+        rules = self.memory_home / "RULES.md"
+        rules.write_text("# Memory rules\n\nuser edit\n", encoding="utf-8")
+        refused = self.run_sync(self.pi_home, self.memory_home)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(rules.read_text(encoding="utf-8"), "# Memory rules\n\nuser edit\n")
+
+    def test_sync_documents_refuses_a_foreign_copy(self) -> None:
+        rules = self.memory_home / "RULES.md"
+        rules.unlink()
+        rules.write_text("not ours\n", encoding="utf-8")
+        refused = self.run_sync(self.pi_home, self.memory_home)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(rules.read_text(encoding="utf-8"), "not ours\n")
+
     def test_install_deploys_baked_bridge_and_marker(self) -> None:
         result = self.run_manager("install", self.pi_home, self.memory_home)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -420,8 +488,31 @@ class PiPackageTests(unittest.TestCase):
         (config_home / ".agent-mem-struct" / "pi-root-memory-hook.json").write_text("{}", encoding="utf-8")
         (config_home / "extensions").mkdir(parents=True)
         (config_home / "extensions" / "agent-mem-struct.ts").write_text("// managed\n", encoding="utf-8")
+        sentinel = self.temp / "synced.txt"
+        self.install_sync_stub(sentinel)
         result = self.run_driver(bundle, "guard", {"config_home": str(config_home)})
         self.assertEqual(result["registered"], [], "the package entry must not double-register")
+        self.assertFalse(sentinel.exists(), "a managed copy must keep the package from syncing")
+
+    def install_sync_stub(self, sentinel: Path) -> None:
+        """A stand-in for hooks/pi/manage.py resolved beside the stub AMS_HOOK."""
+        stub_dir = self.temp / "pi"
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        (stub_dir / "manage.py").write_text(
+            "import pathlib, sys\n"
+            f"pathlib.Path({str(sentinel)!r}).write_text(' '.join(sys.argv[1:]), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+    def test_entry_syncs_root_documents_when_unmanaged(self) -> None:
+        bundle = self.bundle()
+        config_home = self.temp / "pi-home-sync"
+        config_home.mkdir(parents=True)
+        sentinel = self.temp / "synced.txt"
+        self.install_sync_stub(sentinel)
+        self.run_driver(bundle, "guard", {"config_home": str(config_home)})
+        self.assertTrue(sentinel.is_file(), "an active package entry must deploy the root documents")
+        self.assertIn("sync-documents", sentinel.read_text(encoding="utf-8"))
 
     def test_entry_registers_and_reaches_the_hook_when_unmanaged(self) -> None:
         bundle = self.bundle()

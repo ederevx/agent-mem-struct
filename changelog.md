@@ -4,6 +4,23 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-20T14:00:58-04:00 — deploy the protected root documents from the package
+
+The v1.15 package mode left `RULES.md` and `STRUCTURE.md` installer-only, so a
+host that used `pi install` without the managed bridge had no owner for the two
+protected documents and could drift from the canonical checkout. The Pi
+installer gains a `sync-documents` action that deploys them without touching
+the bridge or the installer marker, and the package entry runs it at load when
+it is the sole registrant.
+
+The action reuses `refresh_root_documents` under a package-owned
+`pi-package-root-documents.json` marker: a missing or identical copy is
+deployed or adopted, an unmodified copy the action previously tracked is
+refreshed to the canonical bytes, and a user-modified or foreign copy is
+refused. Keeping the installer marker out of the path preserves the package
+entry's standdown guard, so the managed and package modes still never register
+twice. A sync failure is logged and never stops the bridge from registering.
+
 ## 2026-09-20T13:11:35-04:00 — ship agent-mem-struct as a pi package
 
 The Pi integration was installer-only: `hooks/pi/manage.py` rendered a

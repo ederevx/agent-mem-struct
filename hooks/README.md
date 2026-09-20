@@ -212,8 +212,14 @@ and the package entry load from separate module roots, so pi's own dedup cannot
 stop both from registering; the package entry therefore stands down while the
 managed bridge and its `pi-root-memory-hook.json` marker are present. Uninstall
 the managed bridge (`hooks/pi/manage.py uninstall`) to let a package install
-take over. Neither mode deploys the protected root documents on package
-installs: keep the installer, or refresh them, for `RULES.md`/`STRUCTURE.md`.
+take over. The active package entry then deploys the protected root
+`RULES.md`/`STRUCTURE.md` copies itself by running the installer's
+`sync-documents` action at load, under a package-owned marker
+(`pi-package-root-documents.json`) and the same refresh and conflict
+protection: a missing or identical copy is deployed or adopted, a tracked
+unmodified copy is refreshed to the canonical bytes, and a user-modified or
+foreign copy is refused. The installer keeps owning the documents whenever
+its managed bridge is present.
 
 The bridge maps Pi events onto the hook's event vocabulary:
 

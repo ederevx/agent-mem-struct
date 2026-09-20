@@ -6,6 +6,7 @@
 // <pi-home>/extensions/agent-mem-struct.ts is self-contained and wins; this
 // entry stands down while that copy is present so the bridge never registers
 // twice.
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -80,6 +81,51 @@ export class PackageBridgePaths {
 	}
 }
 
+/** Deploys the protected root documents for a package install.
+ *
+ *  The installer owns `RULES.md`/`STRUCTURE.md` for a managed copy. A package
+ *  install has no installer bridge, so this runs the shipped installer's
+ *  `sync-documents` action once at load: a missing or identical copy is
+ *  deployed or adopted, a copy this action previously tracked and that is
+ *  still unmodified is refreshed to the canonical bytes, and a user-modified
+ *  or foreign copy is refused rather than overwritten. Best-effort: a refusal
+ *  or a missing interpreter never stops the bridge from registering. */
+export class RootDocumentSync {
+	constructor(
+		private readonly config: BridgeConfig,
+		private readonly script: string,
+	) {}
+
+	/** Runs the deployer and surfaces only a refusal on stderr. */
+	sync(): void {
+		const result = spawnSync(
+			this.config.python,
+			[
+				this.script, "sync-documents",
+				"--home", this.config.configHome,
+				"--memory-home", this.config.memoryHome,
+			],
+			{ encoding: "utf-8", timeout: 15000 },
+		);
+		if (result.error) {
+			console.error(
+				"agent-mem-struct: root document sync could not run " +
+				`(${result.error.message}); run the installer to deploy ` +
+				"RULES.md and STRUCTURE.md.",
+			);
+			return;
+		}
+		if (result.status !== 0) {
+			const detail = (result.stderr || result.stdout || "").trim();
+			console.error(
+				"agent-mem-struct: root document sync refused " +
+				`(${detail || `exit ${result.status}`}); RULES.md and ` +
+				"STRUCTURE.md were left untouched.",
+			);
+		}
+	}
+}
+
 export default function (pi: any): void {
 	try {
 		const paths = new PackageBridgePaths(process.env);
@@ -87,7 +133,9 @@ export default function (pi: any): void {
 			// The managed copy registered the bridge for this agent home.
 			return;
 		}
-		createRootMemoryBridge(pi, paths.config());
+		const config = paths.config();
+		new RootDocumentSync(config, join(dirname(config.hook), "pi", "manage.py")).sync();
+		createRootMemoryBridge(pi, config);
 	} catch (error) {
 		// Never spawn a literal placeholder path: report and stay inert
 		// instead of failing open silently.
