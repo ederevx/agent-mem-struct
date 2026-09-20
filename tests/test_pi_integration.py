@@ -95,6 +95,16 @@ class PiHookTests(unittest.TestCase):
             self.output(reminder)["hookSpecificOutput"]["additionalContext"],
         )
 
+    def test_turn_reminder_requires_a_verified_pull_and_a_settlement_record(self) -> None:
+        reminder = invoke_pi(self.home, {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        context = self.output(reminder)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("git pull --ff-only", context)
+        self.assertIn("Before settling", context)
+
     def test_convention_gate_denies_once_then_acknowledges(self) -> None:
         target = self.shared / "MEMORY.md"
         first = invoke_pi(self.home, {

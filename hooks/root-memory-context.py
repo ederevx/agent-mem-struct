@@ -442,6 +442,17 @@ def turn_reminder_text(agent: str, state: dict[str, Any]) -> str:
         "completion for a new convention digest is intentionally refused once; "
         "read the injected bundle and retry to acknowledge it."
     )
+    lines.append(
+        "Before proceeding, pull the declared shared worktree with "
+        "`git pull --ff-only` and confirm it succeeded; rereading the loaded "
+        "copy is not a substitute for pulling. Reconcile and push a failed, "
+        "non-fast-forward, or divergent pull before continuing."
+    )
+    lines.append(
+        "Before settling, record and push this turn's durable facts, decisions, "
+        "or state changes in shared memory; a spawned subagent reports them to "
+        "its parent instead of writing memory."
+    )
     if agent == "codex":
         lines.append(
             "Codex native AGENTS.md instruction discovery remains active. Its "
