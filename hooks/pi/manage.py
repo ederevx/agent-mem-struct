@@ -30,6 +30,7 @@ from manage_common import (  # noqa: E402
 )
 
 MARKER_NAME = "pi-root-memory-hook.json"
+PACKAGE_DOCUMENTS_MARKER = "pi-package-root-documents.json"
 EXTENSION_NAME = "agent-mem-struct.ts"
 TEMPLATE_PATH = HOOK_ROOT / "pi" / "root-memory-extension.ts"
 OWNERSHIP_HEADER = (
@@ -39,7 +40,7 @@ OWNERSHIP_HEADER = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("install", "uninstall"))
+    parser.add_argument("action", choices=("install", "uninstall", "sync-documents"))
     parser.add_argument(
         "--home",
         default=os.environ.get("PI_CODING_AGENT_DIR") or str(Path.home() / ".pi" / "agent"),
@@ -180,6 +181,34 @@ def install(home: Path, memory_home: Path, *, refresh_documents: bool = False) -
     print("Restart Pi (or run /reload) and confirm the injected root memory.")
 
 
+def sync_documents(
+    home: Path, memory_home: Path, *, refresh_documents: bool = False
+) -> None:
+    """Deploy the protected root documents for a pi-package install.
+
+    A package install has no managed bridge, so it owns no marker in the
+    installer's file. This action reuses the installer's refresh policy under
+    a separate package-owned marker: missing or identical copies are deployed
+    or adopted, an unmodified copy this action previously tracked is refreshed
+    to the canonical bytes, and a user-modified or foreign copy is refused
+    rather than overwritten. It never deploys the bridge or the installer
+    marker, so the package entry stays the sole registrant. The explicit
+    refresh option matches the installer's bootstrap behavior.
+    """
+    canonical_root = HOOK_ROOT.parent
+    state_file = home / ".agent-mem-struct" / PACKAGE_DOCUMENTS_MARKER
+    previous = read_marker(state_file).get("rootDocuments")
+    documents = refresh_root_documents(
+        memory_home,
+        canonical_root,
+        allow_refresh=refresh_documents,
+        previous_documents=previous if isinstance(previous, dict) else {},
+    )
+    secure_dir(state_file.parent)
+    save_json(state_file, {"rootDocuments": documents})
+    print(f"Root documents current at {memory_home}")
+
+
 def uninstall(home: Path, memory_home: Path) -> None:
     marker_file = marker_path(home)
     marker = read_marker(marker_file)
@@ -224,8 +253,10 @@ def main() -> int:
             memory_home = home
     if args.action == "install":
         install(home, memory_home, refresh_documents=args.refresh_root_documents)
-    else:
+    elif args.action == "uninstall":
         uninstall(home, memory_home)
+    else:
+        sync_documents(home, memory_home, refresh_documents=args.refresh_root_documents)
     return 0
 
 

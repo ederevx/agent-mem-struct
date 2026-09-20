@@ -1,6 +1,6 @@
 {
   "name": "agent-mem-struct",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "description": "Pi package bridge for the agent-mem-struct root-memory protocol: injects root memory and RULES.md, gates memory mutations, and checkpoints compaction.",
   "license": "MIT",
   "author": "Edrick Sinsuan <evcsinsuan@gmail.com>",

@@ -21,8 +21,11 @@ Clone the repository, then run the appropriate hook installer for each agent
 (`hooks/codex/manage.py`, `hooks/claude/manage.py`, or `hooks/pi/manage.py`).
 The Pi bridge may instead be installed as a pi package
 (`pi install git:github.com/ederevx/agent-mem-struct@v1.x`); the package entry
-stands down while the installer-managed bridge is present, and either mode
-still needs the installer to deploy the protected root documents.
+stands down while the installer-managed bridge is present. When it is the sole
+registrant it also deploys the protected root documents itself, running the
+installer's `sync-documents` action under a package-owned marker and the same
+refresh and conflict protection, so a package-only host keeps `RULES.md` and
+`STRUCTURE.md` current without the installer.
 On every platform, the installer deploys protected managed copies of the two
 root structural documents:
 
