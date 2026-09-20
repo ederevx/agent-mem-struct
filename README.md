@@ -19,6 +19,10 @@ private memory while sharing one common-memory subtree.
 
 Clone the repository, then run the appropriate hook installer for each agent
 (`hooks/codex/manage.py`, `hooks/claude/manage.py`, or `hooks/pi/manage.py`).
+The Pi bridge may instead be installed as a pi package
+(`pi install git:github.com/ederevx/agent-mem-struct@v1.x`); the package entry
+stands down while the installer-managed bridge is present, and either mode
+still needs the installer to deploy the protected root documents.
 On every platform, the installer deploys protected managed copies of the two
 root structural documents:
 

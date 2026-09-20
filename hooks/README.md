@@ -197,6 +197,24 @@ The installer deploys two things and never reads or writes Pi's own
   with identical refresh and conflict protection (`--refresh-root-documents`
   bootstraps a confirmed untracked copy).
 
+The same bridge can be installed as a pi package instead:
+
+```sh
+pi install git:github.com/ederevx/agent-mem-struct@v1.x
+```
+
+`package.json` declares `pi.extensions` -> `./extensions/agent-mem-struct.ts`,
+which resolves the hook path, interpreter, memory home, config home, and
+canonical root at load time (`AMS_PYTHON`, `AMS_HOOK`, `AMS_MEMORY_HOME`,
+`AMS_CONFIG_HOME`, `AMS_CANONICAL_ROOT` override them) and imports the one
+`RootMemoryBridge` implementation from the installer template. The managed copy
+and the package entry load from separate module roots, so pi's own dedup cannot
+stop both from registering; the package entry therefore stands down while the
+managed bridge and its `pi-root-memory-hook.json` marker are present. Uninstall
+the managed bridge (`hooks/pi/manage.py uninstall`) to let a package install
+take over. Neither mode deploys the protected root documents on package
+installs: keep the installer, or refresh them, for `RULES.md`/`STRUCTURE.md`.
+
 The bridge maps Pi events onto the hook's event vocabulary:
 
 - `before_agent_start` injects the full root bundle on the first turn of a
