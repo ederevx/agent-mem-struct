@@ -18,6 +18,8 @@ REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "hooks" / "root-memory-context.py"
 PI_MANAGER = REPO / "hooks" / "pi" / "manage.py"
 EXTENSION_TEMPLATE = REPO / "hooks" / "pi" / "root-memory-extension.ts"
+PACKAGE_ENTRY = REPO / "extensions" / "agent-mem-struct.ts"
+PACKAGE_MANIFEST = REPO / "package.json"
 
 
 def js_safe(value: str) -> str:
@@ -321,6 +323,126 @@ class PiInstallerTests(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(compiled.returncode, 0, label + ": " + compiled.stderr)
+
+
+class PiPackageTests(unittest.TestCase):
+    """The pi-package deployment mode: manifest, entry, and runtime paths."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-package-", dir=SCRATCH_ROOT))
+
+    def bundle(self, out_name: str = "entry.mjs") -> Path:
+        out = self.temp / out_name
+        compiled = subprocess.run(
+            [shutil.which("npx") or "npx", "--yes", "esbuild", str(PACKAGE_ENTRY),
+             "--bundle", "--format=esm", "--platform=node",
+             "--outfile=" + str(out)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        return out
+
+    def run_driver(self, bundle: Path, mode: str, env: dict[str, str]) -> dict:
+        stub = self.temp / "stub_hook.py"
+        stub.write_text(
+            "import json, sys\n"
+            "print(json.dumps({'hookSpecificOutput': {"
+            "'hookEventName': 'SessionStart', "
+            "'additionalContext': 'PACKAGE-BRIDGE-STUB'}}))\n",
+            encoding="utf-8",
+        )
+        driver = self.temp / "driver.mjs"
+        driver.write_text(
+            "import { pathToFileURL } from 'node:url';\n"
+            "const mod = await import(pathToFileURL(process.argv[2]).href);\n"
+            "const mode = process.argv[3];\n"
+            "const handlers = {};\n"
+            "const pi = { on: (n, f) => { handlers[n] = f; },\n"
+            "  sessionManager: { getSessionId: () => 's1' } };\n"
+            "if (mode === 'paths') {\n"
+            "  const paths = new mod.PackageBridgePaths({ AMS_PYTHON: 'P', AMS_HOOK: 'H',\n"
+            "    AMS_MEMORY_HOME: 'M', AMS_CONFIG_HOME: 'C', AMS_CANONICAL_ROOT: 'R' });\n"
+            "  process.stdout.write(JSON.stringify(paths.config()));\n"
+            "} else {\n"
+            "  mod.default(pi);\n"
+            "  if (mode === 'register') {\n"
+            "    const out = await handlers['before_agent_start']({ prompt: 'hi' });\n"
+            "    process.stdout.write(JSON.stringify({\n"
+            "      registered: Object.keys(handlers).sort(), out }));\n"
+            "  } else {\n"
+            "    process.stdout.write(JSON.stringify({ registered: Object.keys(handlers) }));\n"
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        full_env = dict(os.environ)
+        full_env.update({
+            "AMS_PYTHON": sys.executable,
+            "AMS_HOOK": str(stub),
+            "AMS_MEMORY_HOME": env.get("memory_home", str(self.temp / "memory")),
+            "AMS_CONFIG_HOME": env["config_home"],
+            "AMS_CANONICAL_ROOT": str(REPO),
+        })
+        run = subprocess.run(
+            [shutil.which("node") or "node", str(driver), str(bundle), mode],
+            capture_output=True, text=True, check=False, env=full_env,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return json.loads(run.stdout)
+
+    def test_manifest_declares_a_pi_package_and_its_entry(self) -> None:
+        manifest = json.loads(PACKAGE_MANIFEST.read_text(encoding="utf-8"))
+        self.assertIn("pi-package", manifest["keywords"])
+        self.assertEqual(manifest["pi"]["extensions"], ["./extensions/agent-mem-struct.ts"])
+        self.assertTrue(PACKAGE_ENTRY.is_file())
+        self.assertEqual(manifest["license"], "MIT")
+        # Nothing from pi's bundled core is imported, so nothing may be listed
+        # as a peer dependency: a git install auto-vendors any it finds.
+        self.assertNotIn("peerDependencies", manifest)
+        self.assertIn("hooks/", manifest["files"])
+
+    def test_entry_compiles_and_shares_the_one_bridge_implementation(self) -> None:
+        self.bundle()
+        entry = PACKAGE_ENTRY.read_text(encoding="utf-8")
+        template = EXTENSION_TEMPLATE.read_text(encoding="utf-8")
+        # The package entry reuses the installer template's bridge rather than
+        # carrying a second copy of the event mapping.
+        self.assertIn('from "../hooks/pi/root-memory-extension.ts"', entry)
+        self.assertIn("export function createRootMemoryBridge", template)
+        self.assertIn("export class RootMemoryBridge", template)
+        self.assertIn("managedCopyPresent", entry)
+
+    def test_entry_stands_down_while_the_managed_copy_is_present(self) -> None:
+        bundle = self.bundle()
+        config_home = self.temp / "pi-home"
+        (config_home / ".agent-mem-struct").mkdir(parents=True)
+        (config_home / ".agent-mem-struct" / "pi-root-memory-hook.json").write_text("{}", encoding="utf-8")
+        (config_home / "extensions").mkdir(parents=True)
+        (config_home / "extensions" / "agent-mem-struct.ts").write_text("// managed\n", encoding="utf-8")
+        result = self.run_driver(bundle, "guard", {"config_home": str(config_home)})
+        self.assertEqual(result["registered"], [], "the package entry must not double-register")
+
+    def test_entry_registers_and_reaches_the_hook_when_unmanaged(self) -> None:
+        bundle = self.bundle()
+        config_home = self.temp / "pi-home-bare"
+        config_home.mkdir(parents=True)
+        result = self.run_driver(bundle, "register", {"config_home": str(config_home)})
+        self.assertIn("before_agent_start", result["registered"])
+        self.assertIn("tool_call", result["registered"])
+        self.assertIn("session_before_compact", result["registered"])
+        self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
+
+    def test_runtime_paths_honor_env_overrides(self) -> None:
+        bundle = self.bundle()
+        config = self.run_driver(bundle, "paths", {"config_home": str(self.temp)})
+        self.assertEqual(config, {
+            "python": "P", "hook": "H", "memoryHome": "M",
+            "configHome": "C", "canonicalRoot": "R",
+        })
+
+    def output(self, result: subprocess.CompletedProcess[str]) -> dict:
+        return json.loads(result.stdout)
 
 
 if __name__ == "__main__":

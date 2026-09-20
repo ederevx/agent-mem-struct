@@ -1,0 +1,42 @@
+{
+  "name": "agent-mem-struct",
+  "version": "1.15.0",
+  "description": "Pi package bridge for the agent-mem-struct root-memory protocol: injects root memory and RULES.md, gates memory mutations, and checkpoints compaction.",
+  "license": "MIT",
+  "author": "Edrick Sinsuan <evcsinsuan@gmail.com>",
+  "homepage": "https://github.com/ederevx/agent-mem-struct",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ederevx/agent-mem-struct.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "memory",
+    "agent-memory",
+    "root-memory"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./extensions/agent-mem-struct.ts"
+    ]
+  },
+  "files": [
+    "extensions/",
+    "hooks/",
+    "RULES.md",
+    "STRUCTURE.md",
+    "MIGRATION.md",
+    "README.md",
+    "changelog.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "python3 -m unittest discover -s tests -v"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

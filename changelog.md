@@ -4,6 +4,37 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-20T13:11:35-04:00 — ship agent-mem-struct as a pi package
+
+The Pi integration was installer-only: `hooks/pi/manage.py` rendered a
+managed, self-contained bridge with absolute paths baked into
+`<pi-home>/extensions/agent-mem-struct.ts`. The repository is now also a
+valid pi package (`package.json` with the `pi` manifest and the
+`pi-package` keyword), so `pi install` can clone it and load
+`extensions/agent-mem-struct.ts`.
+
+That entry resolves the hook path, interpreter, memory home, config home,
+and canonical root at load time (each with an `AMS_*` override) instead of
+baking them, and it stands down while the installer-managed copy and its
+ownership marker are present: the two deployment modes load from separate
+module roots, so pi's own deduplication cannot prevent a double
+registration. Both modes share one implementation —
+`hooks/pi/root-memory-extension.ts` now exports `RootMemoryBridge`, which
+owns the per-session state as instance state instead of module-level
+variables, and the package entry imports it. A committed `.npmrc`
+(`package-lock=false`) keeps a git clone free of an untracked lockfile.
+
+## 2026-09-20T13:11:35-04:00 — pull before proceeding and record before settling
+
+The shared conventions now require a verified `git pull --ff-only` before
+proceeding with any task, with a failed, non-fast-forward, or divergent pull
+reconciled, committed, and pushed first, and they require a turn to record
+and push its durable facts before settling. The hook carries the same
+reminder in its per-turn text, which every host reaches (Codex and Claude
+via `UserPromptSubmit`, Pi via `before_agent_start`). Pi still has no
+turn-end surface (`Stop`), so the reminder is delivered on the turn itself
+rather than at completion.
+
 ## 2026-09-14T17:57:46-04:00 — add the Pi bridge integration
 
 Pi has no hooks-configuration surface, so the protocol gains a managed
