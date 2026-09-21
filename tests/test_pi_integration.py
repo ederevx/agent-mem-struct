@@ -261,9 +261,11 @@ class PiInstallerTests(unittest.TestCase):
         stale = "# Memory rules\n\nstale managed body\n"
         (self.memory_home / "RULES.md").write_text(stale, encoding="utf-8")
         # A tracked copy whose recorded hash still matches is unmodified, so it
-        # is safe to refresh to the canonical bytes.
+        # is safe to refresh to the canonical bytes. Hash the copy's actual
+        # bytes: text-mode writes translate newlines on Windows, so hashing the
+        # source string would not match the file that lands on disk there.
         marker["rootDocuments"]["RULES.md"]["sha256"] = hashlib.sha256(
-            stale.encode()
+            (self.memory_home / "RULES.md").read_bytes()
         ).hexdigest()
         marker_path.write_text(json.dumps(marker), encoding="utf-8")
         refreshed = self.run_sync(self.pi_home, self.memory_home)
