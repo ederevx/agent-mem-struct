@@ -36,6 +36,13 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const PRECOMPACT_TIMEOUT_MS = 120000;
 const MAX_INLINE_ENTRIES = 150;
 
+/** Decodes collected output chunks in one pass; decoding per chunk would
+ *  split a multi-byte UTF-8 sequence at a stream buffer boundary and corrupt
+ *  the hook's JSON. */
+function decodeUtf8(chunks: Buffer[]): string {
+	return Buffer.concat(chunks).toString("utf-8");
+}
+
 /** Resolved locations the bridge needs; the managed copy bakes them, the
  *  package entry derives them at load time. */
 export interface BridgeConfig {
@@ -123,8 +130,8 @@ export class RootMemoryBridge {
 				turn_id: this.turnId,
 				...extra,
 			});
-			let stdout = "";
-			let stderr = "";
+			const stdout: Buffer[] = [];
+			const stderr: Buffer[] = [];
 			let settled = false;
 			const child = spawn(
 				this.config.python,
@@ -141,26 +148,45 @@ export class RootMemoryBridge {
 				if (settled) return;
 				settled = true;
 				child.kill("SIGKILL");
-				resolve({ ok: false, timedOut: true, stdout, stderr });
+				resolve({
+					ok: false,
+					timedOut: true,
+					stdout: decodeUtf8(stdout),
+					stderr: decodeUtf8(stderr),
+				});
 			}, timeoutMs);
 			child.stdout.on("data", (chunk) => {
-				stdout += chunk;
+				stdout.push(chunk);
 			});
 			child.stderr.on("data", (chunk) => {
-				stderr += chunk;
+				stderr.push(chunk);
 			});
 			child.on("error", (error) => {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timer);
-				resolve({ ok: false, stdout, stderr: `${stderr}${error}` });
+				resolve({
+					ok: false,
+					stdout: decodeUtf8(stdout),
+					stderr: decodeUtf8(stderr) + error,
+				});
 			});
 			child.on("close", (code) => {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timer);
-				resolve({ ok: code === 0, timedOut: false, stdout, stderr });
+				resolve({
+					ok: code === 0,
+					timedOut: false,
+					stdout: decodeUtf8(stdout),
+					stderr: decodeUtf8(stderr),
+				});
 			});
+			// The hook can exit without draining its stdin (an early crash, an
+			// event profile it does not read); once the body outgrows the pipe
+			// buffer that surfaces as EPIPE, and without a handler the error is
+			// uncaught and takes the whole host process down.
+			child.stdin.on("error", () => {});
 			child.stdin.end(body);
 		});
 	}
