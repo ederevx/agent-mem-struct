@@ -34,7 +34,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "python3 -m unittest discover -s tests -v"
+    "test": "python3 -m unittest discover -s tests -v",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "engines": {
     "node": ">=20"
