@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-21T23:59:00-04:00 - harden the bridge hook pipe and installer staging writes
+
+The bridge hook pipe had no error handler on the child's stdin: a hook
+exiting without draining a >64KB body raised EPIPE as an uncaught
+exception that could kill the host pi process, and per-chunk decoding
+could corrupt multi-byte UTF-8 at stream boundaries. The pipe now
+tolerates a dead reader and decodes in one pass. The installer's fixed
+staging names let concurrent installs clobber each other and strand
+crash orphans; staging files are now pid-unique and self-cleaning.
+
 ## 2026-09-20T14:00:58-04:00 — deploy the protected root documents from the package
 
 The v1.15 package mode left `RULES.md` and `STRUCTURE.md` installer-only, so a
