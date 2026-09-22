@@ -117,8 +117,6 @@ def deploy_extension(
                 "path": str(extension_path),
                 "sha256": hashlib.sha256(existing).hexdigest(),
             }
-            if isinstance(recorded, dict) and recorded.get("sha256"):
-                return recorded_hash
             return recorded_hash
         tracked = (
             isinstance(recorded, dict)
@@ -135,9 +133,17 @@ def deploy_extension(
                 f"Refusing to overwrite foreign extension {extension_path}; remove or rename it first"
             )
     extension_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = extension_path.with_name(extension_path.name + ".agent-mem-struct.tmp")
-    temporary.write_bytes(content)
-    os.replace(temporary, extension_path)
+    # A pid-unique temporary keeps concurrent installs from clobbering each
+    # other's staging file, and the finally block keeps a failed write from
+    # stranding an orphan beside the extension.
+    temporary = extension_path.with_name(
+        f"{extension_path.name}.agent-mem-struct.{os.getpid()}.tmp"
+    )
+    try:
+        temporary.write_bytes(content)
+        os.replace(temporary, extension_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return {
         "path": str(extension_path),
         "sha256": hashlib.sha256(content).hexdigest(),

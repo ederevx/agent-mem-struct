@@ -40,12 +40,18 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def save_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".agent-mem-struct.tmp")
-    temporary.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
+    # A pid-unique temporary keeps concurrent installs from clobbering each
+    # other's staging file, and the finally block keeps a failed write from
+    # stranding an orphan beside the target.
+    temporary = path.with_name(f"{path.name}.agent-mem-struct.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def secure_dir(path: Path) -> None:

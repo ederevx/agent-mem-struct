@@ -50,11 +50,17 @@ def parse_args() -> argparse.Namespace:
 
 def save_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".agent-mem-struct.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    if path.exists():
-        os.chmod(temporary, path.stat().st_mode & 0o777)
-    os.replace(temporary, path)
+    # A pid-unique temporary keeps concurrent installs from clobbering each
+    # other's staging file, and the finally block keeps a failed write from
+    # stranding an orphan beside the target.
+    temporary = path.with_name(f"{path.name}.agent-mem-struct.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        if path.exists():
+            os.chmod(temporary, path.stat().st_mode & 0o777)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def marker_path(home: Path) -> Path:
