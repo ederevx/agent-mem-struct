@@ -4,6 +4,19 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-09-23T17:45:00-04:00 - split the root-memory hook into cohesive modules
+
+The 1333-line root-memory-context.py mixed five responsibilities; it
+now composes rm_{support,scan,control,receipts,checkpoints,events}.py
+(one primary class each) behind a 157-line entry that keeps the
+declared_shared/stat/config_is_active re-exports for test compat.
+Every installer write goes through one shared mode-preserving atomic
+writer in manage_common.py, checkpoint saves and receipt acks unlink
+their temps in a finally block, and the per-host manage.py files dedupe
+their marker/uninstall/reuse-home flows through the common module.
+Memory-write semantics (paired logs, git-backed shared insertion) are
+untouched; 110/110 tests pass.
+
 ## 2026-09-21T23:59:00-04:00 - harden the bridge hook pipe and installer staging writes
 
 The bridge hook pipe had no error handler on the child's stdin: a hook
