@@ -13,16 +13,19 @@ sys.path.insert(0, str(HOOK_ROOT))
 
 from manage_common import (  # noqa: E402
     backup_once,
+    clear_install_state,
     hook_groups,
     load_json,
+    marker_memory_home,
     read_marker,
     refresh_root_documents,
     remove_checkpoints,
-    remove_install_backup,
     replace_owned_hooks,
+    resolve_memory_home,
     save_json,
     secure_dir,
     strip_owned_hooks,
+    warn_missing_root_memory,
 )
 
 AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
@@ -46,13 +49,6 @@ def parse_args() -> argparse.Namespace:
 
 def marker_path(home: Path) -> Path:
     return home / ".agent-mem-struct" / MARKER_NAME
-
-
-def marker_memory_home(marker: dict[str, Any]) -> Path | None:
-    value = marker.get("memoryHome")
-    if not isinstance(value, str) or not value:
-        return None
-    return Path(value).expanduser().resolve(strict=False)
 
 
 def disable_native_memory(
@@ -123,9 +119,7 @@ def install(
             "WARNING: disableAllHooks=true; installed hooks will not run.",
             file=sys.stderr,
         )
-    root_memory = memory_home / "memory" / "MEMORY.md"
-    if not root_memory.exists():
-        print(f"WARNING: root memory is unavailable at {root_memory}.", file=sys.stderr)
+    warn_missing_root_memory(memory_home)
     print(f"Installed additive Claude root-memory hooks into {settings_path}")
     print(f"Root memory authority: {memory_home}")
     print("Restart Claude Code and use /context to verify the injected root memory.")
@@ -141,31 +135,16 @@ def uninstall(home: Path, memory_home: Path) -> None:
         restore_native_memory(settings, marker)
         save_json(settings_path, settings)
 
-    checkpoint_homes = {memory_home, marker_memory_home(marker)}
-    marker_file.unlink(missing_ok=True)
-    for checkpoint_home in checkpoint_homes:
-        if checkpoint_home is not None:
-            remove_checkpoints(checkpoint_home)
-    remove_install_backup(home, "settings.before-first-install.json")
+    clear_install_state(
+        marker_file, marker, memory_home, backup_name="settings.before-first-install.json"
+    )
     print("Removed only agent-mem-struct Claude hook entries.")
 
 
 def main() -> int:
     args = parse_args()
     home = Path(args.home).expanduser().resolve(strict=False)
-    if args.memory_home:
-        memory_home = Path(args.memory_home).expanduser().resolve(strict=False)
-    else:
-        # A bare reinstall must not silently move the memory home: the
-        # installed hook command carries the previously chosen one, and
-        # defaulting to the agent home rewrites it to a directory with no
-        # memory tree, failing every later gate. Reuse the installed choice.
-        previous_home = marker_memory_home(read_marker(marker_path(home)))
-        if previous_home is not None:
-            memory_home = previous_home
-            print(f"Reusing the installed memory home: {memory_home}")
-        else:
-            memory_home = home
+    memory_home = resolve_memory_home(home, marker_path(home), args.memory_home)
     hook = HOOK_ROOT / "root-memory-context.py"
     if not hook.exists():
         raise SystemExit(f"Shared hook not found: {hook}")

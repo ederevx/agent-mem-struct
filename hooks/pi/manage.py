@@ -22,20 +22,21 @@ HOOK_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HOOK_ROOT))
 
 from manage_common import (  # noqa: E402
+    clear_install_state,
+    marker_memory_home,
     read_marker,
     refresh_root_documents,
     remove_checkpoints,
+    resolve_memory_home,
     save_json,
     secure_dir,
+    warn_missing_root_memory,
 )
 
 MARKER_NAME = "pi-root-memory-hook.json"
 PACKAGE_DOCUMENTS_MARKER = "pi-package-root-documents.json"
 EXTENSION_NAME = "agent-mem-struct.ts"
 TEMPLATE_PATH = HOOK_ROOT / "pi" / "root-memory-extension.ts"
-OWNERSHIP_HEADER = (
-    "// agent-mem-struct root memory: managed copy; the installer owns these bytes."
-)
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,13 +56,6 @@ def parse_args() -> argparse.Namespace:
 
 def marker_path(home: Path) -> Path:
     return home / ".agent-mem-struct" / MARKER_NAME
-
-
-def marker_memory_home(marker: dict[str, Any]) -> Path | None:
-    value = marker.get("memoryHome")
-    if not isinstance(value, str) or not value:
-        return None
-    return Path(value).expanduser().resolve(strict=False)
 
 
 def _ts_string_literal(value: str) -> bytes:
@@ -135,12 +129,15 @@ def deploy_extension(
     extension_path.parent.mkdir(parents=True, exist_ok=True)
     # A pid-unique temporary keeps concurrent installs from clobbering each
     # other's staging file, and the finally block keeps a failed write from
-    # stranding an orphan beside the extension.
+    # stranding an orphan beside the extension. The existing file's mode is
+    # preserved across the atomic replacement.
     temporary = extension_path.with_name(
         f"{extension_path.name}.agent-mem-struct.{os.getpid()}.tmp"
     )
     try:
         temporary.write_bytes(content)
+        if extension_path.exists():
+            os.chmod(temporary, extension_path.stat().st_mode & 0o777)
         os.replace(temporary, extension_path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -179,9 +176,7 @@ def install(home: Path, memory_home: Path, *, refresh_documents: bool = False) -
         },
     )
 
-    root_memory = memory_home / "memory" / "MEMORY.md"
-    if not root_memory.exists():
-        print(f"WARNING: root memory is unavailable at {root_memory}.", file=sys.stderr)
+    warn_missing_root_memory(memory_home)
     print(f"Installed the agent-mem-struct Pi bridge at {extension_record['path']}")
     print(f"Root memory authority: {memory_home}")
     print("Restart Pi (or run /reload) and confirm the injected root memory.")
@@ -234,29 +229,14 @@ def uninstall(home: Path, memory_home: Path) -> None:
             file=sys.stderr,
         )
 
-    checkpoint_homes = {memory_home, marker_memory_home(marker)}
-    marker_file.unlink(missing_ok=True)
-    for checkpoint_home in checkpoint_homes:
-        if checkpoint_home is not None:
-            remove_checkpoints(checkpoint_home)
+    clear_install_state(marker_file, marker, memory_home)
     print("Removed only the agent-mem-struct Pi bridge and its state.")
 
 
 def main() -> int:
     args = parse_args()
     home = Path(args.home).expanduser().resolve(strict=False)
-    if args.memory_home:
-        memory_home = Path(args.memory_home).expanduser().resolve(strict=False)
-    else:
-        # A bare reinstall must not silently move the memory home; the baked
-        # bridge extension would otherwise start reading a root that has no
-        # memory tree. Reuse the installed choice when one is recorded.
-        previous_home = marker_memory_home(read_marker(marker_path(home)))
-        if previous_home is not None:
-            memory_home = previous_home
-            print(f"Reusing the installed memory home: {memory_home}")
-        else:
-            memory_home = home
+    memory_home = resolve_memory_home(home, marker_path(home), args.memory_home)
     if args.action == "install":
         install(home, memory_home, refresh_documents=args.refresh_root_documents)
     elif args.action == "uninstall":

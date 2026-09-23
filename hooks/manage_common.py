@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -38,20 +37,32 @@ def load_json(path: Path) -> dict[str, Any]:
     return data
 
 
-def save_json(path: Path, data: dict[str, Any]) -> None:
+def atomic_write_text(path: Path, text: str) -> None:
+    """Atomically replace a text file, preserving an existing mode.
+
+    A pid-unique temporary in the target's directory keeps concurrent installs
+    from clobbering each other's staging file and lets os.replace swap the
+    finished content in one step; the finally block keeps a failed write from
+    stranding an orphan beside the target, and the original's mode survives
+    replacement so a settings or extension file never loses its permissions.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    # A pid-unique temporary keeps concurrent installs from clobbering each
-    # other's staging file, and the finally block keeps a failed write from
-    # stranding an orphan beside the target.
     temporary = path.with_name(f"{path.name}.agent-mem-struct.{os.getpid()}.tmp")
     try:
-        temporary.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        temporary.write_text(text, encoding="utf-8")
+        if path.exists():
+            os.chmod(temporary, path.stat().st_mode & 0o777)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def save_json(path: Path, data: dict[str, Any]) -> None:
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def save_text(path: Path, text: str) -> None:
+    atomic_write_text(path, text)
 
 
 def secure_dir(path: Path) -> None:
@@ -76,6 +87,51 @@ def backup_once(source: Path, backup: Path) -> None:
         shutil.copy2(source, backup)
 
 
+def marker_memory_home(marker: dict[str, Any]) -> Path | None:
+    value = marker.get("memoryHome")
+    if not isinstance(value, str) or not value:
+        return None
+    return Path(value).expanduser().resolve(strict=False)
+
+
+def resolve_memory_home(home: Path, marker_file: Path, requested: str | None) -> Path:
+    """Reuse the installed memory home unless one was explicitly requested.
+
+    A bare reinstall must not silently move the memory home: the installed
+    hook command or baked bridge extension carries the previously chosen one,
+    and defaulting to the agent home would rewrite it to a directory with no
+    memory tree, failing every later gate.
+    """
+    if requested:
+        return Path(requested).expanduser().resolve(strict=False)
+    previous_home = marker_memory_home(read_marker(marker_file))
+    if previous_home is not None:
+        print(f"Reusing the installed memory home: {previous_home}")
+        return previous_home
+    return home
+
+
+def clear_install_state(
+    marker_file: Path,
+    marker: dict[str, Any],
+    memory_home: Path,
+    *,
+    backup_name: str | None = None,
+) -> None:
+    """Remove the marker, its checkpoint trees, and the first-install backup."""
+    checkpoint_homes = {memory_home, marker_memory_home(marker)}
+    marker_file.unlink(missing_ok=True)
+    for checkpoint_home in checkpoint_homes:
+        if checkpoint_home is not None:
+            remove_checkpoints(checkpoint_home)
+    if backup_name:
+        (marker_file.parent / backup_name).unlink(missing_ok=True)
+        try:
+            marker_file.parent.rmdir()
+        except OSError:
+            pass
+
+
 def remove_checkpoints(home: Path) -> None:
     state = home / ".agent-mem-struct"
     shutil.rmtree(state / "compaction-checkpoints", ignore_errors=True)
@@ -93,6 +149,12 @@ def remove_install_backup(home: Path, name: str) -> None:
         state.rmdir()
     except OSError:
         pass
+
+
+def warn_missing_root_memory(memory_home: Path) -> None:
+    root_memory = memory_home / "memory" / "MEMORY.md"
+    if not root_memory.exists():
+        print(f"WARNING: root memory is unavailable at {root_memory}.", file=sys.stderr)
 
 
 def _quote(value: str) -> str:
@@ -172,12 +234,21 @@ def refresh_root_documents(
         replacements.append((target, source, content))
 
     for target, source, content in replacements:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".agent-mem-struct-", dir=target.parent) as directory:
-            temporary = Path(directory) / target.name
-            temporary.write_bytes(content)
-            os.replace(temporary, target)
+        atomic_write_bytes(target, content)
     return documents
+
+
+def atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Atomically replace a file with byte content, preserving an existing mode."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.agent-mem-struct.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(content)
+        if path.exists():
+            os.chmod(temporary, path.stat().st_mode & 0o777)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def strip_owned_hooks(settings: dict[str, Any]) -> None:
