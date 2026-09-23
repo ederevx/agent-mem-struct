@@ -15,14 +15,14 @@ sys.path.insert(0, str(HOOK_ROOT))
 
 from manage_common import (  # noqa: E402
     backup_once,
+    clear_install_state,
     hook_groups,
     load_json,
     read_marker,
     refresh_root_documents,
-    remove_checkpoints,
-    remove_install_backup,
     replace_owned_hooks,
     save_json,
+    save_text,
     secure_dir,
     strip_owned_hooks,
 )
@@ -46,21 +46,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--refresh-root-documents", action="store_true")
     return parser.parse_args()
-
-
-def save_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # A pid-unique temporary keeps concurrent installs from clobbering each
-    # other's staging file, and the finally block keeps a failed write from
-    # stranding an orphan beside the target.
-    temporary = path.with_name(f"{path.name}.agent-mem-struct.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(text, encoding="utf-8")
-        if path.exists():
-            os.chmod(temporary, path.stat().st_mode & 0o777)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def marker_path(home: Path) -> Path:
@@ -217,9 +202,9 @@ def uninstall(home: Path) -> None:
                 config_path.unlink()
             else:
                 save_text(config_path, restored)
-    marker_file.unlink(missing_ok=True)
-    remove_checkpoints(home)
-    remove_install_backup(home, "hooks.before-first-install.json")
+    clear_install_state(
+        marker_file, marker, home, backup_name="hooks.before-first-install.json"
+    )
     print("Removed only agent-mem-struct Codex hook entries.")
 
 
