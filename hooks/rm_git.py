@@ -77,6 +77,48 @@ class GitWorktree:
     def head(self) -> str:
         return self.run("rev-parse", "HEAD").stdout.strip()
 
+    def toplevel(self) -> Path | None:
+        """The worktree root Git attributes to this path, or None."""
+        result = self.run(
+            "rev-parse", "--show-toplevel", budget=self.limit(default=QUERY_BUDGET)
+        )
+        value = result.stdout.strip()
+        return Path(value) if result.returncode == 0 and value else None
+
+    def dirty_paths(self) -> list[str]:
+        """Repo-relative paths whose worktree or index differs from HEAD.
+
+        Porcelain v1 with NUL separators so a path can hold any byte; a
+        rename or copy entry carries the original path in the following
+        field, which is consumed rather than parsed as another path.
+        """
+        result = self.run(
+            "status", "--porcelain", "-z", "--untracked-files=all",
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        if result.returncode != 0:
+            return []
+        fields = result.stdout.split("\0")
+        paths: list[str] = []
+        index = 0
+        while index < len(fields):
+            entry = fields[index]
+            index += 1
+            if not entry:
+                continue
+            status = entry[:2]
+            paths.append(entry[3:])
+            if "R" in status or "C" in status:
+                index += 1
+        return paths
+
+    def head_blob(self, relative: str) -> str | None:
+        """The committed content of one repo-relative path at HEAD, or None."""
+        result = self.run(
+            "show", f"HEAD:{relative}", budget=self.limit(default=QUERY_BUDGET)
+        )
+        return result.stdout if result.returncode == 0 else None
+
     def has_sync_target(self, budget: float | None = None) -> bool:
         """Whether this worktree has a remote and an upstream branch to sync."""
         remote = self.run("remote", budget=self.limit(budget, QUERY_BUDGET))

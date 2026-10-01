@@ -13,7 +13,8 @@ agent's own memory tree or the declared shared root.
 
 Operations: create (node or group), set (current state, moving only the
 lines it displaces into the log unless `mechanical`), log (append
-history), rename (leaf + log + attachment directory + inbound links),
+history), commit (publish hand-edited leaves the agent made with its own
+editor), rename (leaf + log + attachment directory + inbound links),
 retire (remove active, keep log), requires (frontmatter prerequisites),
 attach and detach (the leaf's significant-file directory).
 """
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from rm_commit import CommitPublisher
+from rm_edit import WorktreeEdits
 from rm_git import GitWorktree
 from rm_control import RootControl, RootState
 from rm_support import under
@@ -111,7 +113,7 @@ class MemoryUpdater:
                 operation,
                 "bad-request",
                 f"unknown operation {operation!r}; expected create, set, log, "
-                "rename, retire, requires, attach, or detach.",
+                "commit, rename, retire, requires, attach, or detach.",
             )
         if self.state.shared_git_backed:
             unmerged = self.unmerged_shared_path()
@@ -125,7 +127,7 @@ class MemoryUpdater:
         result = handler(request)
         if not result.ok and not result.operation:
             result.operation = operation
-        if result.ok:
+        if result.ok and operation != "commit":
             return self.publish(result, request, operation)
         return result
 
@@ -257,6 +259,121 @@ class MemoryUpdater:
             return self.log_conflict("log", leaf)
         self.append_log(log, text.rstrip() + "\n", str(request.get("summary") or "").strip())
         return self.ok("log", changed=[str(log)])
+
+    def op_commit(self, request: dict[str, Any]) -> UpdateResult:
+        """Publish leaves the agent edited by hand, logging what they displaced.
+
+        The working tree is the source of truth: the target set is the named
+        leaf plus its paired log, or every dirty path in the memory scopes.
+        Displaced lines move into a paired log exactly as `op_set` would, and
+        the paths are committed and pushed through `CommitPublisher`.
+        """
+        message = self.commit_message(request)
+        if not message:
+            return self.conflict(
+                "commit",
+                "bad-request",
+                "`commit_message` is required; supply the commit message you wrote.",
+            )
+        edits = WorktreeEdits(self.state.memory_root, self.state.shared_resolved)
+        dirty = {str(path) for path in edits.dirty_paths()}
+        raw = self.required(request, "path")
+        if raw:
+            leaf, error = self.resolve_leaf(request, "commit")
+            if error is not None:
+                return error
+            if not edits.is_repo(leaf):
+                return self.unbacked_commit(leaf)
+            log = leaf.parent / "log" / leaf.name
+            targets = [leaf]
+            if log.exists() and self.dirty(log, dirty):
+                targets.append(log)
+        else:
+            targets = [Path(item) for item in dirty]
+        dirty_targets = [path for path in targets if self.dirty(path, dirty)]
+        if not dirty_targets:
+            return self.ok(
+                "commit", note="nothing-to-commit: no target has working-tree changes."
+            )
+        active = [path for path in dirty_targets if self.is_active_leaf(path)]
+        for leaf in active:
+            if not (leaf.parent / "log" / leaf.name).exists():
+                return self.log_conflict("commit", leaf)
+        written: list[Path] = []
+        for leaf in active:
+            log = leaf.parent / "log" / leaf.name
+            if self.dirty(log, dirty):
+                continue
+            previous = edits.previous_body(leaf)
+            working, read_error = self.read(leaf)
+            if previous is None or read_error is not None:
+                continue
+            displaced = self.superseded_text(previous, working)
+            if displaced:
+                self.append_log(log, displaced, "superseded current state")
+                written.append(log)
+        return self.publish_worktree(self.unique(targets + written), message, edits)
+
+    def publish_worktree(
+        self, paths: list[Path], message: str, edits: WorktreeEdits
+    ) -> UpdateResult:
+        """Commit each target in its own worktree under the agent's message."""
+        groups: dict[str, list[Path]] = {}
+        for path in paths:
+            repo = edits.repo_root(path)
+            if repo is None:
+                return self.unbacked_commit(path)
+            groups.setdefault(str(repo.resolve(strict=False)), []).append(path)
+        changed: list[str] = []
+        notes: list[str] = []
+        for root, group in groups.items():
+            outcome = CommitPublisher(Path(root)).publish(group, message)
+            if outcome.conflict is not None:
+                conflict = outcome.conflict
+                return self.conflict(
+                    "commit",
+                    conflict["code"],
+                    f"{conflict['message']} paths: "
+                    f"{', '.join(str(path) for path in group)}.",
+                    fix=conflict["fix"],
+                )
+            changed.extend(str(path) for path in group)
+            if outcome.note:
+                notes.append(outcome.note)
+        return self.ok("commit", changed=changed, note=" ".join(notes))
+
+    def unbacked_commit(self, path: Path) -> UpdateResult:
+        """A target with no Git worktree: the existing manual note, or a conflict."""
+        shared = self.state.shared_resolved
+        if shared is not None and under(path, shared) and not self.state.shared_git_backed:
+            return self.ok(
+                "commit",
+                note="the declared shared worktree is not Git-backed; commit and push "
+                "these paths by hand before the turn ends.",
+            )
+        return self.conflict(
+            "commit",
+            "not-git",
+            f"{path} is not inside a Git worktree.",
+            fix="commit these paths by hand before the turn ends",
+        )
+
+    def is_active_leaf(self, path: Path) -> bool:
+        return (
+            path.suffix == ".md"
+            and path.parent.name != "log"
+            and path.name != "MEMORY.md"
+        )
+
+    def dirty(self, path: Path, dirty: set[str]) -> bool:
+        return str(path.resolve(strict=False)) in dirty
+
+    def unique(self, paths: list[Path]) -> list[Path]:
+        seen: list[Path] = []
+        for path in paths:
+            if path not in seen:
+                seen.append(path)
+        return seen
 
     def op_rename(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "rename")
