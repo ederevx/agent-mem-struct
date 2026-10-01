@@ -8,15 +8,16 @@ fix before re-calling. It never commits, never resolves a conflict on its
 own, and never writes outside the agent's own memory tree or the declared
 shared root.
 
-Operations: create (node or group), set (current state, moving the
-displaced state into the log unless `mechanical`), log (append history),
-rename (leaf + log + attachment directory + inbound links), retire
-(remove active, keep log), requires (frontmatter prerequisites), attach
-and detach (the leaf's significant-file directory).
+Operations: create (node or group), set (current state, moving only the
+lines it displaces into the log unless `mechanical`), log (append
+history), rename (leaf + log + attachment directory + inbound links),
+retire (remove active, keep log), requires (frontmatter prerequisites),
+attach and detach (the leaf's significant-file directory).
 """
 from __future__ import annotations
 
 import datetime
+import difflib
 import os
 import re
 import shutil
@@ -177,10 +178,19 @@ class MemoryUpdater:
         log = leaf.parent / "log" / leaf.name
         if not log.exists():
             return self.log_conflict("set", leaf)
-        if not request.get("mechanical") and previous.strip():
-            self.append_log(log, previous.rstrip() + "\n", "superseded current state")
+        note = ""
+        if not request.get("mechanical"):
+            displaced = self.superseded_text(previous, body)
+            if displaced:
+                self.append_log(log, displaced, "superseded current state")
+            else:
+                note = "no displaced state."
         self.write(leaf, body)
-        return self.ok("set", changed=[str(leaf)], note=self.commit_note(leaf))
+        return self.ok(
+            "set",
+            changed=[str(leaf)],
+            note=" ".join(part for part in (note, self.commit_note(leaf)) if part),
+        )
 
     def op_log(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "log")
@@ -447,6 +457,31 @@ class MemoryUpdater:
                 self.write(path, updated)
                 changed.append(str(path))
         return changed
+
+    def superseded_text(self, previous: str, body: str) -> str:
+        """The lines of `previous` that `body` drops, grouped by section."""
+        old, new = previous.split("\n"), body.split("\n")
+        matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+        displaced = set(range(len(old)))
+        for block in matcher.get_matching_blocks():
+            displaced.difference_update(range(block.a, block.a + block.size))
+        sections: dict[str, list[str]] = {}
+        heading = ""
+        for index, line in enumerate(old):
+            if line.startswith("## "):
+                heading = line[3:].strip()
+            elif index in displaced:
+                sections.setdefault(heading, []).append(line)
+        parts: list[str] = []
+        for heading, lines in sections.items():
+            quoted = "\n".join(lines).strip("\n").rstrip()
+            if heading and quoted:
+                parts.append(f"### {heading}\n\n{quoted}")
+            elif heading:
+                parts.append(f"### {heading}")
+            elif quoted:
+                parts.append(quoted)
+        return "\n\n".join(parts) + "\n" if parts else ""
 
     def append_log(self, log: Path, text: str, heading: str) -> None:
         current, _ = self.read(log)

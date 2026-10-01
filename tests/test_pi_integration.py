@@ -775,6 +775,37 @@ class MemoryUpdateTests(unittest.TestCase):
         self.call(operation="set", path=str(leaf), body="second (typo fix)", mechanical=True)
         self.assertEqual(log.read_text(encoding="utf-8"), history)
 
+    def test_set_logs_only_the_lines_it_displaces(self) -> None:
+        self.create(
+            "note",
+            body="# Note\n\n## Alpha\n\n- keep this bullet\n- change this bullet"
+                 "\n\n## Beta\n\n- untouched text",
+        )
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        result = self.call(
+            operation="set",
+            path=str(leaf),
+            body="# Note\n\n## Alpha\n\n- keep this bullet\n- changed bullet"
+                 "\n\n## Beta\n\n- untouched text",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = log.read_text(encoding="utf-8")
+        self.assertIn("### Alpha", history)
+        self.assertIn("- change this bullet", history)
+        self.assertNotIn("- keep this bullet", history)
+        self.assertNotIn("untouched text", history)
+
+    def test_set_with_only_additions_leaves_the_log_untouched(self) -> None:
+        self.create("note", body="first")
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        before = log.read_text(encoding="utf-8")
+        result = self.call(operation="set", path=str(leaf), body="first\n\nsecond")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.read_text(encoding="utf-8"), before)
+        self.assertIn("no displaced state.", self.text(result))
+
     def test_log_appends_history_without_touching_active(self) -> None:
         self.create("note", body="current")
         leaf = self.local / "nodes" / "note.md"

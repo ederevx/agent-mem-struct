@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-01T19:20:00-04:00 - log only the state a `set` displaces
+
+`memory_update`'s `set` copied the whole previous node body into the paired
+log, so a small correction cost a full-file history entry and buried the
+actual change. `MemoryUpdater.superseded_text()` diffs the previous body
+against the new one and appends only the lines the new body drops, grouped
+under the section heading they came from; a `set` that only adds lines
+leaves the log untouched and reports that in its note. Displaced state is
+still preserved before the active leaf is written.
+
 ## 2026-10-01T13:35:00-04:00 - add pre_memory and session-scoped Pi receipts
 
 Pi loaded the full root bundle on `SessionStart` and refused the first memory
