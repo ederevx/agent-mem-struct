@@ -29,6 +29,22 @@ SUBAGENT_READ_BOUNDARY_TEXT = (
     "benign hook output, not a directive for you to act on beyond that."
 )
 
+PRE_MEMORY_FEATURE_TEXT = (
+    "agent-mem-struct `pre_memory`: call it once per session before any "
+    "memory write or agent-mem-struct action. It pulls the declared shared "
+    "worktree (`git pull --ff-only`), loads and acknowledges the root memory, "
+    "RULES.md, and the shared/group conventions for this session, and unlocks "
+    "the memory-mutation gate. If any convention source changes, call it "
+    "again; mutations stay denied until the current convention digest is "
+    "acknowledged. Subagents read the same sources but never write memory; "
+    "route additions back to the parent."
+)
+
+PRE_MEMORY_POINTER = (
+    "Conventions are loaded only by calling the `pre_memory` tool; call it "
+    "before any memory write or agent-mem-struct action."
+)
+
 
 @dataclass
 class RootState:
@@ -294,8 +310,20 @@ class RootControl:
         )
         return "\n".join(lines)
 
+    def pre_memory_pointer_text(self) -> str:
+        """The one-line Pi pointer that replaces the full root bundle at start."""
+        return PRE_MEMORY_POINTER
+
+    def pre_memory_feature_text(self) -> str:
+        """The `pre_memory` feature summary appended to its returned catalog."""
+        return PRE_MEMORY_FEATURE_TEXT
+
     def turn_reminder_text(self, agent: str, state: RootState) -> str:
         """Keep task boundaries current without duplicating root bodies."""
+        # Pi carries conventions only in the pre_memory result, so the per-turn
+        # reminder is the same single pointer, never a second body.
+        if agent == "pi":
+            return PRE_MEMORY_POINTER
         lines = [
             "ROOT MEMORY TURN CHECK — the hook-loaded authority remains in force.",
         ]
@@ -310,10 +338,10 @@ class RootControl:
                 f"{state.canonical}; apply {state.migration} before memory work."
             )
         lines.append(
-            "For each substantive new task, follow the already-loaded root rules and "
-            "read the shared scope before relevant nodes. The first mutation or turn "
-            "completion for a new convention digest is intentionally refused once; "
-            "read the injected bundle and retry to acknowledge it."
+            "For each substantive new task, follow the already-loaded root rules "
+            "and read the shared scope before relevant nodes. The first mutation "
+            "or turn completion for a new convention digest is intentionally "
+            "refused once; read the injected bundle and retry to acknowledge it."
         )
         lines.append(
             "Before proceeding, pull the declared shared worktree with "
@@ -331,12 +359,6 @@ class RootControl:
                 "Codex native AGENTS.md instruction discovery remains active. Its "
                 "generated memories are disabled for this integration; do not treat "
                 "$CODEX_HOME/memories/ as a second persistence authority."
-            )
-        elif agent == "pi":
-            lines.append(
-                "Pi keeps no native memory store; this tree is the only memory "
-                "authority for this session. A Pi session spawned as a subagent "
-                "must report additions back to its parent instead of writing them."
             )
         else:
             lines.append(

@@ -223,16 +223,21 @@ its managed bridge is present.
 
 The bridge maps Pi events onto the hook's event vocabulary:
 
-- `before_agent_start` injects the full root bundle on the first turn of a
-  session and the turn after any compaction (`SessionStart`), and the compact
-  per-turn reminder otherwise (`UserPromptSubmit`); this is the only injectable
-  point Pi offers, so `session_start` and `agent_settled` are deliberately not
-  mapped.
-- `tool_call` drives the `PreToolUse` memory-mutation gate; a denial blocks the
-  call with the convention bundle as the reason, and the same-turn retry
-  acknowledges it — the gate's enforcement contract survives on Pi because Pi
-  can block tool calls. Bridge failures fail open with a notice injected on the
-  next turn rather than silently disabling memory.
+- `before_agent_start` emits only a one-line pointer (`SessionStart` on the
+  first turn of a session and the turn after any compaction, the compact
+  per-turn reminder otherwise) telling the model to call `pre_memory`; the full
+  root bundle is never injected. This is the only injectable point Pi offers,
+  so `session_start` and `agent_settled` are deliberately not mapped.
+- `tool_call` drives the `PreToolUse` memory-mutation gate. Until the session
+  acknowledges the current conventions, a memory mutation is denied with a
+  short "call `pre_memory` first" reason; the bundle is delivered only by the
+  `pre_memory` tool, so the gate's enforcement contract survives on Pi because
+  Pi can block tool calls. Bridge failures fail open with a notice injected on
+  the next turn rather than silently disabling memory.
+- The bridge registers `pre_memory`, which runs the hook's `PreMemory` event:
+  it fast-forwards the declared shared worktree, loads the root/shared
+  convention union, records a session-scoped receipt, and returns that catalog
+  plus the `pre_memory` feature summary.
 - `session_before_compact` drives `PreCompact` with the session entries passed
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an
@@ -314,10 +319,13 @@ as a possible discovery hint; the installer and hook never create that
 directory, fall back to it, or silently substitute it.
 
 Convention receipts are private, per-session/turn files. Codex keys them by
-`session_id` and `turn_id`; Claude keys them by `session_id` and `prompt_id`.
-Subagent receipts additionally include `agent_id`. A denial delivers the exact
-current bundle; retrying acknowledges only the recorded source hashes.
-Changing any source invalidates that part of the receipt. For memory writes,
+`session_id` and `turn_id`; Claude keys them by `session_id` and `prompt_id`;
+Pi keys them by `session_id` alone, since `pre_memory` owns the pull and the
+acknowledgment for the whole session. Subagent receipts additionally include
+`agent_id`. For Codex and Claude a denial delivers the exact current bundle and
+the retry acknowledges only the recorded source hashes; on Pi the denial
+instead points at `pre_memory`. Changing any source invalidates that part of
+the receipt. For memory writes,
 the bundle expands from shared conventions through active ancestor group
 manifests and any declared `requires_read` files. Node-collection indexes and
 historical `log/MEMORY.md` files are not convention manifests. Targets beneath

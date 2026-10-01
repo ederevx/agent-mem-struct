@@ -42,8 +42,9 @@ def make_shared(path: Path) -> Path:
     return path.resolve()
 
 
-def make_home(path: Path) -> tuple[Path, Path]:
-    shared = make_shared(path.parent / f"{path.name} shared memory")
+def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
+    if shared is None:
+        shared = make_shared(path.parent / f"{path.name} shared memory")
     (path / "memory").mkdir(parents=True)
     (path / "memory" / "MEMORY.md").write_text(
         f"Structure-Version: test-v1\nStructure: ../STRUCTURE.md\nShared: {shared}\n\n# Root\n",
@@ -51,7 +52,38 @@ def make_home(path: Path) -> tuple[Path, Path]:
     )
     (path / "RULES.md").write_text("# Rules\n\nKeep continuity.\n", encoding="utf-8")
     (path / "STRUCTURE.md").write_text("Structure-Version: test-v1\n", encoding="utf-8")
+    local = path / "memory" / "local"
+    local.mkdir()
+    (local / "MEMORY.md").write_text(
+        "# Local\n\n**Scope:** this agent\n\n## Mandatory conventions\n\n(none)\n",
+        encoding="utf-8",
+    )
     return path, shared
+
+
+def git_run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), text=True, capture_output=True, check=False
+    )
+
+
+def make_git_shared(origin: Path, shared: Path) -> Path:
+    """Build a Git-backed shared root with an origin the clone can pull from."""
+    origin.mkdir(parents=True)
+    git_run("init", "--bare", "-b", "main", cwd=origin)
+    seed = origin.parent / f"{origin.name}-seed"
+    seed.mkdir()
+    git_run("init", "-b", "main", cwd=seed)
+    (seed / "MEMORY.md").write_text(
+        "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n",
+        encoding="utf-8",
+    )
+    git_run("add", "MEMORY.md", cwd=seed)
+    git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed", cwd=seed)
+    git_run("remote", "add", "origin", str(origin), cwd=seed)
+    git_run("push", "-u", "origin", "main", cwd=seed)
+    git_run("clone", str(origin), str(shared), cwd=shared.parent)
+    return shared.resolve()
 
 
 def invoke_pi(home: Path, event: dict[str, object], *, canonical_root: Path | None = None,
@@ -74,7 +106,7 @@ class PiHookTests(unittest.TestCase):
     def output(self, result: subprocess.CompletedProcess[str]) -> dict:
         return json.loads(result.stdout)
 
-    def test_session_start_injects_root_context_with_turn_identity(self) -> None:
+    def test_session_start_points_at_pre_memory_instead_of_the_bundle(self) -> None:
         result = invoke_pi(self.home, {
             "hook_event_name": "SessionStart",
             "session_id": "pi-session",
@@ -84,53 +116,145 @@ class PiHookTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         body = self.output(result)["hookSpecificOutput"]
         self.assertEqual(body["hookEventName"], "SessionStart")
-        self.assertIn("Structure-Version: test-v1", body["additionalContext"])
-        self.assertIn("Keep continuity.", body["additionalContext"])
-        # The turn reminder names Pi's own memory boundary.
+        context = body["additionalContext"]
+        # Only a one-line pointer; the conventions load through pre_memory.
+        self.assertIn("pre_memory", context)
+        self.assertNotIn("\n", context)
+        for body_text in ("## Mandatory conventions", "Verify first.", "--- BEGIN"):
+            self.assertNotIn(body_text, context)
         reminder = invoke_pi(self.home, {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "pi-session",
             "turn_id": "turn-2",
         })
-        self.assertIn(
-            "Pi keeps no native memory store",
-            self.output(reminder)["hookSpecificOutput"]["additionalContext"],
-        )
+        reminder_context = self.output(reminder)["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(reminder_context, context)
 
-    def test_turn_reminder_requires_a_verified_pull_and_a_settlement_record(self) -> None:
+    def test_turn_reminder_is_only_the_one_line_pointer(self) -> None:
         reminder = invoke_pi(self.home, {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "pi-session",
             "turn_id": "turn-1",
         })
         context = self.output(reminder)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("git pull --ff-only", context)
-        self.assertIn("Before settling", context)
+        self.assertIn("pre_memory", context)
+        self.assertNotIn("\n", context)
+        self.assertNotIn("git pull --ff-only", context)
+        self.assertNotIn("Before settling", context)
+        self.assertNotIn("Pi keeps no native memory store", context)
 
-    def test_convention_gate_denies_once_then_acknowledges(self) -> None:
-        target = self.shared / "MEMORY.md"
-        first = invoke_pi(self.home, {
+    def write(self, target: Path) -> dict[str, object]:
+        return {
             "hook_event_name": "PreToolUse",
             "session_id": "pi-session",
             "turn_id": "turn-1",
             "tool_name": "write",
             "cwd": str(self.temp),
             "tool_input": {"path": str(target), "content": "x"},
-        })
+        }
+
+    def test_convention_gate_denies_without_pre_memory_then_allows(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        first = invoke_pi(self.home, self.write(target))
         self.assertEqual(first.returncode, 0, first.stderr)
         denial = self.output(first)["hookSpecificOutput"]
         self.assertEqual(denial["permissionDecision"], "deny")
-        self.assertIn("## Mandatory conventions", denial["permissionDecisionReason"])
-        second = invoke_pi(self.home, {
-            "hook_event_name": "PreToolUse",
+        self.assertIn("call pre_memory first", denial["permissionDecisionReason"])
+        # The denial must not inject the bundle; pre_memory is the only delivery.
+        for body_text in ("## Mandatory conventions", "Verify first.", "--- BEGIN"):
+            self.assertNotIn(body_text, denial["permissionDecisionReason"])
+
+        loaded = invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
             "session_id": "pi-session",
             "turn_id": "turn-1",
-            "tool_name": "write",
-            "cwd": str(self.temp),
-            "tool_input": {"path": str(target), "content": "x"},
         })
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
+        catalog = self.output(loaded)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("## Mandatory conventions", catalog)
+        self.assertIn("Verify first.", catalog)
+
+        second = invoke_pi(self.home, self.write(target))
         # An allowed call prints nothing; the host treats empty stdout as allow.
         self.assertEqual(second.stdout.strip(), "")
+
+    def test_changed_convention_source_re_requires_pre_memory(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        loaded = invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+
+        shared = self.shared / "MEMORY.md"
+        shared.write_text(
+            shared.read_text(encoding="utf-8") + "- Recheck changed rules.\n",
+            encoding="utf-8",
+        )
+        changed = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+        self.assertEqual(changed["permissionDecision"], "deny")
+        self.assertIn("call pre_memory first", changed["permissionDecisionReason"])
+
+    def test_pre_memory_pulls_shared_and_records_a_session_receipt(self) -> None:
+        origin = self.temp / "origin.git"
+        shared = make_git_shared(origin, self.temp / "git shared")
+        home, _ = make_home(self.temp / "git-home", shared)
+        writer = self.temp / "writer"
+        self.assertEqual(
+            subprocess.run(["git", "clone", str(origin), str(writer)],
+                           text=True, capture_output=True, check=False).returncode,
+            0,
+        )
+        with open(writer / "MEMORY.md", "a", encoding="utf-8") as handle:
+            handle.write("- Pulled rule.\n")
+        git_run("add", "MEMORY.md", cwd=writer)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "change", cwd=writer)
+        self.assertEqual(git_run("push", "origin", "main", cwd=writer).returncode, 0)
+
+        result = invoke_pi(home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Pulled rule.", (shared / "MEMORY.md").read_text(encoding="utf-8"))
+        self.assertIn("pre_memory", self.output(result)["hookSpecificOutput"]["additionalContext"])
+        # The catalog must reflect the pulled bytes, not the pre-pull snapshot.
+        self.assertIn("Pulled rule.", self.output(result)["hookSpecificOutput"]["additionalContext"])
+
+        receipts = list((home / ".agent-mem-struct" / "convention-receipts").glob("*.json"))
+        self.assertEqual(len(receipts), 1)
+        # The receipt is session-scoped: a later turn reuses the same one.
+        again = invoke_pi(home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-2",
+        })
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(
+            len(list((home / ".agent-mem-struct" / "convention-receipts").glob("*.json"))),
+            1,
+        )
+
+    def test_pre_memory_pull_failure_blocks_and_records_no_receipt(self) -> None:
+        shared = self.temp / "broken-git-shared"
+        shared.mkdir(parents=True)
+        git_run("init", "-b", "main", cwd=shared)
+        (shared / "MEMORY.md").write_text(
+            "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n",
+            encoding="utf-8",
+        )
+        home, _ = make_home(self.temp / "broken-home", shared)
+        result = invoke_pi(home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("shared worktree could not be", result.stdout)
+        self.assertFalse((home / ".agent-mem-struct" / "convention-receipts").exists())
 
     def test_config_is_active_matches_pi_environment(self) -> None:
         spec = importlib.util.spec_from_file_location("pi_hook_module", HOOK)
@@ -401,12 +525,46 @@ class PiPackageTests(unittest.TestCase):
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
         self.temp = Path(tempfile.mkdtemp(prefix="ams-package-", dir=SCRATCH_ROOT))
+        self.install_bare_stubs()
+
+    def install_bare_stubs(self) -> None:
+        """Stub the bare imports the bridge needs so the bundle can execute.
+
+        Pi resolves `typebox` and `@earendil-works/pi-tui` through its own
+        loader aliases; a hermetic bundle test supplies tiny stand-ins.
+        """
+        typebox = self.temp / "node_modules" / "typebox"
+        typebox.mkdir(parents=True)
+        (typebox / "package.json").write_text(
+            json.dumps({"name": "typebox", "version": "0.0.0", "type": "module", "main": "index.mjs"}),
+            encoding="utf-8",
+        )
+        (typebox / "index.mjs").write_text(
+            "export const Type = { Object: (properties = {}) => ({ type: 'object', properties }) };\n",
+            encoding="utf-8",
+        )
+        tui = self.temp / "node_modules" / "@earendil-works" / "pi-tui"
+        tui.mkdir(parents=True)
+        (tui / "package.json").write_text(
+            json.dumps({
+                "name": "@earendil-works/pi-tui",
+                "version": "0.0.0",
+                "type": "module",
+                "main": "index.mjs",
+            }),
+            encoding="utf-8",
+        )
+        (tui / "index.mjs").write_text(
+            "export class Text { constructor(text) { this.text = text; } }\n",
+            encoding="utf-8",
+        )
 
     def bundle(self, out_name: str = "entry.mjs") -> Path:
         out = self.temp / out_name
         compiled = subprocess.run(
             [shutil.which("npx") or "npx", "--yes", "esbuild", str(PACKAGE_ENTRY),
              "--bundle", "--format=esm", "--platform=node",
+             "--external:typebox", "--external:@earendil-works/pi-tui",
              "--outfile=" + str(out)],
             capture_output=True, text=True, check=False,
         )
@@ -428,7 +586,9 @@ class PiPackageTests(unittest.TestCase):
             "const mod = await import(pathToFileURL(process.argv[2]).href);\n"
             "const mode = process.argv[3];\n"
             "const handlers = {};\n"
+            "const tools = [];\n"
             "const pi = { on: (n, f) => { handlers[n] = f; },\n"
+            "  registerTool: (t) => tools.push(t.name),\n"
             "  sessionManager: { getSessionId: () => 's1' } };\n"
             "if (mode === 'paths') {\n"
             "  const paths = new mod.PackageBridgePaths({ AMS_PYTHON: 'P', AMS_HOOK: 'H',\n"
@@ -439,9 +599,9 @@ class PiPackageTests(unittest.TestCase):
             "  if (mode === 'register') {\n"
             "    const out = await handlers['before_agent_start']({ prompt: 'hi' });\n"
             "    process.stdout.write(JSON.stringify({\n"
-            "      registered: Object.keys(handlers).sort(), out }));\n"
+            "      registered: Object.keys(handlers).sort(), tools: tools.sort(), out }));\n"
             "  } else {\n"
-            "    process.stdout.write(JSON.stringify({ registered: Object.keys(handlers) }));\n"
+            "    process.stdout.write(JSON.stringify({ registered: Object.keys(handlers), tools: tools.sort() }));\n"
             "  }\n"
             "}\n",
             encoding="utf-8",
@@ -467,9 +627,11 @@ class PiPackageTests(unittest.TestCase):
         self.assertEqual(manifest["pi"]["extensions"], ["./extensions/agent-mem-struct.ts"])
         self.assertTrue(PACKAGE_ENTRY.is_file())
         self.assertEqual(manifest["license"], "MIT")
-        # Nothing from pi's bundled core is imported, so nothing may be listed
-        # as a peer dependency: a git install auto-vendors any it finds.
-        self.assertNotIn("peerDependencies", manifest)
+        # The bridge imports typebox, which pi bundles and resolves through its
+        # own loader aliases. Declaring it optional lets a git install vendor it
+        # without making it a hard requirement.
+        self.assertEqual(manifest["peerDependencies"], {"typebox": "*"})
+        self.assertTrue(manifest["peerDependenciesMeta"]["typebox"]["optional"])
         self.assertIn("hooks/", manifest["files"])
 
     def test_entry_compiles_and_shares_the_one_bridge_implementation(self) -> None:
@@ -524,6 +686,7 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("before_agent_start", result["registered"])
         self.assertIn("tool_call", result["registered"])
         self.assertIn("session_before_compact", result["registered"])
+        self.assertIn("pre_memory", result["tools"])
         self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
 
     def test_runtime_paths_honor_env_overrides(self) -> None:

@@ -21,6 +21,10 @@ from rm_support import TEMP_MAX_AGE, read_text, safe_identity, under
 
 RECEIPT_MAX_AGE = 7 * 24 * 60 * 60
 RECEIPT_MAX_FILES = 512
+PREMEMORY_DENIAL = (
+    "Convention acknowledgment required: call pre_memory first "
+    "(it pulls the shared worktree and loads the conventions)."
+)
 
 
 class ConventionGate:
@@ -31,19 +35,25 @@ class ConventionGate:
 
     def identity(self, event: dict[str, Any]) -> str | None:
         session = event.get("session_id") or event.get("sessionId")
-        if self.state.agent == "claude":
-            turn = event.get("prompt_id") or event.get("promptId")
-        else:
-            turn = event.get("turn_id") or event.get("turnId")
-        if not isinstance(session, str) or not session.strip():
-            return None
-        if not isinstance(turn, str) or not turn.strip():
-            return None
         agent = event.get("agent_id") or event.get("agentId") or "parent"
         host = self.state.agent or "unknown"
-        raw = "\0".join(str(value) for value in (host, session, turn, agent))
+        if not isinstance(session, str) or not session.strip():
+            return None
+        if self.state.agent == "pi":
+            # Pi acknowledges once per session: pre_memory owns the pull and the
+            # receipt, and a changed source is caught by the digest comparison.
+            identity_parts = (host, session, agent)
+        else:
+            if self.state.agent == "claude":
+                turn = event.get("prompt_id") or event.get("promptId")
+            else:
+                turn = event.get("turn_id") or event.get("turnId")
+            if not isinstance(turn, str) or not turn.strip():
+                return None
+            identity_parts = (host, session, turn, agent)
+        raw = "\0".join(str(value) for value in identity_parts)
         readable = "--".join(
-            safe_identity(value)[:32] for value in (host, session, turn, agent)
+            safe_identity(value)[:32] for value in identity_parts
         )
         return readable + "--" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -185,12 +195,58 @@ class ConventionGate:
 
         if prerequisite_error:
             return None, prerequisite_error, [], {}
+        return self._digest(paths)
 
+    def union_paths(self) -> list[Path]:
+        """Every convention source a Pi session acknowledges with pre_memory."""
+        paths: list[Path] = []
+        if self.state.shared_memory is not None:
+            paths.append(self.state.shared_memory)
+        paths.append(self.state.root_memory)
+        paths.append(self.state.root_rules)
+        local = self.state.memory_root / "local" / "MEMORY.md"
+        if local.is_file():
+            paths.append(local)
+        roots = [self.state.memory_root]
+        if self.state.shared_resolved is not None:
+            roots.append(self.state.shared_resolved)
+        for root in roots:
+            paths.extend(sorted(root.glob("**/submemory/*/MEMORY.md")))
+        return paths
+
+    def acknowledge_union(
+        self, event: dict[str, Any]
+    ) -> tuple[str | None, str | None, list[Path], str | None]:
+        """Build the session convention union, acknowledge it, and return it."""
+        digest, body, paths, source_digests = self._digest(self.union_paths())
+        if digest is None or body is None:
+            return None, None, [], body or "required convention bundle could not be built"
+        try:
+            self.acknowledge_receipt(event, source_digests)
+        except (OSError, ValueError) as exc:
+            return None, None, [], f"Convention acknowledgment could not be recorded safely: {exc}"
+        return digest, body, paths, None
+
+    def receipt_covers(self, event: dict[str, Any], *, scoped: bool) -> tuple[bool, str]:
+        """Whether this session already acknowledged every current source."""
+        digest, body, paths, source_digests = self.bundle(event, scoped=scoped)
+        if digest is None or body is None:
+            return False, body or "required convention bundle could not be built"
+        if self.receipt_is_current(event, source_digests):
+            return True, ""
+        return False, PREMEMORY_DENIAL
+
+    def _digest(
+        self, paths: list[Path]
+    ) -> tuple[str | None, str | None, list[Path], dict[str, str]]:
+        """Read, validate, and hash the given sources and their prerequisites."""
         unique: list[Path] = []
         seen: set[str] = set()
         chunks: list[str] = []
         source_digests: dict[str, str] = {}
-        for path in paths:
+        pending = list(paths)
+        while pending:
+            path = pending.pop(0)
             key = os.path.normcase(str(path.resolve(strict=False)))
             if key in seen:
                 continue
@@ -198,7 +254,11 @@ class ConventionGate:
             text, error = read_text(path)
             if error or text is None:
                 return None, f"required convention source unavailable: {error or path}", unique, {}
-            if path.name == "MEMORY.md" and "## Mandatory conventions" not in text:
+            if (
+                path.name == "MEMORY.md"
+                and path != self.state.root_memory
+                and "## Mandatory conventions" not in text
+            ):
                 return None, f"required convention manifest is malformed: {path}", unique, {}
             unique.append(path)
             source_digests[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -206,7 +266,7 @@ class ConventionGate:
             prerequisites, error = self.required_reads(path)
             if error:
                 return None, error, unique, {}
-            paths.extend(prerequisites)
+            pending.extend(prerequisites)
         body = "\n\n".join(chunks)
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
         return digest, body, unique, source_digests
