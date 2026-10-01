@@ -26,7 +26,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const PYTHON = "__AMS_PYTHON__";
@@ -94,10 +93,10 @@ export class RootMemoryBridge {
 		this.registerPreMemoryTool(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
 			this.sessionLabel = this.sessionId(ctx);
-			// A reload reruns discovery; the next turn re-delivers the full root
-			// bundle so a stale runtime cannot outlive the documents it points at.
+			// A reload reruns discovery; the next turn re-delivers the pre_memory
+			// pointer and any continuity checkpoint so a stale runtime cannot
+			// outlive the documents it points at.
 			this.firstTurn = true;
-			if (ctx?.hasUI) ctx.ui.setToolsExpanded(false);
 		});
 
 		pi.on("before_agent_start", async (event: any) => this.onBeforeAgentStart(event));
@@ -122,26 +121,6 @@ export class RootMemoryBridge {
 				"conventions, acknowledges them for this session, and returns the catalog.",
 			parameters: Type.Object({}),
 			annotations: { readOnlyHint: false },
-			renderCall(_args: any, theme: any) {
-				return new Text(theme.fg("toolTitle", theme.bold("pre_memory")), 0, 0);
-			},
-			renderResult(result: any, { expanded }: any, theme: any) {
-				const text = (result.content ?? [])
-					.filter((part: any) => part.type === "text")
-					.map((part: any) => part.text)
-					.join("\n");
-				if (result.isError) {
-					return new Text(theme.fg("error", text || "pre_memory failed"), 0, 0);
-				}
-				if (!expanded) {
-					return new Text(
-						theme.fg("muted", "pre_memory conventions loaded (Ctrl+O to expand)"),
-						0,
-						0,
-					);
-				}
-				return new Text(text, 0, 0);
-			},
 			execute: () => this.loadPreMemory(),
 		});
 	}
