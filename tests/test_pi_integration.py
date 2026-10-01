@@ -946,6 +946,9 @@ class MemoryUpdateTests(unittest.TestCase):
         return json.loads(result.stdout)
 
 
+NOTE_MESSAGE = "memory_update create: note\n\nAdds the note node."
+
+
 class MemoryUpdateCommitTests(unittest.TestCase):
     """`memory_update`: committing and pushing the paths a mutation wrote."""
 
@@ -970,6 +973,7 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
 
     def create_note(self, body: str = "first", **fields: object) -> subprocess.CompletedProcess[str]:
+        fields.setdefault("commit_message", NOTE_MESSAGE)
         return self.call(
             operation="create", path=str(self.shared), name="note",
             body=body, summary="Note.", **fields
@@ -991,16 +995,15 @@ class MemoryUpdateCommitTests(unittest.TestCase):
     def test_shared_write_is_committed_and_pushed_narrowly(self) -> None:
         (self.shared / "unrelated.md").write_text("staged elsewhere\n", encoding="utf-8")
         git_run("add", "unrelated.md", cwd=self.shared)
-        result = self.create_note(
-            commit_message="memory_update create: note\n\nAdds the note node."
-        )
+        result = self.create_note()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pushed", self.text(result))
         self.assertIn("memory_update create: note",
                       git_run("log", "--format=%s", cwd=self.origin).stdout)
-        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
-        self.assertIn("Assisted-by: pi", message)
-        self.assertIn("Signed-off-by:", message)
+        self.assertEqual(
+            git_run("log", "-1", "--format=%B", cwd=self.origin).stdout.rstrip("\n"),
+            NOTE_MESSAGE,
+        )
         files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.shared).stdout.split()
         self.assertIn("nodes/note.md", files)
         self.assertIn("nodes/log/note.md", files)
@@ -1018,26 +1021,27 @@ class MemoryUpdateCommitTests(unittest.TestCase):
     def test_a_racing_push_is_integrated_by_the_pre_mutation_pull(self) -> None:
         self.create_note()
         self.writer_push("MEMORY.md", "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n- Raced.\n", "writer change")
-        result = self.call(operation="set", path=str(self.leaf), body="second")
+        result = self.call(operation="set", path=str(self.leaf), body="second",
+                           commit_message="memory_update set: note\n\nShortens the note.")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pushed", self.text(result))
         self.assertIn("Raced.", (self.shared / "MEMORY.md").read_text(encoding="utf-8"))
         subjects = git_run("log", "--format=%s", cwd=self.origin).stdout
         self.assertIn("writer change", subjects)
-        self.assertIn("memory_update: note", subjects)
+        self.assertIn("memory_update set: note", subjects)
 
     def test_a_racing_push_is_replayed_and_the_note_names_the_replayed_commit(self) -> None:
         self.create_note()
         self.writer_push("MEMORY.md", "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n- Raced.\n", "writer change")
         base = git_run("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
         self.leaf.write_text("second\n", encoding="utf-8")
-        publisher = load_hook_module("rm_commit").CommitPublisher(self.shared, "pi")
-        outcome = publisher.publish([self.leaf], "", "racing-probe")
+        publisher = load_hook_module("rm_commit").CommitPublisher(self.shared)
+        outcome = publisher.publish([self.leaf], "racing-probe\n\nReplays the commit.")
         self.assertTrue(outcome.pushed)
         self.assertIsNone(outcome.conflict)
         subjects = git_run("log", "--format=%s", cwd=self.origin).stdout
         self.assertIn("writer change", subjects)
-        self.assertIn("memory_update: racing-probe", subjects)
+        self.assertIn("racing-probe", subjects)
         self.assertNotEqual(outcome.sha, base)
         self.assertEqual(outcome.sha, git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip())
         self.assertIn(outcome.sha[:12], outcome.note)
@@ -1046,10 +1050,11 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         self.create_note()
         self.assertEqual(
             self.call(operation="attach", path=str(self.leaf), attachment_name="big.bin",
-                      attachment_content="payload").returncode,
+                      attachment_content="payload", commit_message=NOTE_MESSAGE).returncode,
             0,
         )
-        renamed = self.call(operation="rename", path=str(self.leaf), name="renamed")
+        renamed = self.call(operation="rename", path=str(self.leaf), name="renamed",
+                            commit_message="memory_update rename: renamed")
         self.assertEqual(renamed.returncode, 0, renamed.stderr)
         tracked = git_run("ls-tree", "-r", "--name-only", "HEAD", cwd=self.origin).stdout.split()
         self.assertIn("nodes/renamed/big.bin", tracked)
@@ -1058,37 +1063,39 @@ class MemoryUpdateCommitTests(unittest.TestCase):
 
     def test_a_later_create_commits_its_index_edit(self) -> None:
         self.call(operation="create", path=str(self.shared), name="note", body="first",
-                  summary="Note.")
+                  summary="Note.", commit_message=NOTE_MESSAGE)
         second = self.call(operation="create", path=str(self.shared), name="beta",
-                           body="beta", summary="Beta.")
+                           body="beta", summary="Beta.", commit_message="create beta")
         self.assertEqual(second.returncode, 0, second.stderr)
         index = git_run("show", "HEAD:nodes/MEMORY.md", cwd=self.origin).stdout
         self.assertIn("[[beta]]", index)
         self.assertEqual(git_run("status", "--porcelain", cwd=self.shared).stdout, "")
 
-    def test_attribution_is_added_after_a_trailer_looking_last_line(self) -> None:
-        result = self.create_note(commit_message="memory_update create: note\n\nNote: this is prose.")
+    def test_the_message_is_committed_exactly_as_written(self) -> None:
+        written = (
+            "subject with a very long unbroken run of words that the tool must not rewrap at "
+            "eighty columns\n"
+            "\n"
+            "Body line one.\n"
+            "Body line two.\n"
+            "\n"
+            "Assisted-by: some-other-agent:model\n"
+            "Signed-off-by: Someone Else <other@example.com>"
+        )
+        result = self.create_note(commit_message=written)
         self.assertEqual(result.returncode, 0, result.stderr)
         message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
-        self.assertIn("Note: this is prose.", message)
-        self.assertIn("Assisted-by: pi", message)
-        self.assertIn("Signed-off-by:", message)
-
-    def test_attribution_completes_a_half_written_pair_in_order(self) -> None:
-        result = self.create_note(commit_message="memory_update create: note\n\nAssisted-by: pi:other")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertEqual(message.rstrip("\n"), written)
         self.assertEqual(message.count("Assisted-by:"), 1)
-        self.assertIn("Assisted-by: pi:other", message)
-        self.assertEqual(message.count("Signed-off-by:"), 1)
-        self.assertLess(message.index("Assisted-by:"), message.index("Signed-off-by:"))
+        self.assertNotIn("pi:", message)
 
-    def test_attribution_keeps_its_order_when_only_the_sign_off_is_given(self) -> None:
-        result = self.create_note(commit_message="memory_update create: note\n\nSigned-off-by: Other <o@x>")
+    def test_a_write_without_a_commit_message_is_left_uncommitted(self) -> None:
+        result = self.create_note(commit_message="")
         self.assertEqual(result.returncode, 0, result.stderr)
-        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
-        self.assertIn("Signed-off-by: Other <o@x>", message)
-        self.assertLess(message.index("Assisted-by:"), message.index("Signed-off-by: Other"))
+        self.assertIn("left uncommitted", self.text(result))
+        self.assertEqual(git_run("rev-list", "--count", "HEAD", cwd=self.shared).stdout.strip(), "1")
+        self.assertEqual(git_run("rev-list", "--count", "main", cwd=self.origin).stdout.strip(), "1")
+        self.assertTrue(git_run("status", "--porcelain", cwd=self.shared).stdout.strip())
 
     def test_sync_target_answers_no_instead_of_raising(self) -> None:
         module = load_hook_module("rm_git")
@@ -1103,15 +1110,15 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         # Reproduce the race window directly: the shared clone is behind, and the
         # mutation is written and committed before the racing push is noticed.
         self.leaf.write_text("second\n", encoding="utf-8")
-        publisher = load_hook_module("rm_commit").CommitPublisher(self.shared, "pi")
-        outcome = publisher.publish([self.leaf], "", "divergence-probe")
+        publisher = load_hook_module("rm_commit").CommitPublisher(self.shared)
+        outcome = publisher.publish([self.leaf], "divergence-probe\n\nKept local.")
         self.assertTrue(outcome.committed)
         self.assertFalse(outcome.pushed)
         self.assertEqual(outcome.conflict["code"], "shared-diverged")
-        self.assertIn("memory_update: divergence-probe",
+        self.assertIn("divergence-probe",
                       git_run("log", "--format=%s", "HEAD", cwd=self.shared).stdout)
         self.assertIn("writer edit", git_run("log", "--format=%s", cwd=self.origin).stdout)
-        self.assertNotIn("memory_update: divergence-probe",
+        self.assertNotIn("divergence-probe",
                          git_run("log", "--format=%s", cwd=self.origin).stdout)
         self.assertFalse((self.shared / ".git" / "rebase-merge").exists())
         self.assertEqual(self.leaf.read_text(encoding="utf-8"), "second\n")

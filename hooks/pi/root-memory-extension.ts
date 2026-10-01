@@ -162,7 +162,8 @@ export class RootMemoryBridge {
 				"nodes index, and any missing group scaffolding, moves displaced " +
 				"current state into the log, and returns any conflicts to fix " +
 				"before re-calling. A write that lands in the declared shared root " +
-				"is then committed and pushed for you. Operations: create (node or " +
+				"is committed and pushed under the `commit_message` you supply, " +
+				"which the tool uses verbatim. Operations: create (node or " +
 				"group), set (current state), log (history), rename, retire, " +
 				"requires, attach, detach. `path` is absolute or relative to the " +
 				"agent home and must resolve inside this agent's memory tree or the " +
@@ -203,10 +204,11 @@ export class RootMemoryBridge {
 				})),
 				commit_message: Type.Optional(Type.String({
 					description:
-						"The commit subject and body for the shared-memory commit, " +
-						"written as given. Optional: a write landing in the declared " +
-						"shared root is committed and pushed either way, and without " +
-						"this it carries only a one-line subject.",
+						"The commit subject and body, committed exactly as written. " +
+						"Required for the tool to commit and push a write that lands " +
+						"in the declared shared root; the tool never composes, wraps, " +
+						"or annotates it, and without it the paths are written but " +
+						"left uncommitted.",
 				})),
 				attachment_name: Type.Optional(Type.String({
 					description: "attach/detach: the file name in the leaf's directory.",
@@ -231,12 +233,7 @@ export class RootMemoryBridge {
 	 *  result the model sees; a conflict report is an error result so the agent
 	 *  fixes it before re-calling. */
 	private async runMemoryUpdate(params: Record<string, unknown>): Promise<unknown> {
-		const model = typeof process.env.PI_MODEL === "string" ? process.env.PI_MODEL : "";
-		const result = await this.callHook(
-			"MemoryUpdate",
-			{ ...params, agent_model: model },
-			MEMORYUPDATE_TIMEOUT_MS,
-		);
+		const result = await this.callHook("MemoryUpdate", params, MEMORYUPDATE_TIMEOUT_MS);
 		const context = this.additionalContext(result);
 		if (!result.ok) {
 			const fallback = result.timedOut
