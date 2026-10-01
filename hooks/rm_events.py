@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from rm_checkpoints import CheckpointStore
+from rm_commit import syncable
 from rm_control import RootState, RootControl
 from rm_receipts import ConventionGate
 from rm_scan import PATCH_HEADER_RE, MutationScanner
 from rm_support import under
+
+GIT_PULL_TIMEOUT = 15
 from rm_update import MemoryUpdater
 
 
@@ -124,9 +127,13 @@ class EventDispatcher:
                 capture_output=True,
                 text=True,
                 check=False,
+                env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+                timeout=GIT_PULL_TIMEOUT,
             )
         except OSError as exc:
             return False, str(exc)
+        except subprocess.TimeoutExpired:
+            return False, f"git pull did not finish within {GIT_PULL_TIMEOUT}s"
         if completed.returncode == 0:
             return True, ""
         detail = (completed.stderr or completed.stdout or "").strip()
@@ -142,7 +149,7 @@ class EventDispatcher:
                 + " Repair the root control files before memory work.",
             )
             return 1
-        if state.shared_git_backed:
+        if state.shared_git_backed and syncable(state.shared_resolved):
             pulled, detail = self.pull_shared(state)
             if not pulled:
                 self.emit_hook_context(
@@ -190,7 +197,7 @@ class EventDispatcher:
                 "route this change back to the parent session (fix: call it from the parent).",
             )
             return 3
-        if not state.errors and state.shared_git_backed:
+        if not state.errors and state.shared_git_backed and syncable(state.shared_resolved):
             pulled, detail = self.pull_shared(state)
             if not pulled:
                 self.emit_hook_context(

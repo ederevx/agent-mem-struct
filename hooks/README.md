@@ -244,11 +244,17 @@ The bridge maps Pi events onto the hook's event vocabulary:
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
   mechanical, and supports create, set, log, rename, retire, requires,
-  attach, and detach. It never commits and never resolves a conflict itself:
-  `control-invalid`, `stale-protocol`, `shared-diverged`, `git-conflict`,
-  `outside-memory`, `missing-counterpart`, `missing-prerequisite`, `exists`,
-  and `bad-request` come back as a conflict report for the agent to fix and
-  retry. A subagent-attributed `MemoryUpdate` event is refused in the hook,
+  attach, and detach. A write that lands in the declared shared root is then
+  committed and pushed by `rm_commit.CommitPublisher`, which stages only the
+  paths the mutation wrote, keeps the agent's own `commit_message` as
+  written, adds the attribution trailers only when it carries none, replays
+  its commit onto a racing shared tip, and never force-pushes; without a
+  remote or an upstream it commits locally and says so. It never resolves a
+  conflict itself: `control-invalid`, `stale-protocol`, `shared-diverged`,
+  `shared-unpushed`, `git-conflict`, `missing-identity`, `outside-memory`,
+  `missing-counterpart`, `missing-prerequisite`, `exists`, and `bad-request`
+  come back as a conflict report for the agent to fix and retry. A
+  subagent-attributed `MemoryUpdate` event is refused in the hook,
   independent of the PreToolUse gate.
 - `session_before_compact` drives `PreCompact` with the session entries passed
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
