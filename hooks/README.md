@@ -244,16 +244,26 @@ The bridge maps Pi events onto the hook's event vocabulary:
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
   mechanical, and supports create, set, log, rename, retire, requires,
-  attach, and detach. A write that lands in the declared shared root is then
-  committed and pushed by `rm_commit.CommitPublisher`, which stages only the
+  attach, detach, and commit. `commit` pairs with the built-in `edit` tool for
+  content while the tool keeps commit ownership: it publishes edits you made
+  to memory files and requires `commit_message` (a missing one gives
+  `bad-request`). Its `path` is optional and names the edited active `.md`
+  leaf; when omitted, every dirty path inside the agent's memory tree and the
+  declared shared root is published. It stages only that target set, never the
+  whole index, and derives the displaced state from Git: for a dirty active
+  leaf whose paired log is not itself dirty, the lines the edit dropped are
+  appended to the paired log before the commit. A write that lands in the
+  declared shared root is then committed and pushed by
+  `rm_commit.CommitPublisher`, which stages only the
   paths the mutation wrote, commits the supplied `commit_message` exactly as
   written (it never composes, wraps, or annotates one, and leaves the paths
   uncommitted when none is given), replays its commit onto a racing shared
   tip, and never force-pushes; without a remote or an upstream it commits
   locally and says so. Every git invocation goes through `rm_git.GitWorktree`.
   It never resolves a conflict itself: `control-invalid`, `stale-protocol`,
-  `shared-diverged`, `shared-unpushed`, `git-conflict`, `outside-memory`,
-  `missing-counterpart`, `missing-prerequisite`, `exists`, and `bad-request`
+  `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
+  `outside-memory`, `missing-counterpart`, `nothing-to-commit`, `not-git`,
+  `missing-prerequisite`, `exists`, and `bad-request`
   come back as a conflict report for the agent to fix and retry. A
   subagent-attributed `MemoryUpdate` event is refused in the hook,
   independent of the PreToolUse gate.

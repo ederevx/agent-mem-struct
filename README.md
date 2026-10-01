@@ -25,7 +25,10 @@ stands down while the installer-managed bridge is present. When it is the sole
 registrant it also deploys the protected root documents itself, running the
 installer's `sync-documents` action under a package-owned marker and the same
 refresh and conflict protection, so a package-only host keeps `RULES.md` and
-`STRUCTURE.md` current without the installer.
+`STRUCTURE.md` current without the installer. That bridge registers the
+`memory_update` tool, whose `commit` operation publishes edits made with the
+built-in `edit` tool and captures the displaced current state into the paired
+log.
 On every platform, the installer deploys protected managed copies of the two
 root structural documents:
 

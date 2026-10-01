@@ -165,7 +165,9 @@ export class RootMemoryBridge {
 				"is committed and pushed under the `commit_message` you supply, " +
 				"which the tool uses verbatim. Operations: create (node or " +
 				"group), set (current state), log (history), rename, retire, " +
-				"requires, attach, detach. `path` is absolute or relative to the " +
+				"requires, attach, detach, commit. `commit` publishes edits made " +
+				"with the built-in edit tool and captures the displaced current " +
+				"state into the paired log. `path` is absolute or relative to the " +
 				"agent home and must resolve inside this agent's memory tree or the " +
 				"declared shared root.",
 			parameters: Type.Object({
@@ -174,11 +176,15 @@ export class RootMemoryBridge {
 					Type.Literal("log"), Type.Literal("rename"),
 					Type.Literal("retire"), Type.Literal("requires"),
 					Type.Literal("attach"), Type.Literal("detach"),
+					Type.Literal("commit"),
 				], { description: "The mutation to perform." }),
 				path: Type.String({
 					description:
 						"create: the group directory (node) or parent of the new " +
-						"group (kind=group). All others: the active .md leaf.",
+						"group (kind=group). All others: the active .md leaf. " +
+						"commit: optional, the edited active .md leaf; omitted " +
+						"publishes every dirty path inside the agent's memory tree " +
+						"and the declared shared root.",
 				}),
 				name: Type.Optional(Type.String({
 					description: "create/rename: the kebab-case leaf or group stem.",
@@ -205,10 +211,10 @@ export class RootMemoryBridge {
 				commit_message: Type.Optional(Type.String({
 					description:
 						"The commit subject and body, committed exactly as written. " +
-						"Required for the tool to commit and push a write that lands " +
-						"in the declared shared root; the tool never composes, wraps, " +
-						"or annotates it, and without it the paths are written but " +
-						"left uncommitted.",
+						"Required for `commit` and for the tool to commit and push a " +
+						"write that lands in the declared shared root; the tool never " +
+						"composes, wraps, or annotates it, and without it the paths " +
+						"are written but left uncommitted.",
 				})),
 				attachment_name: Type.Optional(Type.String({
 					description: "attach/detach: the file name in the leaf's directory.",
