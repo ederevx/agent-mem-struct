@@ -222,19 +222,34 @@ export class RootMemoryBridge {
 				})),
 			}),
 			annotations: { readOnlyHint: false },
-			execute: (_id: string, params: unknown) =>
-				this.runMemoryUpdate((params ?? {}) as Record<string, unknown>),
+			execute: (_id: string, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: any) =>
+				this.runMemoryUpdate((params ?? {}) as Record<string, unknown>, ctx),
 		});
+	}
+
+	/** The active model's own id, for the `Assisted-by` trailer the hook writes.
+	 *  Pi sets `PI_MODEL` for tool processes but not for itself, so the running
+	 *  session is the only source of the active model. */
+	private modelLabel(ctx?: any): string {
+		try {
+			const model: any = ctx?.getModel?.();
+			const id = typeof model?.id === "string" ? model.id.trim() : "";
+			if (id) return id;
+			const provider = typeof model?.provider === "string" ? model.provider.trim() : "";
+			if (provider) return provider;
+		} catch {
+			// fall through to the environment
+		}
+		return typeof process.env.PI_MODEL === "string" ? process.env.PI_MODEL.trim() : "";
 	}
 
 	/** Runs the MemoryUpdate hook and turns its report, or its failure, into a
 	 *  result the model sees; a conflict report is an error result so the agent
 	 *  fixes it before re-calling. */
-	private async runMemoryUpdate(params: Record<string, unknown>): Promise<unknown> {
-		const model = typeof process.env.PI_MODEL === "string" ? process.env.PI_MODEL : "";
+	private async runMemoryUpdate(params: Record<string, unknown>, ctx?: any): Promise<unknown> {
 		const result = await this.callHook(
 			"MemoryUpdate",
-			{ ...params, agent_model: model },
+			{ ...params, agent_model: this.modelLabel(ctx) },
 			MEMORYUPDATE_TIMEOUT_MS,
 		);
 		const context = this.additionalContext(result);

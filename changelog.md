@@ -4,6 +4,15 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-01T21:10:00-04:00 - name the active model in the published attribution
+
+The published `Assisted-by` trailer only carried the agent, because the
+bridge read `PI_MODEL` from its own environment: Pi sets that variable for
+tool processes but not for the session process the bridge runs in, so the
+hook saw no model. The bridge now resolves the active model from the
+session (`ctx.getModel()`) and sends it with the `MemoryUpdate` event,
+keeping the environment as the fallback for other hosts.
+
 ## 2026-10-01T20:05:00-04:00 - commit and push shared mutations from the tool
 
 `memory_update` wrote the shared paths and left the commit to the agent, so

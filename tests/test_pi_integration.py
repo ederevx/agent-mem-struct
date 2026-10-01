@@ -1097,6 +1097,12 @@ class MemoryUpdateCommitTests(unittest.TestCase):
                                side_effect=subprocess.TimeoutExpired("git", 5)):
             self.assertFalse(worktree.has_sync_target())
 
+    def test_the_model_trailer_names_the_event_model(self) -> None:
+        result = self.create_note(agent_model="vendor/model-x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertIn("Assisted-by: pi:vendor/model-x", message)
+
     def test_a_diverging_write_leaves_the_commit_local_and_reports_it(self) -> None:
         self.create_note()
         self.writer_push("nodes/note.md", "writer body\n", "writer edit")
