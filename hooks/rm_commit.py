@@ -2,19 +2,19 @@
 
 One owner for turning written shared files into shared history:
 `CommitPublisher` stages exactly the paths the mutation reported (never the
-rest of the index), commits them under the message `CommitMessage` prepares
-from the agent's own words, and pushes the shared branch. When another agent
-pushed first, the local commit is replayed with `git pull --rebase
---autostash` and the push retried inside a fixed budget; a failed replay is
-aborted and reported rather than forced. A worktree with no remote or no
-upstream branch is detected and committed locally instead.
+rest of the index), commits them under the message the caller wrote and
+nothing else, and pushes the shared branch. It never composes, rewrites, or
+annotates that message, and assumes no convention about its content. When
+another agent pushed first, the local commit is replayed with `git pull
+--rebase --autostash` and the push retried inside a fixed budget; a failed
+replay is aborted and reported rather than forced. A worktree with no remote
+or no upstream branch is detected and committed locally instead.
 """
 from __future__ import annotations
 
 import time
 from pathlib import Path
 
-from rm_commit_message import CommitMessage
 from rm_git import GitWorktree
 from rm_support import under
 
@@ -44,40 +44,28 @@ class CommitOutcome:
 class CommitPublisher:
     """One owner for committing and pushing the shared paths a mutation wrote."""
 
-    def __init__(self, root: Path, agent: str, model: str = "") -> None:
+    def __init__(self, root: Path) -> None:
         self.root = root
         self.stop: float | None = None
         self.worktree = GitWorktree(root, window=self.remaining)
-        self.message = CommitMessage(self.worktree, agent, model)
 
-    def publish(self, paths: list[Path], message: str, target: str) -> CommitOutcome:
-        """Commit the paths this mutation wrote, then push them."""
+    def publish(self, paths: list[Path], message: str) -> CommitOutcome:
+        """Commit the paths this mutation wrote under the caller's own message."""
         self.stop = time.monotonic() + PUBLISH_SECONDS
         can_push = self.worktree.has_sync_target()
         staged = self.stageable(paths)
         if not staged:
             return CommitOutcome(note="no shared path of this mutation is tracked by Git.")
-        identity = self.identity()
-        if identity is None:
+        if not message.strip():
             return CommitOutcome(
-                conflict=self.conflict(
-                    "missing-identity",
-                    "the shared worktree has no `user.name`/`user.email` to sign the commit with.",
-                    "set both in the shared worktree, then re-call",
-                )
-            )
-        payload, invalid = self.message.compose(message, target, identity)
-        if invalid is not None:
-            return CommitOutcome(
-                conflict=self.conflict(
-                    "bad-message", invalid, "correct `commit_message` and re-call"
-                )
+                note="no `commit_message` was given, so the written shared paths were "
+                "left uncommitted.",
             )
         staged = self.stage(staged)
         if isinstance(staged, CommitOutcome):
             return staged
         commit = self.worktree.run(
-            "commit", "-F", "-", "--", *staged, input_text=payload
+            "commit", "-F", "-", "--", *staged, input_text=message.rstrip("\n") + "\n"
         )
         if commit.returncode != 0:
             if "nothing to commit" in commit.stdout + commit.stderr:
@@ -187,11 +175,6 @@ class CommitPublisher:
             if (root / name).exists()
             or any(entry == name or entry.startswith(name + "/") for entry in tracked)
         ]
-
-    def identity(self) -> tuple[str, str] | None:
-        name = self.worktree.run("config", "user.name").stdout.strip()
-        email = self.worktree.run("config", "user.email").stdout.strip()
-        return (name, email) if name and email else None
 
     def conflict(self, code: str, message: str, fix: str) -> dict[str, str]:
         return {"code": code, "message": message, "fix": fix}

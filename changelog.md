@@ -4,6 +4,19 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-01T22:00:00-04:00 - publish under the agent's own message only
+
+The tool composed part of the commit it published: it rewrapped the agent's
+prose to 80 columns, parsed and completed an attribution block, and refused a
+message whose trailer block it could not verify. Those are conventions of one
+workflow rather than properties of a memory write, and the tool applied them
+to every repository it committed to. It now passes the agent's
+`commit_message` to git exactly as written, adding, wrapping, and linting
+nothing, and when no message is given it leaves the written paths uncommitted
+and says so instead of inventing a subject. Authorship, trailers, and wording
+belong to the agent; `rm_commit_message.py` is gone and `CommitPublisher`
+keeps only staging, commit, and the bounded push.
+
 ## 2026-10-01T20:05:00-04:00 - commit and push shared mutations from the tool
 
 `memory_update` wrote the shared paths and left the commit to the agent, so

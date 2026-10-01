@@ -5,10 +5,11 @@ validates a requested mutation against the live root-control snapshot,
 materializes every required counterpart (active leaf, paired log, nodes
 index, group scaffolding), and returns the exact conflicts the agent must
 fix before re-calling. A mutation that lands under the declared shared root
-is then committed and pushed by `rm_commit.CommitPublisher`; a mutation in
-the agent's own tree is only written. It never resolves a conflict on its
-own, never force-pushes, and never writes outside the agent's own memory
-tree or the declared shared root.
+is then committed and pushed by `rm_commit.CommitPublisher` under the
+`commit_message` the agent wrote, which the tool never composes or edits; a
+mutation in the agent's own tree is only written. It never resolves a
+conflict on its own, never force-pushes, and never writes outside the
+agent's own memory tree or the declared shared root.
 
 Operations: create (node or group), set (current state, moving only the
 lines it displaces into the log unless `mechanical`), log (append
@@ -151,8 +152,8 @@ class MemoryUpdater:
                     ) if part
                 ),
             )
-        publisher = CommitPublisher(shared, self.state.agent, self.model_name(request))
-        outcome = publisher.publish(written, self.commit_message(request), self.target(request))
+        publisher = CommitPublisher(shared)
+        outcome = publisher.publish(written, self.commit_message(request))
         if outcome.conflict is not None:
             conflict = outcome.conflict
             return self.conflict(
@@ -172,16 +173,6 @@ class MemoryUpdater:
     def commit_message(self, request: dict[str, Any]) -> str:
         value = request.get("commit_message")
         return value.strip() if isinstance(value, str) else ""
-
-    def model_name(self, request: dict[str, Any]) -> str:
-        value = request.get("agent_model")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        return str(os.environ.get("PI_MODEL") or "").strip()
-
-    def target(self, request: dict[str, Any]) -> str:
-        name = self.required(request, "name") or Path(self.required(request, "path")).name
-        return name or "shared memory"
 
     # -- operations ----------------------------------------------------------
 
