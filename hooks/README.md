@@ -238,6 +238,18 @@ The bridge maps Pi events onto the hook's event vocabulary:
   it fast-forwards the declared shared worktree, loads the root/shared
   convention union, records a session-scoped receipt, and returns that catalog
   plus the `pre_memory` feature summary.
+- The bridge also registers `memory_update`, the structural mutation tool,
+  which runs the hook's `MemoryUpdate` event once the shared worktree has
+  fast-forwarded. `rm_update.MemoryUpdater` materializes every required
+  counterpart (the same-named log, the nodes index, and group scaffolding),
+  moves displaced current state into the log unless the edit is declared
+  mechanical, and supports create, set, log, rename, retire, requires,
+  attach, and detach. It never commits and never resolves a conflict itself:
+  `control-invalid`, `stale-protocol`, `shared-diverged`, `git-conflict`,
+  `outside-memory`, `missing-counterpart`, `missing-prerequisite`, `exists`,
+  and `bad-request` come back as a conflict report for the agent to fix and
+  retry. A subagent-attributed `MemoryUpdate` event is refused in the hook,
+  independent of the PreToolUse gate.
 - `session_before_compact` drives `PreCompact` with the session entries passed
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an

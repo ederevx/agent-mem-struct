@@ -37,7 +37,12 @@ PRE_MEMORY_FEATURE_TEXT = (
     "the memory-mutation gate. If any convention source changes, call it "
     "again; mutations stay denied until the current convention digest is "
     "acknowledged. Subagents read the same sources but never write memory; "
-    "route additions back to the parent."
+    "route additions back to the parent.\n\n"
+    "agent-mem-struct `memory_update`: after acknowledgment, use it to create "
+    "or update a node and its required counterparts in one spec-shaped "
+    "operation. It creates the paired log, the nodes index, and any missing "
+    "group scaffolding for you, moves displaced current state into the log, "
+    "and returns any conflicts to fix before re-calling the tool."
 )
 
 PRE_MEMORY_POINTER = (
