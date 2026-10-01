@@ -23,11 +23,11 @@ import difflib
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from rm_commit import CommitPublisher
+from rm_git import GitWorktree
 from rm_control import RootControl, RootState
 from rm_support import under
 
@@ -453,13 +453,9 @@ class MemoryUpdater:
         shared = self.state.shared_resolved
         if shared is None:
             return None
-        try:
-            completed = subprocess.run(
-                ["git", "-C", str(shared), "diff", "--name-only", "--diff-filter=U"],
-                capture_output=True, text=True, check=False,
-            )
-        except OSError:
-            return None
+        completed = GitWorktree(shared).run(
+            "diff", "--name-only", "--diff-filter=U", budget=5.0
+        )
         for line in completed.stdout.splitlines():
             if line.strip():
                 return line.strip()

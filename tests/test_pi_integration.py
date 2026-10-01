@@ -1090,11 +1090,12 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         self.assertIn("Signed-off-by: Other <o@x>", message)
         self.assertLess(message.index("Assisted-by:"), message.index("Signed-off-by: Other"))
 
-    def test_syncable_answers_no_instead_of_raising(self) -> None:
-        module = load_hook_module("rm_commit")
+    def test_sync_target_answers_no_instead_of_raising(self) -> None:
+        module = load_hook_module("rm_git")
+        worktree = module.GitWorktree(self.shared)
         with mock.patch.object(module.subprocess, "run",
                                side_effect=subprocess.TimeoutExpired("git", 5)):
-            self.assertFalse(module.syncable(self.shared))
+            self.assertFalse(worktree.has_sync_target())
 
     def test_a_diverging_write_leaves_the_commit_local_and_reports_it(self) -> None:
         self.create_note()
