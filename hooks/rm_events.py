@@ -19,6 +19,7 @@ from rm_control import RootState, RootControl
 from rm_receipts import ConventionGate
 from rm_scan import PATCH_HEADER_RE, MutationScanner
 from rm_support import under
+from rm_update import MemoryUpdater
 
 
 def is_subagent_event(event: dict[str, Any]) -> bool:
@@ -173,6 +174,36 @@ class EventDispatcher:
         )
         self.emit_hook_context("PreMemory", context)
         return 0
+
+    def handle_memory_update(self, event: dict[str, Any], state: RootState) -> int:
+        """Apply one structural memory mutation, or report the conflicts.
+
+        A subagent never writes; the shared worktree must fast-forward first;
+        the mutation itself is validated and performed by MemoryUpdater. Exit 0
+        is success, exit 3 is a model-facing conflict report.
+        """
+        if is_subagent_event(event):
+            self.emit_hook_context(
+                "MemoryUpdate",
+                "memory_update: CONFLICTS - fix these, then re-call the tool:\n"
+                "- subagent-readonly: subagents have read-only access to memory; "
+                "route this change back to the parent session (fix: call it from the parent).",
+            )
+            return 3
+        if not state.errors and state.shared_git_backed:
+            pulled, detail = self.pull_shared(state)
+            if not pulled:
+                self.emit_hook_context(
+                    "MemoryUpdate",
+                    "memory_update: CONFLICTS - fix these, then re-call the tool:\n"
+                    "- shared-diverged: the declared shared worktree could not be "
+                    f"fast-forwarded ({detail}) (fix: reconcile the shared history first).",
+                )
+                return 3
+            state = self.control.load(self.agent)
+        result = MemoryUpdater(self.control, state).run(event)
+        self.emit_hook_context("MemoryUpdate", result.text())
+        return 0 if result.ok else 3
 
     def compact_error(self, event: dict[str, Any], cause: str) -> int:
         """Refuse a manual compaction; warn and continue an automatic one.

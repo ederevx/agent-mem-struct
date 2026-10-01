@@ -58,6 +58,7 @@ SUPPORTED_EVENTS = {
     "PreCompact",
     "PreToolUse",
     "PreMemory",
+    "MemoryUpdate",
     "Stop",
 }
 
@@ -152,6 +153,8 @@ def main() -> int:
         return 0
     if event_name == "PreMemory":
         return dispatcher.handle_prememory(event, state)
+    if event_name == "MemoryUpdate":
+        return dispatcher.handle_memory_update(event, state)
     if event_name == "PreCompact":
         return dispatcher.handle_precompact(event, state)
     if event_name == "PreToolUse":

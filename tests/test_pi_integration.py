@@ -540,7 +540,17 @@ class PiPackageTests(unittest.TestCase):
             encoding="utf-8",
         )
         (typebox / "index.mjs").write_text(
-            "export const Type = { Object: (properties = {}) => ({ type: 'object', properties }) };\n",
+            "const schema = (type, extra = {}) => ({ type, ...extra });\n"
+            "export const Type = {\n"
+            "  Object: (properties = {}) => ({ type: 'object', properties }),\n"
+            "  String: (extra = {}) => schema('string', extra),\n"
+            "  Number: () => schema('number'),\n"
+            "  Boolean: () => schema('boolean'),\n"
+            "  Array: (items) => schema('array', { items }),\n"
+            "  Optional: (inner) => ({ optional: true, ...(inner || {}) }),\n"
+            "  Union: (anyOf) => ({ anyOf }),\n"
+            "  Literal: (value) => ({ const: value }),\n"
+            "};\n",
             encoding="utf-8",
         )
         tui = self.temp / "node_modules" / "@earendil-works" / "pi-tui"
@@ -687,6 +697,7 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("tool_call", result["registered"])
         self.assertIn("session_before_compact", result["registered"])
         self.assertIn("pre_memory", result["tools"])
+        self.assertIn("memory_update", result["tools"])
         self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
 
     def test_runtime_paths_honor_env_overrides(self) -> None:
@@ -696,6 +707,190 @@ class PiPackageTests(unittest.TestCase):
             "python": "P", "hook": "H", "memoryHome": "M",
             "configHome": "C", "canonicalRoot": "R",
         })
+
+    def output(self, result: subprocess.CompletedProcess[str]) -> dict:
+        return json.loads(result.stdout)
+
+
+class MemoryUpdateTests(unittest.TestCase):
+    """`memory_update`: structural creation, pairing, and conflict reporting."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-update-", dir=SCRATCH_ROOT))
+        self.home, self.shared = make_home(self.temp / "home")
+        self.local = self.home / "memory" / "local"
+
+    def call(self, **fields: object) -> subprocess.CompletedProcess[str]:
+        event: dict[str, object] = {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        }
+        event.update(fields)
+        return invoke_pi(self.home, event)
+
+    def text(self, result: subprocess.CompletedProcess[str]) -> str:
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def create(self, name: str, **fields: object) -> subprocess.CompletedProcess[str]:
+        return self.call(operation="create", path=str(self.local), name=name, **fields)
+
+    def test_create_builds_leaf_log_and_index(self) -> None:
+        result = self.create("warm-reset", body="# Warm reset\n\nCurrent state.",
+                             summary="Warm reset investigation.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        leaf = self.local / "nodes" / "warm-reset.md"
+        log = self.local / "nodes" / "log" / "warm-reset.md"
+        self.assertEqual(leaf.read_text(encoding="utf-8"), "# Warm reset\n\nCurrent state.\n")
+        self.assertIn("# Log: warm-reset", log.read_text(encoding="utf-8"))
+        index = (self.local / "nodes" / "MEMORY.md").read_text(encoding="utf-8")
+        self.assertIn("[[warm-reset]]", index)
+        self.assertIn("Warm reset investigation.", index)
+        # The nodes index counterpart is created with the leaf's directory.
+        self.assertTrue((self.local / "nodes" / "log" / "MEMORY.md").is_file())
+
+    def test_create_group_scaffolds_the_minimum_shape(self) -> None:
+        parent = self.local / "submemory"
+        parent.mkdir()
+        result = self.call(operation="create", kind="group", path=str(parent), name="kernel",
+                           body="# Kernel\n\n**Scope:** kernel work.\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        group = parent / "kernel"
+        for relative in ("MEMORY.md", "log/MEMORY.md", "nodes/MEMORY.md", "nodes/log/MEMORY.md"):
+            self.assertTrue((group / relative).is_file(), relative)
+
+    def test_set_moves_displaced_state_into_the_log(self) -> None:
+        self.create("note", body="first")
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        result = self.call(operation="set", path=str(leaf), body="second")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(leaf.read_text(encoding="utf-8"), "second\n")
+        history = log.read_text(encoding="utf-8")
+        self.assertIn("superseded current state", history)
+        self.assertIn("first", history)
+        self.assertNotIn("No semantic history yet.", history)
+        # A mechanical edit must not add a second history entry.
+        self.call(operation="set", path=str(leaf), body="second (typo fix)", mechanical=True)
+        self.assertEqual(log.read_text(encoding="utf-8"), history)
+
+    def test_log_appends_history_without_touching_active(self) -> None:
+        self.create("note", body="current")
+        leaf = self.local / "nodes" / "note.md"
+        result = self.call(operation="log", path=str(leaf), text="an earlier attempt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(leaf.read_text(encoding="utf-8"), "current\n")
+        self.assertIn("an earlier attempt",
+                      (self.local / "nodes" / "log" / "note.md").read_text(encoding="utf-8"))
+
+    def test_rename_moves_the_log_and_rewrites_inbound_links(self) -> None:
+        self.create("old-name", body="body")
+        index = self.local / "nodes" / "MEMORY.md"
+        index.write_text(index.read_text(encoding="utf-8") + "See [[old-name]] for detail.\n",
+                         encoding="utf-8")
+        leaf = self.local / "nodes" / "old-name.md"
+        result = self.call(operation="rename", path=str(leaf), name="new-name")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(leaf.exists())
+        self.assertTrue((self.local / "nodes" / "new-name.md").is_file())
+        self.assertTrue((self.local / "nodes" / "log" / "new-name.md").is_file())
+        rewritten = index.read_text(encoding="utf-8")
+        self.assertIn("[[new-name]]", rewritten)
+        self.assertNotIn("[[old-name]]", rewritten)
+
+    def test_retire_removes_active_and_keeps_the_log(self) -> None:
+        self.create("gone", body="body")
+        leaf = self.local / "nodes" / "gone.md"
+        result = self.call(operation="retire", path=str(leaf))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(leaf.exists())
+        self.assertTrue((self.local / "nodes" / "log" / "gone.md").is_file())
+        self.assertNotIn("[[gone]]", (self.local / "nodes" / "MEMORY.md").read_text(encoding="utf-8"))
+
+    def test_requires_sets_then_clears_frontmatter(self) -> None:
+        self.create("alpha", body="alpha")
+        self.create("beta", body="beta")
+        beta = self.local / "nodes" / "beta.md"
+        result = self.call(operation="requires", path=str(beta), requires=["alpha.md"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = beta.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("---\nrequires_read:\n  - alpha.md\n---\n"))
+        self.assertIn("beta", text)
+        self.call(operation="requires", path=str(beta), requires=[])
+        self.assertEqual(beta.read_text(encoding="utf-8"), "beta\n")
+
+    def test_attach_and_detach_the_leaf_directory(self) -> None:
+        self.create("with-files", body="body")
+        leaf = self.local / "nodes" / "with-files.md"
+        result = self.call(operation="attach", path=str(leaf), attachment_name="repro.sh",
+                           attachment_content="#!/bin/sh\necho hi\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        attachment = self.local / "nodes" / "with-files" / "repro.sh"
+        self.assertTrue(attachment.is_file())
+        detach = self.call(operation="detach", path=str(leaf), attachment_name="repro.sh")
+        self.assertEqual(detach.returncode, 0, detach.stderr)
+        self.assertFalse(attachment.exists())
+        self.assertFalse((self.local / "nodes" / "with-files").exists())
+
+    def test_conflicts_are_reported_and_never_resolved(self) -> None:
+        outside = self.call(operation="create", path="/etc", name="nope")
+        self.assertEqual(outside.returncode, 3)
+        self.assertIn("outside-memory", self.text(outside))
+
+        missing = self.call(operation="requires", path=str(self.local / "absent.md"),
+                            requires=["nowhere.md"])
+        self.assertEqual(missing.returncode, 3)
+        self.assertIn("not-found", self.text(missing))
+
+        self.create("dupe", body="body")
+        again = self.create("dupe", body="body")
+        self.assertEqual(again.returncode, 3)
+        self.assertIn("exists", self.text(again))
+
+        orphan = self.local / "nodes" / "orphan.md"
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_text("orphan\n", encoding="utf-8")
+        unpaired = self.call(operation="set", path=str(orphan), body="new")
+        self.assertEqual(unpaired.returncode, 3)
+        self.assertIn("missing-counterpart", self.text(unpaired))
+
+        bad_requires = self.call(operation="requires", path=str(self.local / "nodes" / "dupe.md"),
+                                 requires=["absent-prerequisite.md"])
+        self.assertEqual(bad_requires.returncode, 3)
+        self.assertIn("missing-prerequisite", self.text(bad_requires))
+
+    def test_subagent_never_writes(self) -> None:
+        result = self.call(agent_id="sub-1", operation="create", path=str(self.local),
+                           name="nope")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("subagent-readonly", self.text(result))
+        self.assertFalse((self.local / "nodes" / "nope.md").exists())
+
+    def test_pretool_gate_denies_until_prememory_then_allows(self) -> None:
+        leaf = str(self.local / "nodes" / "gate.md")
+        def pretool() -> subprocess.CompletedProcess[str]:
+            return invoke_pi(self.home, {
+                "hook_event_name": "PreToolUse",
+                "session_id": "pi-session",
+                "turn_id": "turn-1",
+                "tool_name": "memory_update",
+                "tool_input": {"path": leaf},
+                "cwd": str(self.home),
+            })
+        denied = pretool()
+        self.assertEqual(denied.returncode, 0)
+        self.assertEqual(self.output(denied)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        allowed = pretool()
+        self.assertEqual(allowed.returncode, 0)
+        # An allowed call prints nothing; the host treats empty stdout as allow.
+        self.assertEqual(allowed.stdout.strip(), "")
 
     def output(self, result: subprocess.CompletedProcess[str]) -> dict:
         return json.loads(result.stdout)

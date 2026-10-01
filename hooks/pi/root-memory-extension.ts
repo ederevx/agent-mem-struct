@@ -6,6 +6,7 @@
 //   before_agent_start  -> SessionStart (first turn, and after compaction)
 //                       or UserPromptSubmit (per-turn reminder)
 //   tool_call           -> PreToolUse (memory-mutation gate; Pi can block)
+//   memory_update tool   -> MemoryUpdate (structural mutation or conflict report)
 //   session_before_compact -> PreCompact (cancel manual compaction on failure)
 //
 // Pi's session_start and agent_settled events cannot inject or block anything,
@@ -37,6 +38,7 @@ const CANONICAL_ROOT = "__AMS_CANONICAL_ROOT__";
 const DEFAULT_TIMEOUT_MS = 8000;
 const PRECOMPACT_TIMEOUT_MS = 120000;
 const PREMEMORY_TIMEOUT_MS = 30000;
+const MEMORYUPDATE_TIMEOUT_MS = 30000;
 const MAX_INLINE_ENTRIES = 150;
 
 /** Decodes collected output chunks in one pass; decoding per chunk would
@@ -91,6 +93,7 @@ export class RootMemoryBridge {
 	/** Registers every Pi lifecycle handler this bridge owns. */
 	register(pi: any): void {
 		this.registerPreMemoryTool(pi);
+		this.registerMemoryUpdateTool(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
 			this.sessionLabel = this.sessionId(ctx);
 			// A reload reruns discovery; the next turn re-delivers the pre_memory
@@ -142,6 +145,98 @@ export class RootMemoryBridge {
 		}
 		return {
 			content: [{ type: "text", text: context }],
+			details: {},
+		};
+	}
+
+	/** Registers `memory_update`, the spec-shaped structural mutation tool:
+	 *  it creates or updates a node and its required counterparts, and returns
+	 *  any conflicts for the agent to fix before re-calling. */
+	private registerMemoryUpdateTool(pi: any): void {
+		pi.registerTool({
+			name: "memory_update",
+			label: "memory_update",
+			description:
+				"Create or update a memory node and its required counterparts in " +
+				"one spec-shaped operation. It auto-creates the paired log, the " +
+				"nodes index, and any missing group scaffolding, moves displaced " +
+				"current state into the log, and returns any conflicts to fix " +
+				"before re-calling. Operations: create (node or group), set " +
+				"(current state), log (history), rename, retire, requires, " +
+				"attach, detach. `path` is absolute or relative to the agent home " +
+				"and must resolve inside this agent's memory tree or the declared " +
+				"shared root.",
+			parameters: Type.Object({
+				operation: Type.Union([
+					Type.Literal("create"), Type.Literal("set"),
+					Type.Literal("log"), Type.Literal("rename"),
+					Type.Literal("retire"), Type.Literal("requires"),
+					Type.Literal("attach"), Type.Literal("detach"),
+				], { description: "The mutation to perform." }),
+				path: Type.String({
+					description:
+						"create: the group directory (node) or parent of the new " +
+						"group (kind=group). All others: the active .md leaf.",
+				}),
+				name: Type.Optional(Type.String({
+					description: "create/rename: the kebab-case leaf or group stem.",
+				})),
+				body: Type.Optional(Type.String({
+					description: "create/set: the active current-state body.",
+				})),
+				text: Type.Optional(Type.String({
+					description: "log: the history or displaced-state text to append.",
+				})),
+				requires: Type.Optional(Type.Array(Type.String(), {
+					description: "requires: active memory files to read first.",
+				})),
+				summary: Type.Optional(Type.String({
+					description: "create: the routing-index line describing the node.",
+				})),
+				kind: Type.Optional(Type.Union([
+					Type.Literal("node"), Type.Literal("group"),
+				], { description: "create: what to build (default node)." })),
+				mechanical: Type.Optional(Type.Boolean({
+					description:
+						"set: a typo/format edit that needs no semantic log entry.",
+				})),
+				attachment_name: Type.Optional(Type.String({
+					description: "attach/detach: the file name in the leaf's directory.",
+				})),
+				attachment_content: Type.Optional(Type.String({
+					description: "attach: the file content as text.",
+				})),
+				attachment_source: Type.Optional(Type.String({
+					description: "attach: a path to copy the attachment bytes from.",
+				})),
+				overwrite: Type.Optional(Type.Boolean({
+					description: "attach: replace an existing attachment file.",
+				})),
+			}),
+			annotations: { readOnlyHint: false },
+			execute: (_id: string, params: unknown) =>
+				this.runMemoryUpdate((params ?? {}) as Record<string, unknown>),
+		});
+	}
+
+	/** Runs the MemoryUpdate hook and turns its report, or its failure, into a
+	 *  result the model sees; a conflict report is an error result so the agent
+	 *  fixes it before re-calling. */
+	private async runMemoryUpdate(params: Record<string, unknown>): Promise<unknown> {
+		const result = await this.callHook("MemoryUpdate", params, MEMORYUPDATE_TIMEOUT_MS);
+		const context = this.additionalContext(result);
+		if (!result.ok) {
+			const fallback = result.timedOut
+				? "agent-mem-struct memory_update timed out; retry before memory work."
+				: "agent-mem-struct memory_update failed; repair the root control before memory work.";
+			return {
+				isError: true,
+				content: [{ type: "text", text: context ?? (result.stderr.trim() || fallback) }],
+				details: {},
+			};
+		}
+		return {
+			content: [{ type: "text", text: context ?? "memory_update completed." }],
 			details: {},
 		};
 	}
