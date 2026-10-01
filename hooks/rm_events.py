@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,19 @@ class EventDispatcher:
             output["additionalContext"] = reason
         json.dump({"hookSpecificOutput": output}, sys.stdout, separators=(",", ":"))
 
+    @staticmethod
+    def emit_hook_context(event_name: str, context: str) -> None:
+        json.dump(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": event_name,
+                    "additionalContext": context,
+                }
+            },
+            sys.stdout,
+            separators=(",", ":"),
+        )
+
     def emit_context(
         self, event_name: str, state: RootState, event: dict[str, Any]
     ) -> None:
@@ -70,6 +84,12 @@ class EventDispatcher:
             context = self.control.subagent_context_text(state)
         elif event_name == "UserPromptSubmit":
             context = self.control.turn_reminder_text(self.agent, state)
+        elif self.agent == "pi":
+            # Pi loads conventions through pre_memory; only the continuity
+            # checkpoint still needs to reach the model at session start.
+            context = self.continuity_context(
+                state, checkpoint, base=self.control.pre_memory_pointer_text()
+            )
         else:
             context = self.continuity_context(state, checkpoint)
         if after_compaction and checkpoint is None:
@@ -77,21 +97,14 @@ class EventDispatcher:
                 "\n\nCONTINUITY WARNING: no pre-compaction checkpoint was available for this session. "
                 "Reconfirm the active objective, completed actions, blockers, and next action from the transcript or user."
             )
-        json.dump(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": event_name,
-                    "additionalContext": context,
-                }
-            },
-            sys.stdout,
-            separators=(",", ":"),
-        )
+        self.emit_hook_context(event_name, context)
         if after_compaction:
             self.checkpoints.remove(event)
 
-    def continuity_context(self, state: RootState, checkpoint: str | None) -> str:
-        text = self.control.context_text(state)
+    def continuity_context(
+        self, state: RootState, checkpoint: str | None, base: str | None = None
+    ) -> str:
+        text = base if base is not None else self.control.context_text(state)
         if checkpoint:
             text += (
                 "\n\n--- BEGIN PRE-COMPACTION CONTINUITY CHECKPOINT ---\n"
@@ -101,6 +114,65 @@ class EventDispatcher:
                 "decisions, blockers, and next action. The transcript and current user instructions remain authoritative."
             )
         return text
+
+    def pull_shared(self, state: RootState) -> tuple[bool, str]:
+        """Fast-forward the declared shared worktree; report verified success."""
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(state.shared_resolved), "pull", "--ff-only"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            return False, str(exc)
+        if completed.returncode == 0:
+            return True, ""
+        detail = (completed.stderr or completed.stdout or "").strip()
+        return False, detail or f"git pull exited {completed.returncode}"
+
+    def handle_prememory(self, event: dict[str, Any], state: RootState) -> int:
+        """Load, pull, acknowledge, and return the Pi convention catalog."""
+        if state.errors:
+            self.emit_hook_context(
+                "PreMemory",
+                "CONTROL ERROR: root memory control is invalid. "
+                + " | ".join(state.errors)
+                + " Repair the root control files before memory work.",
+            )
+            return 1
+        if state.shared_git_backed:
+            pulled, detail = self.pull_shared(state)
+            if not pulled:
+                self.emit_hook_context(
+                    "PreMemory",
+                    "CONTROL ERROR: the declared shared worktree could not be "
+                    f"fast-forwarded ({detail}). Reconcile the shared history before "
+                    "continuing; the shared conventions are unverified and no "
+                    "acknowledgment was recorded.",
+                )
+                return 1
+            # The pull may have advanced the shared conventions; reload so the
+            # catalog the model reads matches what the receipt acknowledges.
+            state = self.control.load(self.agent)
+            if state.errors:
+                self.emit_hook_context(
+                    "PreMemory",
+                    "CONTROL ERROR: root memory control is invalid after the shared "
+                    "pull. " + " | ".join(state.errors),
+                )
+                return 1
+        _digest, _body, _paths, error = self.gate.acknowledge_union(event)
+        if error is not None:
+            self.emit_hook_context("PreMemory", "CONTROL ERROR: " + error)
+            return 1
+        context = (
+            self.control.context_text(state)
+            + "\n\n"
+            + self.control.pre_memory_feature_text()
+        )
+        self.emit_hook_context("PreMemory", context)
+        return 0
 
     def compact_error(self, event: dict[str, Any], cause: str) -> int:
         """Refuse a manual compaction; warn and continue an automatic one.
@@ -207,10 +279,16 @@ class EventDispatcher:
         if state.errors:
             return
 
-        allowed, reason = self.gate.gate(event, scoped=targets_memory)
-        if not allowed:
-            self.deny_pretool(reason, context=True)
-            return
+        if self.agent == "pi":
+            allowed, reason = self.gate.receipt_covers(event, scoped=targets_memory)
+            if not allowed:
+                self.deny_pretool(reason)
+                return
+        else:
+            allowed, reason = self.gate.gate(event, scoped=targets_memory)
+            if not allowed:
+                self.deny_pretool(reason, context=True)
+                return
 
         if state.stale:
             json.dump(

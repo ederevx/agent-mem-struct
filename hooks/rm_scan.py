@@ -153,6 +153,10 @@ class MutationScanner:
     @staticmethod
     def tool_requires_acknowledgment(tool_name: str, tool_input: dict[str, Any]) -> bool:
         name = tool_name.lower()
+        # pre_memory is the acknowledgment itself; it runs on PreMemory, and an
+        # accidental PreToolUse for it must never be gated.
+        if name == "pre_memory":
+            return False
         if any(token in name for token in ("write", "edit", "patch", "delete", "remove", "rename", "move", "create", "update")):
             return True
         if name in SHELL_TOOL_NAMES or "shell" in name:

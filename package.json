@@ -39,5 +39,13 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "peerDependencies": {
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "typebox": {
+      "optional": true
+    }
   }
 }

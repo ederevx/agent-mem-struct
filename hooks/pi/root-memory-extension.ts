@@ -26,6 +26,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+
 const PYTHON = "__AMS_PYTHON__";
 const HOOK = "__AMS_HOOK__";
 const MEMORY_HOME = "__AMS_HOME__";
@@ -34,6 +37,7 @@ const CANONICAL_ROOT = "__AMS_CANONICAL_ROOT__";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const PRECOMPACT_TIMEOUT_MS = 120000;
+const PREMEMORY_TIMEOUT_MS = 30000;
 const MAX_INLINE_ENTRIES = 150;
 
 /** Decodes collected output chunks in one pass; decoding per chunk would
@@ -87,11 +91,13 @@ export class RootMemoryBridge {
 
 	/** Registers every Pi lifecycle handler this bridge owns. */
 	register(pi: any): void {
+		this.registerPreMemoryTool(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
 			this.sessionLabel = this.sessionId(ctx);
 			// A reload reruns discovery; the next turn re-delivers the full root
 			// bundle so a stale runtime cannot outlive the documents it points at.
 			this.firstTurn = true;
+			if (ctx?.hasUI) ctx.ui.setToolsExpanded(false);
 		});
 
 		pi.on("before_agent_start", async (event: any) => this.onBeforeAgentStart(event));
@@ -102,6 +108,63 @@ export class RootMemoryBridge {
 			this.afterCompaction = true;
 		});
 		pi.on("session_before_compact", async (event: any) => this.onBeforeCompact(event));
+	}
+
+	/** Registers `pre_memory`, the one call that pulls the shared worktree,
+	 *  loads the conventions, and acknowledges them for this session. */
+	private registerPreMemoryTool(pi: any): void {
+		pi.registerTool({
+			name: "pre_memory",
+			label: "pre_memory",
+			description:
+				"Call once per session before any memory write or agent-mem-struct " +
+				"action. Pulls the declared shared worktree, loads the agent-mem-struct " +
+				"conventions, acknowledges them for this session, and returns the catalog.",
+			parameters: Type.Object({}),
+			annotations: { readOnlyHint: false },
+			renderCall(_args: any, theme: any) {
+				return new Text(theme.fg("toolTitle", theme.bold("pre_memory")), 0, 0);
+			},
+			renderResult(result: any, { expanded }: any, theme: any) {
+				const text = (result.content ?? [])
+					.filter((part: any) => part.type === "text")
+					.map((part: any) => part.text)
+					.join("\n");
+				if (result.isError) {
+					return new Text(theme.fg("error", text || "pre_memory failed"), 0, 0);
+				}
+				if (!expanded) {
+					return new Text(
+						theme.fg("muted", "pre_memory conventions loaded (Ctrl+O to expand)"),
+						0,
+						0,
+					);
+				}
+				return new Text(text, 0, 0);
+			},
+			execute: () => this.loadPreMemory(),
+		});
+	}
+
+	/** Runs the PreMemory hook and turns its catalog, or its failure, into a
+	 *  result the model sees. */
+	private async loadPreMemory(): Promise<unknown> {
+		const result = await this.callHook("PreMemory", {}, PREMEMORY_TIMEOUT_MS);
+		const context = this.additionalContext(result);
+		if (!result.ok || context === null) {
+			const fallback = result.timedOut
+				? "agent-mem-struct pre_memory timed out; retry before memory work."
+				: "agent-mem-struct pre_memory failed; repair the root control before memory work.";
+			return {
+				isError: true,
+				content: [{ type: "text", text: context ?? (result.stderr.trim() || fallback) }],
+				details: {},
+			};
+		}
+		return {
+			content: [{ type: "text", text: context }],
+			details: {},
+		};
 	}
 
 	private sessionId(pi: any): string {

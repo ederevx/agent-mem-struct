@@ -4,6 +4,17 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-01T13:35:00-04:00 - add pre_memory and session-scoped Pi receipts
+
+Pi loaded the full root bundle on `SessionStart` and refused the first memory
+mutation with the convention bundle injected into the denial. That coupled
+loading to the gate and re-sent the same sources every turn. The bridge now
+registers `pre_memory`: one call fast-forwards the declared shared worktree,
+loads the root/shared convention union, records a session-scoped receipt, and
+returns the catalog with a feature summary. `SessionStart`/`UserPromptSubmit`
+only point at the tool, and a Pi `PreToolUse` denial now names it instead of
+injecting the bundle. Codex and Claude keep the block-and-retry behavior.
+
 ## 2026-09-23T17:45:00-04:00 - split the root-memory hook into cohesive modules
 
 The 1333-line root-memory-context.py mixed five responsibilities; it

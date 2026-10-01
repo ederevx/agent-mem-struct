@@ -57,6 +57,7 @@ SUPPORTED_EVENTS = {
     "SubagentStop",
     "PreCompact",
     "PreToolUse",
+    "PreMemory",
     "Stop",
 }
 
@@ -131,7 +132,14 @@ def main() -> int:
 
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
         gate.prune_receipts()
-        if not (event_name == "SessionStart" and event.get("source") == "compact"):
+        resets_receipt = not (
+            event_name == "SessionStart" and event.get("source") == "compact"
+        )
+        # A Pi receipt is session-scoped and owned by pre_memory: a per-prompt
+        # reset would force a new acknowledgment on every turn.
+        if event_name == "UserPromptSubmit" and args.agent == "pi":
+            resets_receipt = False
+        if resets_receipt:
             gate.remove_receipt(event)
         if event_name != "UserPromptSubmit":
             keep = (
@@ -142,6 +150,8 @@ def main() -> int:
             checkpoints.prune(keep=keep)
         dispatcher.emit_context(event_name, state, event)
         return 0
+    if event_name == "PreMemory":
+        return dispatcher.handle_prememory(event, state)
     if event_name == "PreCompact":
         return dispatcher.handle_precompact(event, state)
     if event_name == "PreToolUse":
