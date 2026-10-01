@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from rm_checkpoints import CheckpointStore
 from rm_control import RootState, RootControl
+from rm_git import GitWorktree
 from rm_receipts import ConventionGate
 from rm_scan import PATCH_HEADER_RE, MutationScanner
 from rm_support import under
+
+GIT_PULL_TIMEOUT = 15
 from rm_update import MemoryUpdater
 
 
@@ -118,19 +120,11 @@ class EventDispatcher:
 
     def pull_shared(self, state: RootState) -> tuple[bool, str]:
         """Fast-forward the declared shared worktree; report verified success."""
-        try:
-            completed = subprocess.run(
-                ["git", "-C", str(state.shared_resolved), "pull", "--ff-only"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError as exc:
-            return False, str(exc)
+        worktree = GitWorktree(state.shared_resolved)
+        completed = worktree.run("pull", "--ff-only", budget=GIT_PULL_TIMEOUT)
         if completed.returncode == 0:
             return True, ""
-        detail = (completed.stderr or completed.stdout or "").strip()
-        return False, detail or f"git pull exited {completed.returncode}"
+        return False, worktree.detail(completed)
 
     def handle_prememory(self, event: dict[str, Any], state: RootState) -> int:
         """Load, pull, acknowledge, and return the Pi convention catalog."""
@@ -142,7 +136,7 @@ class EventDispatcher:
                 + " Repair the root control files before memory work.",
             )
             return 1
-        if state.shared_git_backed:
+        if state.shared_git_backed and GitWorktree(state.shared_resolved).has_sync_target():
             pulled, detail = self.pull_shared(state)
             if not pulled:
                 self.emit_hook_context(
@@ -190,7 +184,9 @@ class EventDispatcher:
                 "route this change back to the parent session (fix: call it from the parent).",
             )
             return 3
-        if not state.errors and state.shared_git_backed:
+        if not state.errors and state.shared_git_backed and GitWorktree(
+            state.shared_resolved
+        ).has_sync_target():
             pulled, detail = self.pull_shared(state)
             if not pulled:
                 self.emit_hook_context(

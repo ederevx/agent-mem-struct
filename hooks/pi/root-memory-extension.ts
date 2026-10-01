@@ -161,11 +161,12 @@ export class RootMemoryBridge {
 				"one spec-shaped operation. It auto-creates the paired log, the " +
 				"nodes index, and any missing group scaffolding, moves displaced " +
 				"current state into the log, and returns any conflicts to fix " +
-				"before re-calling. Operations: create (node or group), set " +
-				"(current state), log (history), rename, retire, requires, " +
-				"attach, detach. `path` is absolute or relative to the agent home " +
-				"and must resolve inside this agent's memory tree or the declared " +
-				"shared root.",
+				"before re-calling. A write that lands in the declared shared root " +
+				"is then committed and pushed for you. Operations: create (node or " +
+				"group), set (current state), log (history), rename, retire, " +
+				"requires, attach, detach. `path` is absolute or relative to the " +
+				"agent home and must resolve inside this agent's memory tree or the " +
+				"declared shared root.",
 			parameters: Type.Object({
 				operation: Type.Union([
 					Type.Literal("create"), Type.Literal("set"),
@@ -200,6 +201,13 @@ export class RootMemoryBridge {
 					description:
 						"set: a typo/format edit that needs no semantic log entry.",
 				})),
+				commit_message: Type.Optional(Type.String({
+					description:
+						"The commit subject and body for the shared-memory commit, " +
+						"written as given. Optional: a write landing in the declared " +
+						"shared root is committed and pushed either way, and without " +
+						"this it carries only a one-line subject.",
+				})),
 				attachment_name: Type.Optional(Type.String({
 					description: "attach/detach: the file name in the leaf's directory.",
 				})),
@@ -223,7 +231,12 @@ export class RootMemoryBridge {
 	 *  result the model sees; a conflict report is an error result so the agent
 	 *  fixes it before re-calling. */
 	private async runMemoryUpdate(params: Record<string, unknown>): Promise<unknown> {
-		const result = await this.callHook("MemoryUpdate", params, MEMORYUPDATE_TIMEOUT_MS);
+		const model = typeof process.env.PI_MODEL === "string" ? process.env.PI_MODEL : "";
+		const result = await this.callHook(
+			"MemoryUpdate",
+			{ ...params, agent_model: model },
+			MEMORYUPDATE_TIMEOUT_MS,
+		);
 		const context = this.additionalContext(result);
 		if (!result.ok) {
 			const fallback = result.timedOut

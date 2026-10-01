@@ -3,10 +3,12 @@
 One owner for the write half of the root-memory hook: `MemoryUpdater`
 validates a requested mutation against the live root-control snapshot,
 materializes every required counterpart (active leaf, paired log, nodes
-index, group scaffolding), or returns the exact conflicts the agent must
-fix before re-calling. It never commits, never resolves a conflict on its
-own, and never writes outside the agent's own memory tree or the declared
-shared root.
+index, group scaffolding), and returns the exact conflicts the agent must
+fix before re-calling. A mutation that lands under the declared shared root
+is then committed and pushed by `rm_commit.CommitPublisher`; a mutation in
+the agent's own tree is only written. It never resolves a conflict on its
+own, never force-pushes, and never writes outside the agent's own memory
+tree or the declared shared root.
 
 Operations: create (node or group), set (current state, moving only the
 lines it displaces into the log unless `mechanical`), log (append
@@ -21,10 +23,11 @@ import difflib
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
+from rm_commit import CommitPublisher
+from rm_git import GitWorktree
 from rm_control import RootControl, RootState
 from rm_support import under
 
@@ -121,7 +124,64 @@ class MemoryUpdater:
         result = handler(request)
         if not result.ok and not result.operation:
             result.operation = operation
+        if result.ok:
+            return self.publish(result, request, operation)
         return result
+
+    def publish(
+        self, result: UpdateResult, request: dict[str, Any], operation: str
+    ) -> UpdateResult:
+        """Commit and push what the mutation wrote when it landed in shared memory."""
+        shared = self.state.shared_resolved
+        if shared is None:
+            return result
+        written = [Path(item) for item in (*result.created, *result.changed)]
+        if not any(under(path, shared) for path in written):
+            return result
+        if not self.state.shared_git_backed:
+            return self.ok(
+                operation,
+                created=result.created,
+                changed=result.changed,
+                note=" ".join(
+                    part for part in (
+                        result.note,
+                        "the declared shared worktree is not Git-backed; commit and push "
+                        "these paths by hand before the turn ends.",
+                    ) if part
+                ),
+            )
+        publisher = CommitPublisher(shared, self.state.agent, self.model_name(request))
+        outcome = publisher.publish(written, self.commit_message(request), self.target(request))
+        if outcome.conflict is not None:
+            conflict = outcome.conflict
+            return self.conflict(
+                operation,
+                conflict["code"],
+                f"{conflict['message']} the mutation was written first; "
+                f"paths: {', '.join(str(path) for path in written)}.",
+                fix=conflict["fix"],
+            )
+        return self.ok(
+            operation,
+            created=result.created,
+            changed=result.changed,
+            note=" ".join(part for part in (result.note, outcome.note) if part),
+        )
+
+    def commit_message(self, request: dict[str, Any]) -> str:
+        value = request.get("commit_message")
+        return value.strip() if isinstance(value, str) else ""
+
+    def model_name(self, request: dict[str, Any]) -> str:
+        value = request.get("agent_model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return str(os.environ.get("PI_MODEL") or "").strip()
+
+    def target(self, request: dict[str, Any]) -> str:
+        name = self.required(request, "name") or Path(self.required(request, "path")).name
+        return name or "shared memory"
 
     # -- operations ----------------------------------------------------------
 
@@ -150,8 +210,8 @@ class MemoryUpdater:
         created = self.ensure_nodes(nodes)
         created.append(self.write(leaf, self.leaf_body(str(request.get("body") or ""))))
         created.append(self.write(log, LOG_BODY.format(name=name)))
-        self.index_add(nodes, name, str(request.get("summary") or "").strip())
-        return self.ok("create", created=created, note=self.commit_note(group))
+        changed = [item for item in self.index_add(nodes, name, str(request.get("summary") or "").strip()) if item not in created]
+        return self.ok("create", created=created, changed=changed)
 
     def create_group(self, parent: Path, name: str, request: dict[str, Any]) -> UpdateResult:
         group = parent / name
@@ -162,8 +222,8 @@ class MemoryUpdater:
         created.append(self.write(group / "MEMORY.md", (body or f"# {name}\n") + "\n"))
         created.append(self.write(group / "log" / "MEMORY.md", LOG_BODY.format(name="MEMORY")))
         created.extend(self.ensure_nodes(group / "nodes"))
-        self.index_add(parent, name, str(request.get("summary") or "").strip())
-        return self.ok("create", created=created, note=self.commit_note(group))
+        changed = [item for item in self.index_add(parent, name, str(request.get("summary") or "").strip()) if item not in created]
+        return self.ok("create", created=created, changed=changed)
 
     def op_set(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "set")
@@ -179,17 +239,19 @@ class MemoryUpdater:
         if not log.exists():
             return self.log_conflict("set", leaf)
         note = ""
+        written = [str(leaf)]
         if not request.get("mechanical"):
             displaced = self.superseded_text(previous, body)
             if displaced:
                 self.append_log(log, displaced, "superseded current state")
+                written.append(str(log))
             else:
                 note = "no displaced state."
         self.write(leaf, body)
         return self.ok(
             "set",
-            changed=[str(leaf)],
-            note=" ".join(part for part in (note, self.commit_note(leaf)) if part),
+            changed=written,
+            note=note,
         )
 
     def op_log(self, request: dict[str, Any]) -> UpdateResult:
@@ -203,7 +265,7 @@ class MemoryUpdater:
         if not log.exists():
             return self.log_conflict("log", leaf)
         self.append_log(log, text.rstrip() + "\n", str(request.get("summary") or "").strip())
-        return self.ok("log", changed=[str(log)], note=self.commit_note(leaf))
+        return self.ok("log", changed=[str(log)])
 
     def op_rename(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "rename")
@@ -219,15 +281,17 @@ class MemoryUpdater:
             return self.conflict("rename", "exists", f"{new_leaf} already exists.")
         log = leaf.parent / "log" / leaf.name
         new_log = leaf.parent / "log" / f"{name}.md"
-        changed = [str(new_leaf), str(new_log)]
+        attachment = leaf.parent / leaf.stem
+        changed = [str(new_leaf), str(new_log), str(leaf), str(log)]
         changed.extend(self.rewrite_links(leaf.parent.parent, leaf.stem, name))
         if log.exists():
             log.rename(new_log)
         leaf.rename(new_leaf)
-        attachment = leaf.parent / leaf.stem
         if attachment.is_dir():
+            changed.append(str(attachment))
+            changed.append(str(leaf.parent / name))
             attachment.rename(leaf.parent / name)
-        return self.ok("rename", changed=changed, note=self.commit_note(leaf))
+        return self.ok("rename", changed=changed)
 
     def op_retire(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "retire")
@@ -244,7 +308,7 @@ class MemoryUpdater:
         return self.ok(
             "retire",
             changed=changed,
-            note="the paired log is kept as history; " + self.commit_note(leaf),
+            note="the paired log is kept as history.",
         )
 
     def op_requires(self, request: dict[str, Any]) -> UpdateResult:
@@ -271,7 +335,7 @@ class MemoryUpdater:
         if targets:
             front = "---\nrequires_read:\n" + "".join(f"  - {item}\n" for item in targets) + "---\n"
         self.write(leaf, front + body)
-        return self.ok("requires", changed=[str(leaf)], note=self.commit_note(leaf))
+        return self.ok("requires", changed=[str(leaf)])
 
     def op_attach(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "attach")
@@ -306,7 +370,7 @@ class MemoryUpdater:
                 target.write_bytes(Path(source).expanduser().read_bytes())
             except OSError as exc:
                 return self.conflict("attach", "unreadable-source", f"{source}: {exc}")
-        return self.ok("attach", created=[str(target)], note=self.commit_note(leaf))
+        return self.ok("attach", created=[str(target)])
 
     def op_detach(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "detach")
@@ -322,7 +386,7 @@ class MemoryUpdater:
         if directory.is_dir() and not any(directory.iterdir()):
             directory.rmdir()
             changed.append(str(directory))
-        return self.ok("detach", changed=changed, note=self.commit_note(leaf))
+        return self.ok("detach", changed=changed)
 
     # -- resolution and conflicts -------------------------------------------
 
@@ -375,12 +439,6 @@ class MemoryUpdater:
     def ok(self, operation: str, **kwargs: Any) -> UpdateResult:
         return UpdateResult(True, operation, **kwargs)
 
-    def commit_note(self, path: Path) -> str:
-        shared = self.state.shared_resolved
-        if shared is not None and under(path, shared):
-            return "commit and push these paths from the shared worktree before the turn ends."
-        return ""
-
     def required(self, request: dict[str, Any], key: str) -> str:
         value = request.get(key)
         return str(value).strip() if isinstance(value, str) else ""
@@ -395,13 +453,9 @@ class MemoryUpdater:
         shared = self.state.shared_resolved
         if shared is None:
             return None
-        try:
-            completed = subprocess.run(
-                ["git", "-C", str(shared), "diff", "--name-only", "--diff-filter=U"],
-                capture_output=True, text=True, check=False,
-            )
-        except OSError:
-            return None
+        completed = GitWorktree(shared).run(
+            "diff", "--name-only", "--diff-filter=U", budget=5.0
+        )
         for line in completed.stdout.splitlines():
             if line.strip():
                 return line.strip()
@@ -420,16 +474,17 @@ class MemoryUpdater:
             created.append(self.write(log, LOG_BODY.format(name="MEMORY")))
         return created
 
-    def index_add(self, nodes: Path, name: str, summary: str) -> None:
+    def index_add(self, nodes: Path, name: str, summary: str) -> list[str]:
         index = nodes / "MEMORY.md"
         self.ensure_nodes(nodes)
         text, _ = self.read(index)
         if re.search(r"\[\[" + re.escape(name) + r"\]\]", text):
-            return
+            return []
         line = f"- [[{name}]]"
         if summary:
             line += f" \u2014 {summary}"
         self.write(index, text.rstrip("\n") + "\n" + line + "\n")
+        return [str(index)]
 
     def index_remove(self, nodes: Path, name: str) -> list[str]:
         index = nodes / "MEMORY.md"

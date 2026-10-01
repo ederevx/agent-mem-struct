@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "hooks" / "root-memory-context.py"
@@ -65,6 +66,18 @@ def git_run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args], cwd=str(cwd), text=True, capture_output=True, check=False
     )
+
+
+def load_hook_module(name: str):
+    """Import one hook module directly for a deterministic unit-level call."""
+    hooks = str(REPO / "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    spec = importlib.util.spec_from_file_location(name, REPO / "hooks" / f"{name}.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def make_git_shared(origin: Path, shared: Path) -> Path:
@@ -239,14 +252,20 @@ class PiHookTests(unittest.TestCase):
         )
 
     def test_pre_memory_pull_failure_blocks_and_records_no_receipt(self) -> None:
-        shared = self.temp / "broken-git-shared"
-        shared.mkdir(parents=True)
-        git_run("init", "-b", "main", cwd=shared)
-        (shared / "MEMORY.md").write_text(
-            "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n",
-            encoding="utf-8",
-        )
-        home, _ = make_home(self.temp / "broken-home", shared)
+        origin = self.temp / "origin.git"
+        shared = make_git_shared(origin, self.temp / "git shared")
+        writer = self.temp / "writer"
+        subprocess.run(["git", "clone", str(origin), str(writer)],
+                       text=True, capture_output=True, check=False)
+        with open(writer / "MEMORY.md", "a", encoding="utf-8") as handle:
+            handle.write("- Raced rule.\n")
+        git_run("add", "MEMORY.md", cwd=writer)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "raced", cwd=writer)
+        self.assertEqual(git_run("push", "origin", "main", cwd=writer).returncode, 0)
+        (shared / "local.md").write_text("local\n", encoding="utf-8")
+        git_run("add", "local.md", cwd=shared)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "local", cwd=shared)
+        home, _ = make_home(self.temp / "diverged-home", shared)
         result = invoke_pi(home, {
             "hook_event_name": "PreMemory",
             "session_id": "pi-session",
@@ -925,6 +944,208 @@ class MemoryUpdateTests(unittest.TestCase):
 
     def output(self, result: subprocess.CompletedProcess[str]) -> dict:
         return json.loads(result.stdout)
+
+
+class MemoryUpdateCommitTests(unittest.TestCase):
+    """`memory_update`: committing and pushing the paths a mutation wrote."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-commit-", dir=SCRATCH_ROOT))
+        self.origin = self.temp / "origin.git"
+        self.shared = make_git_shared(self.origin, self.temp / "git shared")
+        self.home, _ = make_home(self.temp / "git-home", self.shared)
+        self.leaf = self.shared / "nodes" / "note.md"
+
+    def call(self, **fields: object) -> subprocess.CompletedProcess[str]:
+        event: dict[str, object] = {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        }
+        event.update(fields)
+        return invoke_pi(self.home, event)
+
+    def text(self, result: subprocess.CompletedProcess[str]) -> str:
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def create_note(self, body: str = "first", **fields: object) -> subprocess.CompletedProcess[str]:
+        return self.call(
+            operation="create", path=str(self.shared), name="note",
+            body=body, summary="Note.", **fields
+        )
+
+    def writer_clone(self) -> Path:
+        writer = Path(tempfile.mkdtemp(prefix="writer-", dir=self.temp))
+        subprocess.run(["git", "clone", str(self.origin), str(writer)],
+                       text=True, capture_output=True, check=False)
+        return writer
+
+    def writer_push(self, relative: str, text: str, subject: str) -> None:
+        writer = self.writer_clone()
+        (writer / relative).write_text(text, encoding="utf-8")
+        git_run("add", relative, cwd=writer)
+        git_run("commit", "-m", subject, cwd=writer)
+        self.assertEqual(git_run("push", "origin", "main", cwd=writer).returncode, 0)
+
+    def test_shared_write_is_committed_and_pushed_narrowly(self) -> None:
+        (self.shared / "unrelated.md").write_text("staged elsewhere\n", encoding="utf-8")
+        git_run("add", "unrelated.md", cwd=self.shared)
+        result = self.create_note(
+            commit_message="memory_update create: note\n\nAdds the note node."
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pushed", self.text(result))
+        self.assertIn("memory_update create: note",
+                      git_run("log", "--format=%s", cwd=self.origin).stdout)
+        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertIn("Assisted-by: pi", message)
+        self.assertIn("Signed-off-by:", message)
+        files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.shared).stdout.split()
+        self.assertIn("nodes/note.md", files)
+        self.assertIn("nodes/log/note.md", files)
+        self.assertNotIn("unrelated.md", files)
+        self.assertIn("A  unrelated.md",
+                      git_run("status", "--porcelain", cwd=self.shared).stdout)
+
+    def test_shared_write_without_a_remote_commits_locally_only(self) -> None:
+        git_run("remote", "remove", "origin", cwd=self.shared)
+        result = self.create_note()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no upstream", self.text(result))
+        self.assertEqual(git_run("rev-list", "--count", "HEAD", cwd=self.shared).stdout.strip(), "2")
+
+    def test_a_racing_push_is_integrated_by_the_pre_mutation_pull(self) -> None:
+        self.create_note()
+        self.writer_push("MEMORY.md", "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n- Raced.\n", "writer change")
+        result = self.call(operation="set", path=str(self.leaf), body="second")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pushed", self.text(result))
+        self.assertIn("Raced.", (self.shared / "MEMORY.md").read_text(encoding="utf-8"))
+        subjects = git_run("log", "--format=%s", cwd=self.origin).stdout
+        self.assertIn("writer change", subjects)
+        self.assertIn("memory_update: note", subjects)
+
+    def test_a_racing_push_is_replayed_and_the_note_names_the_replayed_commit(self) -> None:
+        self.create_note()
+        self.writer_push("MEMORY.md", "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n- Raced.\n", "writer change")
+        base = git_run("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+        self.leaf.write_text("second\n", encoding="utf-8")
+        publisher = load_hook_module("rm_commit").CommitPublisher(self.shared, "pi")
+        outcome = publisher.publish([self.leaf], "", "racing-probe")
+        self.assertTrue(outcome.pushed)
+        self.assertIsNone(outcome.conflict)
+        subjects = git_run("log", "--format=%s", cwd=self.origin).stdout
+        self.assertIn("writer change", subjects)
+        self.assertIn("memory_update: racing-probe", subjects)
+        self.assertNotEqual(outcome.sha, base)
+        self.assertEqual(outcome.sha, git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip())
+        self.assertIn(outcome.sha[:12], outcome.note)
+
+    def test_rename_with_an_attachment_dir_commits_both_sides(self) -> None:
+        self.create_note()
+        self.assertEqual(
+            self.call(operation="attach", path=str(self.leaf), attachment_name="big.bin",
+                      attachment_content="payload").returncode,
+            0,
+        )
+        renamed = self.call(operation="rename", path=str(self.leaf), name="renamed")
+        self.assertEqual(renamed.returncode, 0, renamed.stderr)
+        tracked = git_run("ls-tree", "-r", "--name-only", "HEAD", cwd=self.origin).stdout.split()
+        self.assertIn("nodes/renamed/big.bin", tracked)
+        self.assertNotIn("nodes/note/big.bin", tracked)
+        self.assertEqual(git_run("status", "--porcelain", cwd=self.shared).stdout, "")
+
+    def test_a_later_create_commits_its_index_edit(self) -> None:
+        self.call(operation="create", path=str(self.shared), name="note", body="first",
+                  summary="Note.")
+        second = self.call(operation="create", path=str(self.shared), name="beta",
+                           body="beta", summary="Beta.")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        index = git_run("show", "HEAD:nodes/MEMORY.md", cwd=self.origin).stdout
+        self.assertIn("[[beta]]", index)
+        self.assertEqual(git_run("status", "--porcelain", cwd=self.shared).stdout, "")
+
+    def test_attribution_is_added_after_a_trailer_looking_last_line(self) -> None:
+        result = self.create_note(commit_message="memory_update create: note\n\nNote: this is prose.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertIn("Note: this is prose.", message)
+        self.assertIn("Assisted-by: pi", message)
+        self.assertIn("Signed-off-by:", message)
+
+    def test_attribution_completes_a_half_written_pair_in_order(self) -> None:
+        result = self.create_note(commit_message="memory_update create: note\n\nAssisted-by: pi:other")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertEqual(message.count("Assisted-by:"), 1)
+        self.assertIn("Assisted-by: pi:other", message)
+        self.assertEqual(message.count("Signed-off-by:"), 1)
+        self.assertLess(message.index("Assisted-by:"), message.index("Signed-off-by:"))
+
+    def test_attribution_keeps_its_order_when_only_the_sign_off_is_given(self) -> None:
+        result = self.create_note(commit_message="memory_update create: note\n\nSigned-off-by: Other <o@x>")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertIn("Signed-off-by: Other <o@x>", message)
+        self.assertLess(message.index("Assisted-by:"), message.index("Signed-off-by: Other"))
+
+    def test_sync_target_answers_no_instead_of_raising(self) -> None:
+        module = load_hook_module("rm_git")
+        worktree = module.GitWorktree(self.shared)
+        with mock.patch.object(module.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired("git", 5)):
+            self.assertFalse(worktree.has_sync_target())
+
+    def test_a_diverging_write_leaves_the_commit_local_and_reports_it(self) -> None:
+        self.create_note()
+        self.writer_push("nodes/note.md", "writer body\n", "writer edit")
+        # Reproduce the race window directly: the shared clone is behind, and the
+        # mutation is written and committed before the racing push is noticed.
+        self.leaf.write_text("second\n", encoding="utf-8")
+        publisher = load_hook_module("rm_commit").CommitPublisher(self.shared, "pi")
+        outcome = publisher.publish([self.leaf], "", "divergence-probe")
+        self.assertTrue(outcome.committed)
+        self.assertFalse(outcome.pushed)
+        self.assertEqual(outcome.conflict["code"], "shared-diverged")
+        self.assertIn("memory_update: divergence-probe",
+                      git_run("log", "--format=%s", "HEAD", cwd=self.shared).stdout)
+        self.assertIn("writer edit", git_run("log", "--format=%s", cwd=self.origin).stdout)
+        self.assertNotIn("memory_update: divergence-probe",
+                         git_run("log", "--format=%s", cwd=self.origin).stdout)
+        self.assertFalse((self.shared / ".git" / "rebase-merge").exists())
+        self.assertEqual(self.leaf.read_text(encoding="utf-8"), "second\n")
+
+    def test_pre_memory_skips_the_pull_when_the_shared_has_no_remote(self) -> None:
+        git_run("remote", "remove", "origin", cwd=self.shared)
+        result = invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pre_memory", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_shared_worktree_without_git_keeps_the_manual_note(self) -> None:
+        plain = self.temp / "plain shared"
+        plain.mkdir()
+        (plain / "MEMORY.md").write_text(
+            "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n",
+            encoding="utf-8",
+        )
+        home, _ = make_home(self.temp / "plain-home", plain)
+        result = invoke_pi(home, {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+            "operation": "create",
+            "path": str(plain),
+            "name": "note",
+            "body": "first",
+            "summary": "Note.",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("not Git-backed", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
 
 
 if __name__ == "__main__":

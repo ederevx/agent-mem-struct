@@ -4,6 +4,24 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-01T20:05:00-04:00 - commit and push shared mutations from the tool
+
+`memory_update` wrote the shared paths and left the commit to the agent, so
+every write cost a reminder and a manual `git commit`/`git push`, and a turn
+that ended early could strand shared state. A mutation landing in the
+declared shared root is now committed and pushed by
+`rm_commit.CommitPublisher`: it stages only the paths the mutation reported
+(never the rest of the index), keeps the agent's own `commit_message` as
+written, adds the attribution trailers only when the message carries none,
+replays its commit with `git pull --rebase --autostash` when another agent
+pushed first, and never force-pushes or creates a branch. A worktree with no
+remote, or no upstream branch, is detected and committed locally instead;
+the same detection now gates the pre-mutation and `pre_memory`
+fast-forward, so a shared tree without a remote no longer blocks memory
+work. Remaining failures (`shared-diverged`, `shared-unpushed`,
+`missing-identity`, `git-failed`, `bad-message`) come back as conflict
+reports with the written paths named.
+
 ## 2026-10-01T19:20:00-04:00 - log only the state a `set` displaces
 
 `memory_update`'s `set` copied the whole previous node body into the paired
