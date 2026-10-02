@@ -4,6 +4,20 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-01T23:30:00-04:00 - attest every publish in the mutation report
+
+After every publish the agent had to re-inspect the commit by hand - a clean
+worktree, HEAD pushed, the appended log lines actually present in the
+committed blob, and the message shape - and a miss was silent. The mutation's
+own report now carries that attestation as `verified:` lines, produced by a
+read-only `rm_verify.PublishAttestation` over the worktree the publish
+committed into. A durability failure (`unverified-dirty`,
+`unverified-unpushed`, `unverified-log`) is a conflict, so it cannot pass
+unnoticed; message-shape deviations are advisory `attention:` lines because
+the tool assumes no convention about the agent's own message. The check goes
+through `rm_git.GitWorktree`, keeping it the only caller of git, while
+`rm_update.MemoryUpdater` remains the only writer.
+
 ## 2026-10-01T22:30:00-04:00 - publish hand-edited leaves through the tool
 
 Keeping commit ownership in `memory_update` left no way to edit a node's

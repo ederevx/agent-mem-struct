@@ -266,8 +266,20 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
   `exists`, and `bad-request`
-  come back as a conflict report for the agent to fix and retry. A
-  subagent-attributed `MemoryUpdate` event is refused in the hook,
+  come back as a conflict report for the agent to fix and retry. Every
+  publish now attests itself in its own report, so an agent need not
+  re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`
+  inspects the worktree the publish committed into and the report gains
+  `verified:` lines for the worktree being clean, HEAD versus its upstream
+  (`; no upstream to compare` when there is none), the paired log carrying
+  the appended lines, and the message shape. A durability failure
+  (`unverified-dirty`, `unverified-unpushed`, `unverified-log`) comes back as
+  a conflict the agent must fix before the turn ends, because the memory is
+  then not durably published. Message-shape deviations are advisory
+  `attention:` lines rather than failures, since the tool assumes no
+  convention about the agent's own message. The check is read-only and goes
+  through `rm_git.GitWorktree`; `rm_verify` never stages, commits, or writes.
+  A subagent-attributed `MemoryUpdate` event is refused in the hook,
   independent of the PreToolUse gate.
 - `session_before_compact` drives `PreCompact` with the session entries passed
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a

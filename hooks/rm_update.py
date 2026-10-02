@@ -7,9 +7,12 @@ index, group scaffolding), and returns the exact conflicts the agent must
 fix before re-calling. A mutation that lands under the declared shared root
 is then committed and pushed by `rm_commit.CommitPublisher` under the
 `commit_message` the agent wrote, which the tool never composes or edits; a
-mutation in the agent's own tree is only written. It never resolves a
-conflict on its own, never force-pushes, and never writes outside the
-agent's own memory tree or the declared shared root.
+mutation in the agent's own tree is only written. A publish then attests the
+shared worktree it committed through `rm_verify.PublishAttestation` and puts
+its report lines in the same result, so the agent need not re-verify the
+publish by hand. It never resolves a conflict on its own, never force-pushes,
+and never writes outside the agent's own memory tree or the declared shared
+root.
 
 Operations: create (node or group), set (current state, moving only the
 lines it displaces into the log unless `mechanical`), log (append
@@ -33,6 +36,7 @@ from rm_edit import WorktreeEdits
 from rm_git import GitWorktree
 from rm_control import RootControl, RootState
 from rm_support import under
+from rm_verify import PublishAttestation
 
 LEAF_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
@@ -54,6 +58,8 @@ class UpdateResult:
         created: list[str] | None = None,
         conflicts: list[dict[str, str]] | None = None,
         note: str = "",
+        verified: list[str] | None = None,
+        appended: list[tuple[str, str]] | None = None,
     ) -> None:
         self.ok = ok
         self.operation = operation
@@ -61,6 +67,8 @@ class UpdateResult:
         self.created = created or []
         self.conflicts = conflicts or []
         self.note = note
+        self.verified = verified or []
+        self.appended = appended or []
 
     def text(self) -> str:
         if self.ok:
@@ -71,6 +79,7 @@ class UpdateResult:
                 lines.append("changed: " + ", ".join(self.changed))
             if self.note:
                 lines.append(self.note)
+            lines.extend(self.verified)
             return "\n".join(lines)
         lines = [
             f"memory_update {self.operation}: CONFLICTS - fix these, then re-call the tool:"
@@ -165,11 +174,27 @@ class MemoryUpdater:
                 f"paths: {', '.join(str(path) for path in written)}.",
                 fix=conflict["fix"],
             )
+        verified: list[str] = []
+        if outcome.sha:
+            group = [path for path in written if under(path, shared)]
+            lines, conflict = self.attest(
+                shared,
+                outcome.sha,
+                group,
+                [(raw, text) for raw, text in result.appended if under(Path(raw), shared)],
+            )
+            if conflict is not None:
+                return self.conflict(
+                    operation, conflict["code"], conflict["message"], fix=conflict["fix"]
+                )
+            verified.extend(lines)
         return self.ok(
             operation,
             created=result.created,
             changed=result.changed,
             note=" ".join(part for part in (result.note, outcome.note) if part),
+            verified=verified,
+            appended=result.appended,
         )
 
     def commit_message(self, request: dict[str, Any]) -> str:
@@ -233,11 +258,13 @@ class MemoryUpdater:
             return self.log_conflict("set", leaf)
         note = ""
         written = [str(leaf)]
+        appended: list[tuple[str, str]] = []
         if not request.get("mechanical"):
             displaced = self.superseded_text(previous, body)
             if displaced:
                 self.append_log(log, displaced, "superseded current state")
                 written.append(str(log))
+                appended.append((str(log), displaced))
             else:
                 note = "no displaced state."
         self.write(leaf, body)
@@ -245,6 +272,7 @@ class MemoryUpdater:
             "set",
             changed=written,
             note=note,
+            appended=appended,
         )
 
     def op_log(self, request: dict[str, Any]) -> UpdateResult:
@@ -300,6 +328,7 @@ class MemoryUpdater:
             if not (leaf.parent / "log" / leaf.name).exists():
                 return self.log_conflict("commit", leaf)
         written: list[Path] = []
+        appended: list[tuple[str, str]] = []
         for leaf in active:
             log = leaf.parent / "log" / leaf.name
             if self.dirty(log, dirty):
@@ -312,20 +341,41 @@ class MemoryUpdater:
             if displaced:
                 self.append_log(log, displaced, "superseded current state")
                 written.append(log)
-        return self.publish_worktree(self.unique(targets + written), message, edits)
+                appended.append((str(log), displaced))
+        return self.publish_worktree(
+            self.unique(targets + written), message, edits, appended
+        )
 
     def publish_worktree(
-        self, paths: list[Path], message: str, edits: WorktreeEdits
+        self,
+        paths: list[Path],
+        message: str,
+        edits: WorktreeEdits,
+        appended: list[tuple[str, str]],
     ) -> UpdateResult:
-        """Commit each target in its own worktree under the agent's message."""
+        """Commit each target in its own worktree under the agent's message.
+
+        Every worktree that produced a commit is then attested with its own
+        changed paths and the appended logs that belong to it; the first
+        verification conflict stops the report.
+        """
         groups: dict[str, list[Path]] = {}
         for path in paths:
             repo = edits.repo_root(path)
             if repo is None:
                 return self.unbacked_commit(path)
             groups.setdefault(str(repo.resolve(strict=False)), []).append(path)
+        appended_groups: dict[str, list[tuple[str, str]]] = {}
+        for raw, text in appended:
+            repo = edits.repo_root(Path(raw))
+            if repo is None:
+                continue
+            appended_groups.setdefault(str(repo.resolve(strict=False)), []).append(
+                (raw, text)
+            )
         changed: list[str] = []
         notes: list[str] = []
+        verified: list[str] = []
         for root, group in groups.items():
             outcome = CommitPublisher(Path(root)).publish(group, message)
             if outcome.conflict is not None:
@@ -340,7 +390,37 @@ class MemoryUpdater:
             changed.extend(str(path) for path in group)
             if outcome.note:
                 notes.append(outcome.note)
-        return self.ok("commit", changed=changed, note=" ".join(notes))
+            if outcome.sha:
+                lines, conflict = self.attest(
+                    Path(root), outcome.sha, group, appended_groups.get(root, [])
+                )
+                if conflict is not None:
+                    return self.conflict(
+                        "commit", conflict["code"], conflict["message"], fix=conflict["fix"]
+                    )
+                verified.extend(lines)
+        return self.ok(
+            "commit", changed=changed, note=" ".join(notes), verified=verified
+        )
+
+    def attest(
+        self,
+        root: Path,
+        sha: str,
+        changed: list[Path],
+        appended: list[tuple[str, str]],
+    ) -> tuple[list[str], dict[str, str] | None]:
+        """Attest one committed worktree: its lines, or the first conflict."""
+        report = PublishAttestation(root).attest(
+            sha=sha,
+            changed=changed,
+            appended=[(Path(raw), text) for raw, text in appended],
+        )
+        if report.conflicts:
+            conflict = dict(report.conflicts[0])
+            conflict["message"] = f"{conflict['message']} (sha {sha[:12]})"
+            return [], conflict
+        return report.lines, None
 
     def unbacked_commit(self, path: Path) -> UpdateResult:
         """A target with no Git worktree: the existing manual note, or a conflict."""

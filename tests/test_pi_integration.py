@@ -1296,5 +1296,115 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         self.assertEqual(stored.rstrip("\n"), message)
 
 
+class MemoryUpdateAttestationTests(unittest.TestCase):
+    """`memory_update`: a publish reports its own double-check."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-attest-", dir=SCRATCH_ROOT))
+        self.origin = self.temp / "origin.git"
+        self.shared = make_git_shared(self.origin, self.temp / "git shared")
+        self.home, _ = make_home(self.temp / "git-home", self.shared)
+        self.leaf = self.shared / "nodes" / "note.md"
+        self.log = self.shared / "nodes" / "log" / "note.md"
+
+    def call(self, **fields: object) -> subprocess.CompletedProcess[str]:
+        event: dict[str, object] = {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        }
+        event.update(fields)
+        return invoke_pi(self.home, event)
+
+    def text(self, result: subprocess.CompletedProcess[str]) -> str:
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def create_note(self, body: str = "first", **fields: object) -> subprocess.CompletedProcess[str]:
+        fields.setdefault("commit_message", NOTE_MESSAGE)
+        return self.call(
+            operation="create", path=str(self.shared), name="note",
+            body=body, summary="Note.", **fields
+        )
+
+    def head(self) -> str:
+        return git_run("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+
+    def test_a_shared_set_publish_names_clean_head_and_upstream(self) -> None:
+        self.create_note(body="alpha\nbeta")
+        result = self.call(
+            operation="set", path=str(self.leaf), body="alpha\ngamma",
+            commit_message="memory_update set: note\n\nDrops beta.",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.text(result)
+        sha = self.head()
+        self.assertEqual(sha, git_run("rev-parse", "origin/main", cwd=self.shared).stdout.strip())
+        self.assertIn(
+            f"verified: {self.shared} clean, HEAD {sha[:12]} == origin/main", body
+        )
+        self.assertIn(sha[:12], body)
+
+    def test_a_commit_reports_the_paired_log_carries_the_appended_lines(self) -> None:
+        self.create_note(body="alpha\nbeta\ngamma")
+        self.leaf.write_text("alpha\ngamma\ndelta\n", encoding="utf-8")
+        result = self.call(
+            operation="commit",
+            commit_message="commit: hand edit\n\nMoves the dropped line into the log.",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("verified: paired log carries the appended lines", self.text(result))
+
+    def test_a_no_remote_publish_reports_no_upstream_to_compare(self) -> None:
+        git_run("remote", "remove", "origin", cwd=self.shared)
+        result = self.create_note()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sha = self.head()
+        self.assertIn(
+            f"verified: {self.shared} clean, HEAD {sha[:12]}; no upstream to compare",
+            self.text(result),
+        )
+
+    def test_a_subject_only_message_is_advised_not_failed(self) -> None:
+        result = self.create_note(commit_message="commit: note")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "attention: message has no body (subject only)", self.text(result)
+        )
+
+    def test_unit_a_dirty_target_is_an_unverified_dirty_conflict(self) -> None:
+        self.create_note()
+        self.leaf.write_text("dirty\n", encoding="utf-8")
+        report = load_hook_module("rm_verify").PublishAttestation(self.shared).attest(
+            sha=self.head(), changed=[self.leaf], appended=[]
+        )
+        self.assertEqual([item["code"] for item in report.conflicts], ["unverified-dirty"])
+        self.assertIn("nodes/note.md", report.conflicts[0]["message"])
+
+    def test_unit_an_unpushed_target_is_an_unverified_unpushed_conflict(self) -> None:
+        self.create_note()
+        self.leaf.write_text("local only\n", encoding="utf-8")
+        git_run("add", "nodes/note.md", cwd=self.shared)
+        git_run(
+            "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "local",
+            cwd=self.shared,
+        )
+        report = load_hook_module("rm_verify").PublishAttestation(self.shared).attest(
+            sha=self.head(), changed=[self.leaf], appended=[]
+        )
+        self.assertEqual([item["code"] for item in report.conflicts], ["unverified-unpushed"])
+        self.assertIn("origin/main", report.conflicts[0]["message"])
+
+    def test_unit_a_missing_appended_line_is_an_unverified_log_conflict(self) -> None:
+        self.create_note()
+        report = load_hook_module("rm_verify").PublishAttestation(self.shared).attest(
+            sha=self.head(),
+            changed=[self.leaf],
+            appended=[(self.log, "a line that was never committed\n")],
+        )
+        self.assertEqual([item["code"] for item in report.conflicts], ["unverified-log"])
+        self.assertIn("nodes/log/note.md", report.conflicts[0]["message"])
+
+
 if __name__ == "__main__":
     unittest.main()
