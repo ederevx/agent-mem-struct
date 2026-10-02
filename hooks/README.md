@@ -260,10 +260,12 @@ The bridge maps Pi events onto the hook's event vocabulary:
   uncommitted when none is given), replays its commit onto a racing shared
   tip, and never force-pushes; without a remote or an upstream it commits
   locally and says so. Every git invocation goes through `rm_git.GitWorktree`.
-  It never resolves a conflict itself: `control-invalid`, `stale-protocol`,
+  A `commit` whose target set is already clean is a no-op, not a failure: it
+  reports `nothing-to-commit` and succeeds without committing. The tool never
+  resolves a conflict itself: `control-invalid`, `stale-protocol`,
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
-  `outside-memory`, `missing-counterpart`, `nothing-to-commit`, `not-git`,
-  `missing-prerequisite`, `exists`, and `bad-request`
+  `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
+  `exists`, and `bad-request`
   come back as a conflict report for the agent to fix and retry. A
   subagent-attributed `MemoryUpdate` event is refused in the hook,
   independent of the PreToolUse gate.
