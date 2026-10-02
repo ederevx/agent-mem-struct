@@ -6,17 +6,20 @@ reports whether the changed paths are clean, the commit sits on the
 upstream it was pushed to, the committed paired logs carry the lines the
 mutation appended, and the agent's own message shape is conventional. It is
 strictly read-only: it never stages, commits, pushes, or writes, and returns
-the report lines and conflicts for the caller to surface. A durability
-failure is a conflict the agent must fix; a message-shape deviation is only
-an advisory line, because the tool assumes no convention about the message.
+the report lines and conflicts for the caller to surface. Its git reads share
+one fixed budget, and a worktree git cannot answer for is reported as an
+incomplete check rather than a clean one. A durability failure is a conflict
+the agent must fix; a message-shape deviation is only an advisory line,
+because the tool assumes no convention about the message.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from typing import Callable
 
 from rm_git import GitWorktree
 
+ATTEST_SECONDS = 8.0
 MAX_COLS = 80
 TRAILER_PREFIXES = (
     "Source:",
@@ -44,15 +47,23 @@ class Attestation:
 class PublishAttestation:
     """Double-checks one committed shared publish through its worktree."""
 
-    def __init__(self, root: Path, window: Callable[[], float] | None = None) -> None:
+    def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self.worktree = GitWorktree(self.root, window=window)
+        self.stop: float | None = None
+        self.worktree = GitWorktree(self.root, window=self.remaining)
 
     def attest(
         self, *, sha: str, changed: list[Path], appended: list[tuple[Path, str]]
     ) -> Attestation:
         """Attest the publish of `changed` and the logs in `appended` at `sha`."""
         report = Attestation()
+        self.stop = time.monotonic() + ATTEST_SECONDS
+        if not self._reached(sha):
+            report.lines.append(
+                f"attention: {self.root} was not verified: git did not answer within "
+                f"{ATTEST_SECONDS:g}s"
+            )
+            return report
         sync = self._sync_target()
         self._check_clean(report, sha, changed, sync)
         self._check_sync(report, sha, sync)
@@ -138,7 +149,8 @@ class PublishAttestation:
         trailers = self._parsed_trailers(message)
         report.lines.append(
             f"verified: message conforms (subject: {len(subject)} cols, "
-            f"body: {len(body)} lines, trailers: {len(trailers)})"
+            f"body: {len(body)} line{'s' if len(body) != 1 else ''}, "
+            f"trailers: {len(trailers)})"
         )
 
     def _lint_columns(self, lines: list[str]) -> list[str]:
@@ -171,6 +183,11 @@ class PublishAttestation:
         return flagged
 
     # -- read-only git views -------------------------------------------------
+
+    def _reached(self, sha: str) -> bool:
+        """Whether git answered for this worktree and knows the commit."""
+        probe = self.worktree.run("cat-file", "-e", f"{sha}^{{commit}}")
+        return probe.returncode == 0
 
     def _sync_target(self) -> tuple[bool, str, str]:
         """Whether an upstream exists, its name, and its tip at this moment."""
@@ -231,3 +248,9 @@ class PublishAttestation:
     def _last_content_line(self, text: str) -> str | None:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return lines[-1] if lines else None
+
+    def remaining(self) -> float:
+        """The seconds left of this attestation's own budget."""
+        if self.stop is None:
+            return self.worktree.budget
+        return max(0.5, self.stop - time.monotonic())
