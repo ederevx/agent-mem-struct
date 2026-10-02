@@ -1155,5 +1155,146 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         self.assertIn("not Git-backed", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
 
 
+class MemoryUpdateCommitOpTests(unittest.TestCase):
+    """`memory_update commit`: publishing leaves the agent edited by hand."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-commit-op-", dir=SCRATCH_ROOT))
+        self.origin = self.temp / "origin.git"
+        self.shared = make_git_shared(self.origin, self.temp / "git shared")
+        self.home, _ = make_home(self.temp / "git-home", self.shared)
+        self.leaf = self.shared / "nodes" / "note.md"
+        self.log = self.shared / "nodes" / "log" / "note.md"
+
+    def call(self, **fields: object) -> subprocess.CompletedProcess[str]:
+        event: dict[str, object] = {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        }
+        event.update(fields)
+        return invoke_pi(self.home, event)
+
+    def text(self, result: subprocess.CompletedProcess[str]) -> str:
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def create_note(self, body: str = "first", **fields: object) -> subprocess.CompletedProcess[str]:
+        fields.setdefault("commit_message", NOTE_MESSAGE)
+        return self.call(
+            operation="create", path=str(self.shared), name="note",
+            body=body, summary="Note.", **fields
+        )
+
+    def test_a_hand_edit_moves_displaced_lines_into_the_log_and_publishes(self) -> None:
+        self.create_note(body="alpha\nbeta\ngamma")
+        self.leaf.write_text("alpha\ngamma\ndelta\n", encoding="utf-8")
+        message = "commit: hand edit\n\nMoves the dropped line into the log."
+        result = self.call(operation="commit", commit_message=message)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = self.log.read_text(encoding="utf-8")
+        self.assertIn("beta", logged)
+        self.assertIn("superseded current state", logged)
+        self.assertNotIn("delta", logged)
+        stored = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertEqual(stored.rstrip("\n"), message)
+        files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.origin).stdout
+        self.assertIn("nodes/note.md", files)
+        self.assertIn("nodes/log/note.md", files)
+
+    def test_a_clean_set_reports_nothing_to_commit(self) -> None:
+        self.create_note()
+        result = self.call(operation="commit", commit_message="commit: nothing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nothing-to-commit", self.text(result))
+
+    def test_a_missing_commit_message_is_a_bad_request(self) -> None:
+        self.create_note()
+        self.leaf.write_text("edited\n", encoding="utf-8")
+        result = self.call(operation="commit", path=str(self.leaf))
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("bad-request", self.text(result))
+        self.assertIn("supply the commit message you wrote", self.text(result))
+
+    def test_a_dirty_leaf_without_a_log_is_a_missing_counterpart(self) -> None:
+        self.create_note()
+        self.log.unlink()
+        self.leaf.write_text("edited\n", encoding="utf-8")
+        result = self.call(operation="commit", path=str(self.leaf), commit_message="commit: note")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("missing-counterpart", self.text(result))
+
+    def test_a_non_git_memory_tree_is_reported_as_not_git(self) -> None:
+        orphan = self.home / "memory" / "local" / "nodes" / "orphan.md"
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_text("orphan\n", encoding="utf-8")
+        result = self.call(operation="commit", path=str(orphan), commit_message="commit: orphan")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("not-git", self.text(result))
+
+    def test_a_dirty_non_memory_file_stays_unstaged(self) -> None:
+        self.create_note()
+        unrelated = self.shared / "unrelated.md"
+        unrelated.write_text("outside\n", encoding="utf-8")
+        self.leaf.write_text("edited\n", encoding="utf-8")
+        result = self.call(
+            operation="commit", path=str(self.leaf), commit_message="commit: note only"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.shared).stdout
+        self.assertIn("nodes/note.md", files)
+        self.assertNotIn("unrelated.md", files)
+        self.assertIn("?? unrelated.md",
+                      git_run("status", "--porcelain", cwd=self.shared).stdout)
+
+    def test_a_named_path_narrows_to_one_leaf(self) -> None:
+        self.create_note()
+        self.call(operation="create", path=str(self.shared), name="beta", body="beta",
+                  summary="Beta.", commit_message="create beta")
+        beta = self.shared / "nodes" / "beta.md"
+        self.leaf.write_text("note edited\n", encoding="utf-8")
+        beta.write_text("beta edited\n", encoding="utf-8")
+        result = self.call(
+            operation="commit", path=str(self.leaf),
+            commit_message="commit: note only\n\nNarrows to one leaf.",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(git_run("show", "HEAD:nodes/note.md", cwd=self.origin).stdout,
+                         "note edited\n")
+        self.assertEqual(git_run("show", "HEAD:nodes/beta.md", cwd=self.origin).stdout, "beta\n")
+        self.assertIn("nodes/beta.md",
+                      git_run("status", "--porcelain", cwd=self.shared).stdout)
+
+    def test_a_no_remote_worktree_commits_locally_and_reports_it(self) -> None:
+        self.create_note()
+        git_run("remote", "remove", "origin", cwd=self.shared)
+        self.leaf.write_text("local only\n", encoding="utf-8")
+        result = self.call(operation="commit", commit_message="commit: local\n\nNo remote.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no upstream", self.text(result))
+        self.assertEqual(git_run("show", "HEAD:nodes/note.md", cwd=self.shared).stdout,
+                         "local only\n")
+
+    def test_a_dirty_log_suppresses_the_automatic_append(self) -> None:
+        self.create_note()
+        self.log.write_text("# Log: note\n\n## 2026-01-01 - manual\n\nby hand\n",
+                            encoding="utf-8")
+        self.leaf.write_text("rewritten\n", encoding="utf-8")
+        result = self.call(operation="commit", commit_message="commit: manual log")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = self.log.read_text(encoding="utf-8")
+        self.assertIn("by hand", logged)
+        self.assertNotIn("superseded current state", logged)
+
+    def test_an_unbreakable_long_line_is_stored_byte_for_byte(self) -> None:
+        self.create_note()
+        self.leaf.write_text("edited\n", encoding="utf-8")
+        message = "commit: note\n\n" + "x" * 120
+        result = self.call(operation="commit", commit_message=message)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stored = git_run("log", "-1", "--format=%B", cwd=self.origin).stdout
+        self.assertEqual(stored.rstrip("\n"), message)
+
+
 if __name__ == "__main__":
     unittest.main()

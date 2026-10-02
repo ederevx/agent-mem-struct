@@ -4,6 +4,26 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-01T22:30:00-04:00 - publish hand-edited leaves through the tool
+
+Keeping commit ownership in `memory_update` left no way to edit a node's
+prose cheaply: `set` re-sends the whole body, so an agent either paid that
+cost or edited the file and ran `git commit` by hand, which skipped the
+paired log and left the shared history outside the tool. The new `commit`
+operation takes the working tree as its input, so content can be written with
+the built-in `edit` tool while the tool keeps the commit. It publishes the
+named leaf plus its dirty paired log, or every dirty path inside the agent's
+memory tree and the declared shared root, stages only that target set, and
+commits and pushes through `CommitPublisher` under the agent's own message.
+For each dirty active leaf whose paired log is not itself dirty it derives
+the displaced state from Git - the lines the edit dropped - and appends them
+to the log exactly as `set` does, so the history invariant holds for edits
+the tool did not write. `rm_edit.WorktreeEdits` owns that read-only git
+evidence, keeping `GitWorktree` the only caller of git, `MemoryUpdater` the
+only writer of memory, and `CommitPublisher` the only publisher. A clean
+target set reports `nothing-to-commit` and succeeds; a target outside a git
+worktree, or a dirty leaf without its log, is refused.
+
 ## 2026-10-01T22:00:00-04:00 - publish under the agent's own message only
 
 The tool composed part of the commit it published: it rewrapped the agent's
