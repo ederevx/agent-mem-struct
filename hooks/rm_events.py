@@ -162,7 +162,7 @@ class EventDispatcher:
             self.emit_hook_context("PreMemory", "CONTROL ERROR: " + error)
             return 1
         context = (
-            self.control.context_text(state)
+            self.control.pre_memory_catalog_text(state)
             + "\n\n"
             + self.control.pre_memory_feature_text()
         )

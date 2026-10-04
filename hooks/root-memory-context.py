@@ -118,11 +118,14 @@ def main() -> int:
     event_name = str(event.get("hook_event_name") or event.get("hookEventName") or "")
     if event_name not in SUPPORTED_EVENTS:
         return 0
+    reading = False
     if event_name == "PreToolUse":
+        tool_name = str(event.get("tool_name") or "")
         tool_input = event.get("tool_input")
-        if not isinstance(tool_input, dict) or not MutationScanner.tool_requires_acknowledgment(
-            str(event.get("tool_name") or ""), tool_input
-        ):
+        if not isinstance(tool_input, dict):
+            return 0
+        reading = args.agent == "pi" and MutationScanner.tool_is_read(tool_name, tool_input)
+        if not reading and not MutationScanner.tool_requires_acknowledgment(tool_name, tool_input):
             return 0
 
     control = RootControl(home, canonical_root)
@@ -158,6 +161,13 @@ def main() -> int:
     if event_name == "PreCompact":
         return dispatcher.handle_precompact(event, state)
     if event_name == "PreToolUse":
+        if reading:
+            # Record the read, then let the tool run; reads are never gated.
+            try:
+                gate.record_read(event)
+            except (OSError, ValueError):
+                pass
+            return 0
         dispatcher.handle_pretool(event, state)
         return 0
     if event_name in {"Stop", "SubagentStop"}:

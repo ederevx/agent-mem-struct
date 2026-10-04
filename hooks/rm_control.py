@@ -31,13 +31,13 @@ SUBAGENT_READ_BOUNDARY_TEXT = (
 
 PRE_MEMORY_FEATURE_TEXT = (
     "agent-mem-struct `pre_memory`: call it once per session before any "
-    "memory write or agent-mem-struct action. It pulls the declared shared "
-    "worktree (`git pull --ff-only`), loads and acknowledges the root memory, "
-    "RULES.md, and the shared/group conventions for this session, and unlocks "
-    "the memory-mutation gate. If any convention source changes, call it "
-    "again; mutations stay denied until the current convention digest is "
-    "acknowledged. Subagents read the same sources but never write memory; "
-    "route additions back to the parent.\n\n"
+    "memory write or agent-mem-struct action. It fast-forwards the declared "
+    "shared worktree (`git pull --ff-only`), records the current convention "
+    "sources, and returns the read list and navigation rules. The "
+    "conventions are not inlined: the call counts as an acknowledgment only "
+    "once every required source has been read with the `read` tool, and a "
+    "changed source must be read again. Subagents read the same sources but "
+    "never write memory; route additions back to the parent.\n\n"
     "agent-mem-struct `memory_update`: after acknowledgment, use it to create "
     "or update a node and its required counterparts in one spec-shaped "
     "operation. It creates the paired log, the nodes index, and any missing "
@@ -46,8 +46,9 @@ PRE_MEMORY_FEATURE_TEXT = (
 )
 
 PRE_MEMORY_POINTER = (
-    "Conventions are loaded only by calling the `pre_memory` tool; call it "
-    "before any memory write or agent-mem-struct action."
+    "Conventions are loaded only by calling `pre_memory`, then reading the "
+    "sources it lists with the `read` tool; call it before any memory write "
+    "or agent-mem-struct action."
 )
 
 
@@ -322,6 +323,51 @@ class RootControl:
     def pre_memory_feature_text(self) -> str:
         """The `pre_memory` feature summary appended to its returned catalog."""
         return PRE_MEMORY_FEATURE_TEXT
+
+    def pre_memory_read_paths(self, state: RootState) -> tuple[list[Path], list[Path]]:
+        """Split the convention sources into root reads and project groups."""
+        root_reads = [state.root_memory, state.root_rules]
+        local = state.memory_root / "local" / "MEMORY.md"
+        if local.is_file():
+            root_reads.append(local)
+        if state.shared_memory is not None:
+            root_reads.append(state.shared_memory)
+        groups: list[Path] = []
+        roots = [state.memory_root]
+        if state.shared_resolved is not None:
+            roots.append(state.shared_resolved)
+        for root in roots:
+            groups.extend(sorted(root.glob("**/submemory/*/MEMORY.md")))
+        return root_reads, groups
+
+    def pre_memory_catalog_text(self, state: RootState) -> str:
+        """The Pi catalog: the sources to read, never their inlined bodies.
+
+        The conventions are deliberately absent here so acknowledgment cannot
+        be a passive read of tool output; the model must open each source with
+        the host's read tool, and the mutation gate checks that it did.
+        """
+        root_reads, groups = self.pre_memory_read_paths(state)
+        lines = [
+            "ROOT MEMORY CATALOG — the conventions are not inlined here.",
+            "Read every source below with the `read` tool; `pre_memory` only "
+            "fast-forwards the shared worktree and records the read set.",
+            "",
+            "Required root reads (read every path):",
+        ]
+        lines.extend(f"- {path}" for path in root_reads)
+        lines.extend(("", "Project conventions (read every group that applies to the project you are working on):"))
+        lines.extend([f"- {path}" for path in groups] or ["- (none declared; the root reads above are the whole convention set)"])
+        lines.extend((
+            "",
+            "Navigation rules:",
+            "1. Read root `memory/MEMORY.md` first: it declares `Structure:` and the `Shared:` half-root and splits the tree into the local and shared halves, both mandatory.",
+            "2. Read root `RULES.md` and the shared `MEMORY.md`: their **Mandatory conventions** bind every task, memory work or not.",
+            "3. Name the project or scope of the task, then read every applicable group `MEMORY.md` from the root through the target and obey its Mandatory conventions. Conventions are inherited from ancestor groups and are never taken from `nodes/`, `log/`, or an attachment.",
+            "4. Load nodes on demand only: the group's `nodes/MEMORY.md` index, the active node, and any `requires_read` prerequisite it names, which is a hard prerequisite.",
+            "5. Active `.md` files hold current state only; displaced state belongs in the paired `log/<file>.md`, which is historical and non-authoritative.",
+        ))
+        return "\n".join(lines)
 
     def turn_reminder_text(self, agent: str, state: RootState) -> str:
         """Keep task boundaries current without duplicating root bodies."""

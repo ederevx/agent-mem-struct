@@ -23,7 +23,11 @@ RECEIPT_MAX_AGE = 7 * 24 * 60 * 60
 RECEIPT_MAX_FILES = 512
 PREMEMORY_DENIAL = (
     "Convention acknowledgment required: call pre_memory first "
-    "(it pulls the shared worktree and loads the conventions)."
+    "(it pulls the shared worktree and lists the conventions to read)."
+)
+READ_DENIAL = (
+    "Convention acknowledgment incomplete: the conventions are not inlined. "
+    "Read these sources with the `read` tool, then retry: "
 )
 
 
@@ -228,13 +232,116 @@ class ConventionGate:
         return digest, body, paths, None
 
     def receipt_covers(self, event: dict[str, Any], *, scoped: bool) -> tuple[bool, str]:
-        """Whether this session already acknowledged every current source."""
+        """Whether this session already acknowledged and read current sources.
+
+        Pi acknowledges in two steps: `pre_memory` records the current source
+        digests, then the model must open every required source with the read
+        tool. A missing read is denied by name so the model can correct it.
+        """
         digest, body, paths, source_digests = self.bundle(event, scoped=scoped)
         if digest is None or body is None:
             return False, body or "required convention bundle could not be built"
-        if self.receipt_is_current(event, source_digests):
-            return True, ""
-        return False, PREMEMORY_DENIAL
+        if not self.receipt_is_current(event, source_digests):
+            return False, PREMEMORY_DENIAL
+        missing = self.missing_reads(event, scoped=scoped)
+        if missing:
+            listing = ", ".join(str(path) for path in missing)
+            return False, READ_DENIAL + listing + "."
+        return True, ""
+
+    def _is_convention_source(self, resolved: Path) -> bool:
+        """Whether a read opened a convention source worth recording."""
+        controls = {
+            path.resolve(strict=False)
+            for path in (self.state.root_memory, self.state.root_rules, self.state.structure)
+        }
+        if resolved in controls:
+            return True
+        roots = [self.state.memory_root, self.state.shared_resolved]
+        return any(
+            root is not None and under(resolved, root.resolve(strict=False))
+            for root in roots
+        )
+
+    @staticmethod
+    def _source_digest(path: Path) -> str | None:
+        """The sha256 of one source's bytes, or None when unreadable."""
+        text, error = read_text(path)
+        if error or text is None:
+            return None
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def required_read_paths(self, event: dict[str, Any], *, scoped: bool) -> list[Path]:
+        """The sources the model must open before this action is allowed."""
+        paths = [self.state.root_memory, self.state.root_rules]
+        local = self.state.memory_root / "local" / "MEMORY.md"
+        if local.is_file():
+            paths.append(local)
+        if self.state.shared_memory is not None:
+            paths.append(self.state.shared_memory)
+        if scoped:
+            tool_input = event.get("tool_input")
+            cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+            if isinstance(tool_input, dict):
+                for raw in MutationScanner.target_strings(tool_input):
+                    for candidate in MutationScanner.candidate_paths(raw, cwd):
+                        paths.extend(self.manifest_chain(candidate))
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = os.path.normcase(str(path.resolve(strict=False)))
+            if key in seen:
+                continue
+            seen.add(key)
+            if path.is_file():
+                unique.append(path)
+        return unique
+
+    def missing_reads(self, event: dict[str, Any], *, scoped: bool) -> list[Path]:
+        """Required sources whose current bytes this session has not read."""
+        reads = self.read_receipt(event).get("reads")
+        recorded = reads if isinstance(reads, dict) else {}
+        missing: list[Path] = []
+        for path in self.required_read_paths(event, scoped=scoped):
+            digest = self._source_digest(path)
+            key = os.path.normcase(str(path.resolve(strict=False)))
+            if digest is None or recorded.get(key) != digest:
+                missing.append(path)
+        return missing
+
+    def record_read(self, event: dict[str, Any]) -> None:
+        """Record the memory sources opened by this read-tool call.
+
+        Best-effort evidence only: a read under the memory roots is hashed
+        into the session receipt so the mutation gate can prove it happened.
+        """
+        tool_input = event.get("tool_input")
+        if not isinstance(tool_input, dict):
+            return
+        cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+        current = self.read_receipt(event)
+        prior = current.get("reads")
+        reads = dict(prior) if isinstance(prior, dict) else {}
+        changed = False
+        for raw in MutationScanner.target_strings(tool_input):
+            for candidate in MutationScanner.candidate_paths(raw, cwd):
+                resolved = candidate.resolve(strict=False)
+                if not self._is_convention_source(resolved):
+                    continue
+                digest = self._source_digest(resolved)
+                if digest is None:
+                    continue
+                key = os.path.normcase(str(resolved))
+                if reads.get(key) != digest:
+                    reads[key] = digest
+                    changed = True
+        if changed:
+            sources = current.get("sources")
+            self._store_receipt(
+                event,
+                sources if isinstance(sources, dict) else {},
+                reads,
+            )
 
     def _digest(
         self, paths: list[Path]
@@ -295,6 +402,18 @@ class ConventionGate:
         )
 
     def acknowledge_receipt(self, event: dict[str, Any], source_digests: dict[str, str]) -> None:
+        prior = self.read_receipt(event)
+        prior_sources = prior.get("sources")
+        sources = dict(prior_sources) if isinstance(prior_sources, dict) else {}
+        sources.update(source_digests)
+        prior_reads = prior.get("reads")
+        reads = dict(prior_reads) if isinstance(prior_reads, dict) else {}
+        self._store_receipt(event, sources, reads)
+
+    def _store_receipt(
+        self, event: dict[str, Any], sources: dict[str, str], reads: dict[str, str]
+    ) -> None:
+        """Atomically write one session receipt; the only receipt writer."""
         directory = self.dir()
         if directory.is_symlink() or not under(directory, self.state.home):
             raise OSError(f"unsafe convention receipt directory: {directory}")
@@ -307,15 +426,13 @@ class ConventionGate:
         path = self.path(event)
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise OSError(f"unsafe convention receipt path: {path}")
-        prior = self.read_receipt(event).get("sources")
-        sources = dict(prior) if isinstance(prior, dict) else {}
-        sources.update(source_digests)
         temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
         try:
             temporary.write_text(
                 json.dumps({
                     "shared_root": os.path.normcase(str(self.state.shared_resolved)),
                     "sources": sources,
+                    "reads": reads,
                 }, separators=(",", ":")) + "\n",
                 encoding="utf-8",
             )
