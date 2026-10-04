@@ -4,6 +4,29 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-04T12:40:00-04:00 - pre_memory returns a read list, not the conventions
+
+Pi's `pre_memory` inlined the full root memory, `RULES.md`, and shared
+convention bodies into tool output. Acknowledgment then collapsed into
+skimming text the model already held, and the mandatory reads were never
+performed, so the conventions lost their force. `pre_memory` now returns a
+catalog only: the root sources and every declared project group, plus the
+navigation rules - read root memory first, then `RULES.md` and the shared
+`MEMORY.md`, then every applicable group `MEMORY.md` through the target, with
+nodes, indexes, and `requires_read` loaded on demand and `log/` treated as
+history. No convention body is inlined.
+
+The mutation gate now proves the read. The Pi bridge records each read of a
+memory root or root control file as a hash in the session receipt, and
+`ConventionGate.receipt_covers` refuses a mutation until the `pre_memory`
+receipt is current and every required source's current bytes have been read.
+A changed source invalidates its recorded read and must be read again; the
+denial names the missing paths. Reads are never gated, and Codex and Claude
+keep the injected bundle and block-and-retry delivery.
+
+This changes only the Pi hook layer. It does not change the memory tree or
+canonical operational rules, so no `Structure-Version` migration is required.
+
 ## 2026-10-01T23:30:00-04:00 - attest every publish in the mutation report
 
 After every publish the agent had to re-inspect the commit by hand - a clean

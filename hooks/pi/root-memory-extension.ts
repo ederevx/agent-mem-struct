@@ -120,8 +120,10 @@ export class RootMemoryBridge {
 			label: "pre_memory",
 			description:
 				"Call once per session before any memory write or agent-mem-struct " +
-				"action. Pulls the declared shared worktree, loads the agent-mem-struct " +
-				"conventions, acknowledges them for this session, and returns the catalog.",
+				"action. Fast-forwards the declared shared worktree, records the " +
+				"current convention sources, and returns the read list and navigation " +
+				"rules. The conventions are not inlined: read the listed sources with " +
+				"the read tool to acknowledge them.",
 			parameters: Type.Object({}),
 			annotations: { readOnlyHint: false },
 			execute: () => this.loadPreMemory(),

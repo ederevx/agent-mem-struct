@@ -56,6 +56,7 @@ PATCH_HEADER_RE = re.compile(
 READ_ONLY_TOOL_TOKENS = (
     "read", "view", "get", "list", "search", "find", "status", "grep", "glob",
 )
+READ_TOOL_NAMES = {"read", "read_file", "view"}
 SHELL_TOOL_NAMES = {"bash", "powershell", "shell", "exec_command", "command"}
 SHELL_READ_ONLY_RE = re.compile(
     r"^\s*(?:(?:pwd|ls|dir|cat|head|tail|stat|where|which|rg|grep|find|"
@@ -149,6 +150,13 @@ class MutationScanner:
             candidate = MutationScanner.path_from_string(token, cwd)
             if candidate is not None:
                 yield candidate
+
+    @staticmethod
+    def tool_is_read(tool_name: str, tool_input: dict[str, Any]) -> bool:
+        """Whether this call opens one or more memory sources with a read tool."""
+        if str(tool_name).lower() not in READ_TOOL_NAMES:
+            return False
+        return bool(list(MutationScanner.target_strings(tool_input)))
 
     @staticmethod
     def tool_requires_acknowledgment(tool_name: str, tool_input: dict[str, Any]) -> bool:

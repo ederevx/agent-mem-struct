@@ -110,6 +110,26 @@ def invoke_pi(home: Path, event: dict[str, object], *, canonical_root: Path | No
     )
 
 
+def read_conventions(
+    home: Path, shared: Path, session: str = "pi-session", turn: str = "turn-1"
+) -> None:
+    """Open every required convention source the way the model must."""
+    for path in (
+        home / "memory" / "MEMORY.md",
+        home / "RULES.md",
+        home / "memory" / "local" / "MEMORY.md",
+        shared / "MEMORY.md",
+    ):
+        invoke_pi(home, {
+            "hook_event_name": "PreToolUse",
+            "session_id": session,
+            "turn_id": turn,
+            "tool_name": "read",
+            "tool_input": {"path": str(path)},
+            "cwd": str(home),
+        })
+
+
 class PiHookTests(unittest.TestCase):
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
@@ -184,9 +204,24 @@ class PiHookTests(unittest.TestCase):
         })
         self.assertEqual(loaded.returncode, 0, loaded.stderr)
         catalog = self.output(loaded)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("## Mandatory conventions", catalog)
-        self.assertIn("Verify first.", catalog)
+        # The catalog names the sources and the rules, never the bodies.
+        self.assertIn("ROOT MEMORY CATALOG", catalog)
+        self.assertIn("Navigation rules", catalog)
+        for path in (self.home / "memory" / "MEMORY.md", self.home / "RULES.md",
+                     self.shared / "MEMORY.md"):
+            self.assertIn(str(path), catalog)
+        for body_text in ("## Mandatory conventions", "Verify first.", "--- BEGIN"):
+            self.assertNotIn(body_text, catalog)
 
+        # Acknowledgment is not complete until the sources are read.
+        unread = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+        self.assertEqual(unread["permissionDecision"], "deny")
+        self.assertIn("Read these sources with the `read` tool",
+                      unread["permissionDecisionReason"])
+        self.assertIn(str(self.home / "memory" / "MEMORY.md"),
+                      unread["permissionDecisionReason"])
+
+        read_conventions(self.home, self.shared)
         second = invoke_pi(self.home, self.write(target))
         # An allowed call prints nothing; the host treats empty stdout as allow.
         self.assertEqual(second.stdout.strip(), "")
@@ -199,6 +234,7 @@ class PiHookTests(unittest.TestCase):
             "turn_id": "turn-1",
         })
         self.assertEqual(loaded.returncode, 0, loaded.stderr)
+        read_conventions(self.home, self.shared)
         self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
 
         shared = self.shared / "MEMORY.md"
@@ -209,6 +245,59 @@ class PiHookTests(unittest.TestCase):
         changed = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
         self.assertEqual(changed["permissionDecision"], "deny")
         self.assertIn("call pre_memory first", changed["permissionDecisionReason"])
+
+    def test_read_gate_tracks_each_required_source(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        # Reading an unrelated path is not acknowledgment evidence.
+        invoke_pi(self.home, {
+            "hook_event_name": "PreToolUse",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+            "tool_name": "read",
+            "tool_input": {"path": str(self.temp / "unrelated.txt")},
+            "cwd": str(self.home),
+        })
+        still = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+        self.assertEqual(still["permissionDecision"], "deny")
+        self.assertIn(str(self.home / "memory" / "MEMORY.md"),
+                      still["permissionDecisionReason"])
+
+        read_conventions(self.home, self.shared)
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+
+    def test_a_changed_source_re_requires_its_read(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        read_conventions(self.home, self.shared)
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+
+        rules = self.home / "RULES.md"
+        rules.write_text(rules.read_text(encoding="utf-8") + "# Rewritten.\n", encoding="utf-8")
+        denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn("Read these sources with the `read` tool",
+                      denied["permissionDecisionReason"])
+        self.assertIn(str(rules), denied["permissionDecisionReason"])
+
+        # Re-reading the changed source restores the hash-bound evidence.
+        invoke_pi(self.home, {
+            "hook_event_name": "PreToolUse",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+            "tool_name": "read",
+            "tool_input": {"path": str(rules)},
+            "cwd": str(self.home),
+        })
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
 
     def test_pre_memory_pulls_shared_and_records_a_session_receipt(self) -> None:
         origin = self.temp / "origin.git"
@@ -233,12 +322,18 @@ class PiHookTests(unittest.TestCase):
         })
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Pulled rule.", (shared / "MEMORY.md").read_text(encoding="utf-8"))
-        self.assertIn("pre_memory", self.output(result)["hookSpecificOutput"]["additionalContext"])
-        # The catalog must reflect the pulled bytes, not the pre-pull snapshot.
-        self.assertIn("Pulled rule.", self.output(result)["hookSpecificOutput"]["additionalContext"])
+        catalog = self.output(result)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("pre_memory", catalog)
+        # The catalog lists the pulled source; its bytes are read on demand.
+        self.assertIn(str(shared / "MEMORY.md"), catalog)
+        self.assertNotIn("Pulled rule.", catalog)
 
         receipts = list((home / ".agent-mem-struct" / "convention-receipts").glob("*.json"))
         self.assertEqual(len(receipts), 1)
+        # The receipt must hash the pulled bytes, not the pre-pull snapshot.
+        recorded = json.loads(receipts[0].read_text(encoding="utf-8"))["sources"]
+        pulled = hashlib.sha256((shared / "MEMORY.md").read_bytes()).hexdigest()
+        self.assertEqual(recorded[os.path.normcase(str(shared / "MEMORY.md"))], pulled)
         # The receipt is session-scoped: a later turn reuses the same one.
         again = invoke_pi(home, {
             "hook_event_name": "PreMemory",
@@ -937,6 +1032,7 @@ class MemoryUpdateTests(unittest.TestCase):
             "session_id": "pi-session",
             "turn_id": "turn-1",
         })
+        read_conventions(self.home, self.shared)
         allowed = pretool()
         self.assertEqual(allowed.returncode, 0)
         # An allowed call prints nothing; the host treats empty stdout as allow.
