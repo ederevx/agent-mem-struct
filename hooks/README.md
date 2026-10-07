@@ -226,8 +226,15 @@ The bridge maps Pi events onto the hook's event vocabulary:
 - `before_agent_start` emits only a one-line pointer (`SessionStart` on the
   first turn of a session and the turn after any compaction, the compact
   per-turn reminder otherwise) telling the model to call `pre_memory`; the full
-  root bundle is never injected. This is the only injectable point Pi offers,
-  so `session_start` and `agent_settled` are deliberately not mapped.
+  root bundle is never injected. This is the only hook-context injectable
+  point Pi offers, so `session_start` and `agent_settled` are deliberately not
+  mapped.
+- `session_compact` marks the session for continuity restoration and steers
+  the same one-line pointer into the ongoing context immediately. A mid-run
+  compaction (threshold, overflow retry) resumes without another
+  `before_agent_start`, so without this the model would continue on the
+  summarized transcript unaware that memory and conventions load through
+  `pre_memory`. A failed load is surfaced on the next turn instead of dropped.
 - `tool_call` drives the `PreToolUse` memory-mutation gate. Until the session
   acknowledges the current conventions, a memory mutation is denied with a
   short "call `pre_memory` first" reason; the bundle is delivered only by the

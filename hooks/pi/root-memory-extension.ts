@@ -8,6 +8,8 @@
 //   tool_call           -> PreToolUse (memory-mutation gate; Pi can block)
 //   memory_update tool   -> MemoryUpdate (structural mutation or conflict report)
 //   session_before_compact -> PreCompact (cancel manual compaction on failure)
+//   session_compact      -> inject the memory/convention pointer immediately
+//                           (a mid-run compaction has no before_agent_start)
 //
 // Pi's session_start and agent_settled events cannot inject or block anything,
 // so they are deliberately not mapped: turn-end enforcement relies on the
@@ -104,11 +106,7 @@ export class RootMemoryBridge {
 
 		pi.on("before_agent_start", async (event: any) => this.onBeforeAgentStart(event));
 		pi.on("tool_call", async (event: any, ctx: any) => this.onToolCall(event, ctx));
-		pi.on("session_compact", async () => {
-			// The compaction landed; the next turn must restore the continuity
-			// checkpoint the PreCompact event saved.
-			this.afterCompaction = true;
-		});
+		pi.on("session_compact", async () => this.onSessionCompact(pi));
 		pi.on("session_before_compact", async (event: any) => this.onBeforeCompact(event));
 	}
 
@@ -445,6 +443,44 @@ export class RootMemoryBridge {
 				"and RULES.md before writing memory.";
 		}
 		return undefined;
+	}
+
+	/** A compaction landed. Remember it so the next turn restores the
+	 *  PreCompact continuity checkpoint, and remind the model of the memory
+	 *  authority now: a mid-run compaction resumes without another
+	 *  before_agent_start, so the pointer would otherwise go unseen. */
+	private async onSessionCompact(pi: any): Promise<void> {
+		this.afterCompaction = true;
+		const reminder = await this.postCompactionReminder();
+		if (reminder === null || typeof pi.sendMessage !== "function") return;
+		pi.sendMessage(
+			{
+				customType: "agent-mem-struct-root-memory",
+				content: reminder,
+				display: false,
+			},
+			{ deliverAs: "steer" },
+		);
+	}
+
+	/** Loads the post-compaction memory/convention pointer from the hook, its
+	 *  one owner, and surfaces a failed load on the next turn instead of
+	 *  dropping the reminder. */
+	private async postCompactionReminder(): Promise<string | null> {
+		const result = await this.callHook(
+			"UserPromptSubmit",
+			{ prompt: "" },
+			DEFAULT_TIMEOUT_MS,
+		);
+		const context = this.additionalContext(result);
+		if (context === null) {
+			this.pendingNotice =
+				"agent-mem-struct: this session was compacted, but the memory and " +
+				"convention reminder could not be loaded. Call `pre_memory` before " +
+				"any memory write or agent-mem-struct action.";
+			return null;
+		}
+		return context;
 	}
 
 	/** Checkpoint before compaction: only a manual compaction may be

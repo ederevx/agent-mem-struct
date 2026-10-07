@@ -711,8 +711,10 @@ class PiPackageTests(unittest.TestCase):
             "const mode = process.argv[3];\n"
             "const handlers = {};\n"
             "const tools = [];\n"
+            "const sent = [];\n"
             "const pi = { on: (n, f) => { handlers[n] = f; },\n"
             "  registerTool: (t) => tools.push(t.name),\n"
+            "  sendMessage: (message, options) => sent.push({ message, options }),\n"
             "  sessionManager: { getSessionId: () => 's1' } };\n"
             "if (mode === 'paths') {\n"
             "  const paths = new mod.PackageBridgePaths({ AMS_PYTHON: 'P', AMS_HOOK: 'H',\n"
@@ -724,6 +726,10 @@ class PiPackageTests(unittest.TestCase):
             "    const out = await handlers['before_agent_start']({ prompt: 'hi' });\n"
             "    process.stdout.write(JSON.stringify({\n"
             "      registered: Object.keys(handlers).sort(), tools: tools.sort(), out }));\n"
+            "  } else if (mode === 'compact') {\n"
+            "    await handlers['session_compact']({});\n"
+            "    process.stdout.write(JSON.stringify({\n"
+            "      registered: Object.keys(handlers).sort(), tools: tools.sort(), sent }));\n"
             "  } else {\n"
             "    process.stdout.write(JSON.stringify({ registered: Object.keys(handlers), tools: tools.sort() }));\n"
             "  }\n"
@@ -810,9 +816,24 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("before_agent_start", result["registered"])
         self.assertIn("tool_call", result["registered"])
         self.assertIn("session_before_compact", result["registered"])
+        self.assertIn("session_compact", result["registered"])
         self.assertIn("pre_memory", result["tools"])
         self.assertIn("memory_update", result["tools"])
         self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
+
+    def test_session_compact_injects_the_memory_pointer_immediately(self) -> None:
+        # A mid-run compaction resumes without another before_agent_start, so
+        # the bridge must steer the pointer into the ongoing context itself.
+        bundle = self.bundle()
+        config_home = self.temp / "pi-home-compact"
+        config_home.mkdir(parents=True)
+        result = self.run_driver(bundle, "compact", {"config_home": str(config_home)})
+        self.assertEqual(len(result["sent"]), 1)
+        sent = result["sent"][0]
+        self.assertEqual(sent["options"]["deliverAs"], "steer")
+        self.assertEqual(sent["message"]["customType"], "agent-mem-struct-root-memory")
+        self.assertFalse(sent["message"]["display"])
+        self.assertIn("PACKAGE-BRIDGE-STUB", sent["message"]["content"])
 
     def test_runtime_paths_honor_env_overrides(self) -> None:
         bundle = self.bundle()

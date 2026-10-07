@@ -4,6 +4,24 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-07T19:32:00-04:00 - remind Pi of memory and conventions after compaction
+
+The Pi bridge left the post-compaction pointer to the next
+`before_agent_start`, which is emitted once per user prompt. A compaction that
+lands mid-run - the context-threshold check and overflow recovery both resume
+the same run - therefore continued on the summarized transcript without ever
+being told that memory and conventions load through `pre_memory`. The
+`session_compact` handler now steers that same one-line pointer into the
+ongoing context immediately, while still flagging the turn for the
+continuity-checkpoint restoration. The pointer text stays owned by the Python
+hook: the bridge fetches it through the existing `UserPromptSubmit` context,
+and a failed load is surfaced as a next-turn notice instead of dropped. A
+`RootMemoryBridge` method owns the injection, so no module-level state or
+second text owner is introduced.
+
+This changes only the Pi hook layer. It does not change the memory tree or
+canonical operational rules, so no `Structure-Version` migration is required.
+
 ## 2026-10-04T12:40:00-04:00 - pre_memory returns a read list, not the conventions
 
 Pi's `pre_memory` inlined the full root memory, `RULES.md`, and shared
