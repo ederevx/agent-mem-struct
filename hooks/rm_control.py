@@ -340,91 +340,75 @@ class RootControl:
             groups.extend(sorted(root.glob("**/submemory/*/MEMORY.md")))
         return root_reads, groups
 
-    def pre_memory_catalog_text(self, state: RootState) -> str:
-        """The Pi catalog: the sources to read, never their inlined bodies.
+    def control_status_text(self, state: RootState) -> str:
+        """The one-line authority status that precedes a catalog."""
+        if state.errors:
+            return (
+                "CONTROL ERROR: "
+                + " | ".join(state.errors)
+                + " Do not mutate scoped memory until the root authority is repaired."
+            )
+        if state.stale:
+            return (
+                f"PROTOCOL STALE: applied {state.applied} != canonical "
+                f"{state.canonical}. Read and apply {state.migration} before "
+                "ordinary memory work."
+            )
+        return f"Protocol status: current ({state.canonical})."
 
-        The conventions are deliberately absent here so acknowledgment cannot
-        be a passive read of tool output; the model must open each source with
-        the host's read tool, and the mutation gate checks that it did.
+    def catalog_text(self, state: RootState) -> str:
+        """The read catalog: the sources to read, never their inlined bodies.
+
+        The conventions are deliberately absent so acknowledgment cannot be a
+        passive read of injected tool output; the model must open each source
+        with its read tool, and the mutation gate checks that it did. The
+        declared shared tree is read with `tree` instead of a file read.
         """
         root_reads, groups = self.pre_memory_read_paths(state)
-        lines = [
-            "ROOT MEMORY CATALOG — the conventions are not inlined here.",
-            "Read every source below with the `read` tool; `pre_memory` only "
-            "fast-forwards the shared worktree and records the read set.",
-            "",
-            "Required root reads (read every path):",
-        ]
+        lines = [self.control_status_text(state), ""]
+        lines.extend(
+            (
+                "ROOT MEMORY CATALOG — the conventions are not inlined here.",
+                "Read every source below with your read tool before any gated "
+                "action; the gate records each read and stays closed until every "
+                "source is current.",
+                "",
+                "Required root reads (read every path):",
+            )
+        )
         lines.extend(f"- {path}" for path in root_reads)
-        lines.extend(("", "Project conventions (read every group that applies to the project you are working on):"))
-        lines.extend([f"- {path}" for path in groups] or ["- (none declared; the root reads above are the whole convention set)"])
-        lines.extend((
-            "",
-            "Navigation rules:",
-            "1. Read root `memory/MEMORY.md` first: it declares `Structure:` and the `Shared:` half-root and splits the tree into the local and shared halves, both mandatory.",
-            "2. Read root `RULES.md` and the shared `MEMORY.md`: their **Mandatory conventions** bind every task, memory work or not.",
-            "3. Name the project or scope of the task, then read every applicable group `MEMORY.md` from the root through the target and obey its Mandatory conventions. Conventions are inherited from ancestor groups and are never taken from `nodes/`, `log/`, or an attachment.",
-            "4. Load nodes on demand only: the group's `nodes/MEMORY.md` index, the active node, and any `requires_read` prerequisite it names, which is a hard prerequisite.",
-            "5. Active `.md` files hold current state only; displaced state belongs in the paired `log/<file>.md`, which is historical and non-authoritative.",
-        ))
+        lines.extend(
+            ("", "Project conventions (read every group that applies to the project you are working on):")
+        )
+        lines.extend(
+            [f"- {path}" for path in groups]
+            or ["- (none declared; the root reads above are the whole convention set)"]
+        )
+        if state.shared_resolved is not None:
+            shared = state.shared_resolved
+            lines.extend(
+                (
+                    "",
+                    "Shared-memory structure (required): read the complete "
+                    f"layout once with `tree {shared}`; if `tree` is not "
+                    f"installed, use `find \"{shared}\" -print` (in a "
+                    f"PowerShell tool: `Get-ChildItem -LiteralPath '{shared}' "
+                    "-Recurse -Force`). The hook records it.",
+                )
+            )
+        lines.extend(
+            (
+                "",
+                "Navigation rules:",
+                "1. Read root `memory/MEMORY.md` first: it declares `Structure:` and the `Shared:` half-root and splits the tree into the local and shared halves, both mandatory.",
+                "2. Read root `RULES.md` and the shared `MEMORY.md`: their **Mandatory conventions** bind every task, memory work or not.",
+                "3. Name the project or scope of the task, then read every applicable group `MEMORY.md` from the root through the target and obey its Mandatory conventions. Conventions are inherited from ancestor groups and are never taken from `nodes/`, `log/`, or an attachment.",
+                "4. Load nodes on demand only: the group's `nodes/MEMORY.md` index, the active node, and any `requires_read` prerequisite it names, which is a hard prerequisite.",
+                "5. Active `.md` files hold current state only; displaced state belongs in the paired `log/<file>.md`, which is historical and non-authoritative.",
+            )
+        )
         return "\n".join(lines)
 
-    def turn_reminder_text(self, agent: str, state: RootState) -> str:
-        """Keep task boundaries current without duplicating root bodies."""
-        # Pi carries conventions only in the pre_memory result, so the per-turn
-        # reminder is the same single pointer, never a second body.
-        if agent == "pi":
-            return PRE_MEMORY_POINTER
-        lines = [
-            "ROOT MEMORY TURN CHECK — the hook-loaded authority remains in force.",
-        ]
-        if state.errors:
-            lines.extend((
-                "CONTROL ERROR: " + " | ".join(state.errors),
-                "Do not mutate scoped memory until root control is repaired.",
-            ))
-        elif state.stale:
-            lines.append(
-                f"PROTOCOL STALE: applied {state.applied} != canonical "
-                f"{state.canonical}; apply {state.migration} before memory work."
-            )
-        lines.append(
-            "For each substantive new task, follow the already-loaded root rules "
-            "and read the shared scope before relevant nodes. The first mutation "
-            "or turn completion for a new convention digest is intentionally "
-            "refused once; read the injected bundle and retry to acknowledge it."
-        )
-        lines.append(
-            "Before proceeding, pull the declared shared worktree with "
-            "`git pull --ff-only` and confirm it succeeded; rereading the loaded "
-            "copy is not a substitute for pulling. Reconcile and push a failed, "
-            "non-fast-forward, or divergent pull before continuing."
-        )
-        lines.append(
-            "Before settling, record and push this turn's durable facts, decisions, "
-            "or state changes in shared memory; a spawned subagent reports them to "
-            "its parent instead of writing memory."
-        )
-        if agent == "codex":
-            lines.append(
-                "Codex native AGENTS.md instruction discovery remains active. Its "
-                "generated memories are disabled for this integration; do not treat "
-                "$CODEX_HOME/memories/ as a second persistence authority."
-            )
-        else:
-            lines.append(
-                "Claude native auto memory is disabled for this integration; do not "
-                "treat its storage directory as a second authority."
-            )
-        return "\n".join(lines)
-
-    def subagent_context_text(self, state: RootState) -> str:
-        """Full root memory context for a spawned subagent, read-only.
-
-        A subagent reads the same authoritative sources as the parent. It never
-        owns a write though: the PreToolUse gate denies any subagent-attributed
-        mutation under `memory_root`/`shared_resolved` unconditionally, so the
-        boundary named below is enforced by that check, not merely requested by
-        this text.
-        """
-        return self.context_text(state) + "\n\n" + SUBAGENT_READ_BOUNDARY_TEXT
+    def subagent_catalog_text(self, state: RootState) -> str:
+        """The read catalog plus the subagent read-only boundary."""
+        return self.catalog_text(state) + "\n\n" + SUBAGENT_READ_BOUNDARY_TEXT

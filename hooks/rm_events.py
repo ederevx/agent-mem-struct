@@ -84,17 +84,14 @@ class EventDispatcher:
         if after_compaction:
             checkpoint = self.checkpoints.load(event)
         if event_name == "SubagentStart":
-            context = self.control.subagent_context_text(state)
-        elif event_name == "UserPromptSubmit":
-            context = self.control.turn_reminder_text(self.agent, state)
-        elif self.agent == "pi":
+            context = self.control.subagent_catalog_text(state)
+        elif state.agent == "pi":
             # Pi loads conventions through pre_memory; only the continuity
             # checkpoint still needs to reach the model at session start.
-            context = self.continuity_context(
-                state, checkpoint, base=self.control.pre_memory_pointer_text()
-            )
+            context = self.control.pre_memory_pointer_text()
         else:
-            context = self.continuity_context(state, checkpoint)
+            context = self.control.catalog_text(state)
+        context = self.continuity_context(state, checkpoint, base=context)
         if after_compaction and checkpoint is None:
             context += (
                 "\n\nCONTINUITY WARNING: no pre-compaction checkpoint was available for this session. "
@@ -162,7 +159,7 @@ class EventDispatcher:
             self.emit_hook_context("PreMemory", "CONTROL ERROR: " + error)
             return 1
         context = (
-            self.control.pre_memory_catalog_text(state)
+            self.control.catalog_text(state)
             + "\n\n"
             + self.control.pre_memory_feature_text()
         )
@@ -306,16 +303,10 @@ class EventDispatcher:
         if state.errors:
             return
 
-        if self.agent == "pi":
-            allowed, reason = self.gate.receipt_covers(event, scoped=targets_memory)
-            if not allowed:
-                self.deny_pretool(reason)
-                return
-        else:
-            allowed, reason = self.gate.gate(event, scoped=targets_memory)
-            if not allowed:
-                self.deny_pretool(reason, context=True)
-                return
+        allowed, reason = self.gate.receipt_covers(event, scoped=targets_memory)
+        if not allowed:
+            self.deny_pretool(reason, context=True)
+            return
 
         if state.stale:
             json.dump(
@@ -346,6 +337,6 @@ class EventDispatcher:
             )
             json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
             return
-        allowed, reason = self.gate.gate(event, scoped=False)
+        allowed, reason = self.gate.receipt_covers(event, scoped=False)
         if not allowed:
             json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
