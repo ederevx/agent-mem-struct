@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,6 +76,7 @@ class RootState:
     errors: list[str]
     repair_paths: list[Path]
     agent: str = "unknown"
+    lister_command: str = ""
 
 
 def declared_shared(memory_text: str | None, memory_root: Path) -> tuple[Path | None, str | None]:
@@ -240,6 +242,13 @@ class RootControl:
                 repair_paths.append(root_memory)
                 repair_paths.append(shared_memory)
 
+        lister_command = ""
+        if shared_resolved is not None:
+            lister_script = self.canonical_root / "hooks" / "rm_tree.py"
+            lister_command = (
+                f'"{sys.executable}" "{lister_script}" --list "{shared_resolved}"'
+            )
+
         return RootState(
             home=self.home,
             memory_root=memory_root,
@@ -260,6 +269,7 @@ class RootControl:
             errors=errors,
             repair_paths=repair_paths,
             agent=agent,
+            lister_command=lister_command,
         )
 
     def context_text(self, state: RootState) -> str:
@@ -386,14 +396,14 @@ class RootControl:
         )
         if state.shared_resolved is not None:
             shared = state.shared_resolved
+            primary = state.lister_command or f'find "{shared}" -print'
             lines.extend(
                 (
                     "",
                     "Shared-memory structure (required): read the complete "
-                    f"layout once with `tree {shared}`; if `tree` is not "
-                    f"installed, use `find \"{shared}\" -print` (in a "
-                    f"PowerShell tool: `Get-ChildItem -LiteralPath '{shared}' "
-                    "-Recurse -Force`). The hook records it.",
+                    f"layout once per session with `{primary}`; do not pipe, "
+                    "redirect, or truncate it. Alternatives: "
+                    f"`tree {shared}` or `find \"{shared}\" -print`.",
                 )
             )
         lines.extend(

@@ -808,6 +808,103 @@ class PiHookTests(unittest.TestCase):
         self.assertIn("without a continuity checkpoint", automatic.stdout)
 
 
+class PiStructureListerTests(unittest.TestCase):
+    """Pi's PreToolUse recognition of the shipped structure lister."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-pi-lister-", dir=SCRATCH_ROOT))
+        self.home, self.shared = make_home(self.temp / "home")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp)
+
+    def lister(self, *operands: str) -> str:
+        """The lister command, quoting any operand a shell would split."""
+        parts = [f'"{sys.executable}"', f'"{REPO / "hooks" / "rm_tree.py"}"']
+        parts.extend(f'"{operand}"' if " " in operand else operand for operand in operands)
+        return " ".join(parts)
+
+    def write_event(self, session: str, turn: str) -> dict[str, object]:
+        return {
+            "hook_event_name": "PreToolUse",
+            "session_id": session,
+            "turn_id": turn,
+            "tool_name": "write",
+            "cwd": str(self.home),
+            "tool_input": {"path": str(self.home / "memory" / "local" / "note.md")},
+        }
+
+    def write_output(self, session: str, turn: str) -> str:
+        return invoke_pi(self.home, self.write_event(session, turn)).stdout
+
+    def acknowledge(self, session: str, turn: str) -> None:
+        """Deliver the conventions the Pi way, then read every source."""
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": session,
+            "turn_id": turn,
+        })
+        read_source_files(self.home, self.shared, session=session, turn=turn)
+
+    def assert_structure_unread(self, session: str, turn: str) -> None:
+        reason = json.loads(self.write_output(session, turn))["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+        self.assertIn("rm_tree.py", reason)
+
+    def test_lister_records_the_structure_and_unblocks_the_write(self) -> None:
+        session, turn = "pi-lister", "turn-1"
+        self.acknowledge(session, turn)
+        self.assert_structure_unread(session, turn)
+        allowed = record_tree_pi(
+            self.home,
+            self.shared,
+            session=session,
+            turn=turn,
+            command=self.lister("--list", str(self.shared)),
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertEqual(allowed.stdout, "")
+        self.assertEqual(self.write_output(session, turn), "")
+
+    def test_untrusted_lister_forms_are_gated_and_record_nothing(self) -> None:
+        for index, command in enumerate(
+            (
+                self.lister("--list", str(self.shared)) + " | head",
+                self.lister("--list"),
+                self.lister(str(self.shared), str(self.temp)),
+            )
+        ):
+            with self.subTest(command=command):
+                session, turn = f"pi-lister-bad-{index}", f"turn-{index}"
+                self.acknowledge(session, turn)
+                gated = record_tree_pi(
+                    self.home, self.shared, session=session, turn=turn, command=command
+                )
+                self.assertNotEqual(gated.stdout, "")
+                self.assertEqual(
+                    json.loads(gated.stdout)["hookSpecificOutput"]["permissionDecision"],
+                    "deny",
+                )
+                self.assert_structure_unread(session, turn)
+
+    def test_lister_of_another_directory_records_nothing(self) -> None:
+        other = self.temp / "elsewhere"
+        other.mkdir()
+        session, turn = "pi-lister-other", "turn-other"
+        self.acknowledge(session, turn)
+        result = record_tree_pi(
+            self.home,
+            self.shared,
+            session=session,
+            turn=turn,
+            command=self.lister(str(other)),
+        )
+        self.assertEqual(result.stdout, "")
+        self.assert_structure_unread(session, turn)
+
+
 class PiInstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
