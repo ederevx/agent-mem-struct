@@ -106,6 +106,74 @@ def invoke(
     )
 
 
+def read_source_files(
+    agent: str,
+    home: Path,
+    shared: Path,
+    *,
+    session: str = "session-1",
+    agent_id: str | None = None,
+    extra: tuple[Path, ...] = (),
+) -> None:
+    """Open every required convention source the way the read tool must."""
+    paths = [
+        home / "memory" / "MEMORY.md",
+        home / "RULES.md",
+        home / "memory" / "local" / "MEMORY.md",
+        shared / "MEMORY.md",
+        *extra,
+    ]
+    for path in paths:
+        event: dict[str, object] = {
+            "hook_event_name": "PreToolUse",
+            "session_id": session,
+            "cwd": str(home),
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(path)},
+        }
+        if agent_id:
+            event["agent_id"] = agent_id
+        invoke(agent, home, event)
+
+
+def record_tree(
+    agent: str,
+    home: Path,
+    shared: Path,
+    *,
+    session: str = "session-1",
+    agent_id: str | None = None,
+    command: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Read the declared shared structure with a `tree` shell invocation."""
+    event: dict[str, object] = {
+        "hook_event_name": "PreToolUse",
+        "session_id": session,
+        "cwd": str(home),
+        "tool_name": "Bash",
+        "tool_input": {"command": command or f"tree {shared}"},
+    }
+    if agent_id:
+        event["agent_id"] = agent_id
+    return invoke(agent, home, event)
+
+
+def read_conventions(
+    agent: str,
+    home: Path,
+    shared: Path,
+    *,
+    session: str = "session-1",
+    agent_id: str | None = None,
+    extra: tuple[Path, ...] = (),
+) -> None:
+    """Read every source and the declared shared tree; the gate then opens."""
+    read_source_files(
+        agent, home, shared, session=session, agent_id=agent_id, extra=extra
+    )
+    record_tree(agent, home, shared, session=session, agent_id=agent_id)
+
+
 class CompactionHookTests(unittest.TestCase):
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
@@ -158,9 +226,14 @@ class CompactionHookTests(unittest.TestCase):
                 context = json.loads(
                     invoke(agent, self.home, self.event("SessionStart", agent=agent)).stdout
                 )["hookSpecificOutput"]["additionalContext"]
-                self.assertIn(str(self.shared), context)
-                self.assertIn("--- BEGIN SHARED MEMORY.md ---", context)
-                self.assertIn("Verify first.", context)
+                self.assertIn("Protocol status: current (test-v1).", context)
+                self.assertIn("ROOT MEMORY CATALOG", context)
+                self.assertIn("the conventions are not inlined here", context)
+                self.assertIn("Navigation rules:", context)
+                self.assertIn(str(self.shared / "MEMORY.md"), context)
+                self.assertIn(f"tree {self.shared}", context)
+                self.assertNotIn("--- BEGIN", context)
+                self.assertNotIn("Verify first.", context)
                 self.assertNotIn("CONTROL ERROR", context)
 
     def test_shared_declaration_must_be_one_literal_native_external_directory(self) -> None:
@@ -416,19 +489,20 @@ class CompactionHookTests(unittest.TestCase):
         refreshed = json.loads(
             invoke("codex", self.home, self.event("UserPromptSubmit")).stdout
         )["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
-        self.assertIn("Keep continuity.", started)
-        self.assertIn("ROOT MEMORY TURN CHECK", refreshed)
-        self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", refreshed)
-        self.assertNotIn("Keep continuity.", refreshed)
-        self.assertIn("Codex native AGENTS.md instruction discovery remains active", refreshed)
-        self.assertIn("generated memories are disabled", refreshed)
+        for phase, context in (("start", started), ("refresh", refreshed)):
+            with self.subTest(phase=phase):
+                self.assertIn("ROOT MEMORY CATALOG", context)
+                self.assertIn("Protocol status: current (test-v1).", context)
+                self.assertIn(f"tree {self.shared}", context)
+                self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", context)
+                self.assertNotIn("Keep continuity.", context)
         subagent = json.loads(
             invoke("codex", self.home, self.event("SubagentStart")).stdout
         )["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
-        self.assertIn("Keep continuity.", subagent)
+        self.assertIn("ROOT MEMORY CATALOG", subagent)
         self.assertIn("granted equally to subagents", subagent)
+        self.assertIn("reserved for the parent session", subagent)
+        self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
 
     def test_claude_prompt_refresh_does_not_repeat_root_bodies(self) -> None:
         started = json.loads(
@@ -443,12 +517,13 @@ class CompactionHookTests(unittest.TestCase):
                 self.event("UserPromptSubmit", agent="claude"),
             ).stdout
         )["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
-        self.assertIn("Keep continuity.", started)
-        self.assertIn("ROOT MEMORY TURN CHECK", refreshed)
-        self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", refreshed)
-        self.assertNotIn("Keep continuity.", refreshed)
-        self.assertIn("read the shared scope", refreshed)
+        for phase, context in (("start", started), ("refresh", refreshed)):
+            with self.subTest(phase=phase):
+                self.assertIn("ROOT MEMORY CATALOG", context)
+                self.assertIn("Protocol status: current (test-v1).", context)
+                self.assertIn(f"tree {self.shared}", context)
+                self.assertNotIn("--- BEGIN ROOT memory/MEMORY.md ---", context)
+                self.assertNotIn("Keep continuity.", context)
 
     def test_claude_session_start_before_first_prompt_needs_no_prompt_id(self) -> None:
         event = self.event("SessionStart", agent="claude")
@@ -456,12 +531,13 @@ class CompactionHookTests(unittest.TestCase):
         result = invoke("claude", self.home, event)
         self.assertEqual(result.returncode, 0, result.stderr)
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("ROOT MEMORY CONTROL", context)
+        self.assertIn("Protocol status: current (test-v1).", context)
+        self.assertIn("ROOT MEMORY CATALOG", context)
 
     def test_subagent_start_gets_full_read_only_context(self) -> None:
-        # A subagent reads the same authoritative sources as the parent; the
-        # read-only boundary is stated explicitly since a subagent never owns
-        # a write (enforced separately by handle_pretool, not by this text).
+        # A subagent reads the same authoritative sources as the parent, listed
+        # as a catalog; the read-only boundary is stated explicitly since a
+        # subagent never owns a write (enforced by handle_pretool, not this text).
         for agent in ("claude", "codex"):
             subagent = json.loads(
                 invoke(
@@ -470,12 +546,15 @@ class CompactionHookTests(unittest.TestCase):
                     self.event("SubagentStart", agent=agent),
                 ).stdout
             )["hookSpecificOutput"]["additionalContext"]
-            self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", subagent)
-            self.assertIn("--- BEGIN ROOT RULES.md ---", subagent)
-            self.assertIn("Keep continuity.", subagent)
+            self.assertIn("ROOT MEMORY CATALOG", subagent)
+            self.assertIn(str(self.home / "memory" / "MEMORY.md"), subagent)
+            self.assertIn(str(self.home / "RULES.md"), subagent)
+            self.assertIn(str(self.shared / "MEMORY.md"), subagent)
+            self.assertIn(f"tree {self.shared}", subagent)
             self.assertIn("granted equally to subagents", subagent)
             self.assertIn("reserved for the parent session", subagent)
             self.assertIn("report it back to the parent", subagent)
+            self.assertNotIn("--- BEGIN", subagent)
 
     def test_subagent_memory_access_is_read_only(self) -> None:
         target = self.home / "memory" / "local" / "note.md"
@@ -536,13 +615,14 @@ class CompactionHookTests(unittest.TestCase):
                     "tool_input": {key: command},
                 })
                 first = invoke(agent, self.home, event).stdout
-                if first:
-                    # Only the ordinary once-per-turn convention receipt, never
-                    # the subagent memory-write block, may gate a read-only,
-                    # unrelated-path command.
-                    reason = json.loads(first)["hookSpecificOutput"]["permissionDecisionReason"]
-                    self.assertNotIn("read-only", reason)
-                    self.assertIn("Convention acknowledgment required", reason)
+                self.assertNotEqual(first, "")
+                # Only the ordinary convention receipt, never the subagent
+                # memory-write block, may gate a read-only, unrelated-path
+                # command.
+                reason = json.loads(first)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertNotIn("read-only", reason)
+                self.assertIn("Convention acknowledgment incomplete", reason)
+                read_conventions(agent, self.home, self.shared, agent_id="worker-1")
                 self.assertEqual(invoke(agent, self.home, event).stdout, "")
 
     def test_shell_redirect_into_shared_cwd_target_is_still_blocked(self) -> None:
@@ -564,8 +644,8 @@ class CompactionHookTests(unittest.TestCase):
                 )
 
     def test_non_subagent_writes_into_valid_memory_are_not_blocked_here(self) -> None:
-        # The owning session receives the exact convention bundle once. Its
-        # retry acknowledges that digest and may proceed.
+        # The gate refuses the first mutation until every source and the shared
+        # tree have been read, then stays open for the whole session.
         target = self.home / "memory" / "local" / "note.md"
         event = self.event("PreToolUse")
         event.update({
@@ -574,22 +654,32 @@ class CompactionHookTests(unittest.TestCase):
         })
         first = json.loads(invoke("codex", self.home, event).stdout)
         self.assertEqual(first["hookSpecificOutput"]["permissionDecision"], "deny")
-        self.assertIn("Convention acknowledgment required", first["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIn(
+            "Convention acknowledgment incomplete",
+            first["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+        read_conventions("codex", self.home, self.shared)
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
     def test_changed_convention_digest_requires_a_new_acknowledgment(self) -> None:
         event = self.event("PreToolUse")
         event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
         self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        read_conventions("codex", self.home, self.shared)
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
         shared = self.shared / "MEMORY.md"
         shared.write_text(shared.read_text(encoding="utf-8") + "- Recheck changed rules.\n", encoding="utf-8")
         changed = json.loads(invoke("codex", self.home, event).stdout)
         self.assertEqual(changed["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(str(shared), changed["hookSpecificOutput"]["permissionDecisionReason"])
+        # Re-reading the changed source restores the hash-bound evidence.
+        read_conventions("codex", self.home, self.shared)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
     def test_changed_declared_shared_target_invalidates_receipt_even_with_same_content(self) -> None:
         event = self.mutation(self.temp / "result.txt")
         self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        read_conventions("codex", self.home, self.shared)
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
         original = self.shared
@@ -598,20 +688,133 @@ class CompactionHookTests(unittest.TestCase):
         self.write_root_memory(f"Shared: {replacement.resolve()}")
         changed = json.loads(invoke("codex", self.home, event).stdout)
         self.assertEqual(changed["hookSpecificOutput"]["permissionDecision"], "deny")
-        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+        self.assertIn(
+            str(replacement.resolve() / "MEMORY.md"),
+            changed["hookSpecificOutput"]["permissionDecisionReason"],
+        )
 
         self.write_root_memory(f"Shared: {original}")
         changed_back = json.loads(invoke("codex", self.home, event).stdout)
         self.assertEqual(changed_back["hookSpecificOutput"]["permissionDecision"], "deny")
+        read_conventions("codex", self.home, self.shared)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
-    def test_new_prompt_resets_even_a_reused_turn_receipt(self) -> None:
+    def test_user_prompt_submit_does_not_reset_a_session_receipt(self) -> None:
         event = self.event("PreToolUse")
         event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
         self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        read_conventions("codex", self.home, self.shared)
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
         invoke("codex", self.home, self.event("UserPromptSubmit"))
-        reset = json.loads(invoke("codex", self.home, event).stdout)
-        self.assertEqual(reset["hookSpecificOutput"]["permissionDecision"], "deny")
+        # The receipt is session-scoped: a new prompt must not force a re-read.
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_session_receipt_is_reused_without_re_reading(self) -> None:
+        first_event = self.event("PreToolUse")
+        first_event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "first.txt")}})
+        second_event = self.event("PreToolUse")
+        second_event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "second.txt")}})
+        read_conventions("codex", self.home, self.shared)
+        self.assertEqual(invoke("codex", self.home, first_event).stdout, "")
+        self.assertEqual(invoke("codex", self.home, second_event).stdout, "")
+
+    def test_gate_requires_the_shared_tree_read(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_source_files("codex", self.home, self.shared)
+        denied = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+        record_tree("codex", self.home, self.shared)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_unquoted_tree_path_with_spaces_records(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_source_files("codex", self.home, self.shared)
+        # The declared shared root contains a space; the unquoted operand must
+        # still run to the end of the option list.
+        record_tree("codex", self.home, self.shared)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_quoted_tree_path_with_spaces_records(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_source_files("codex", self.home, self.shared)
+        record_tree("codex", self.home, self.shared, command=f'tree "{self.shared}"')
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_tree_allowed_options_record_the_read(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_source_files("codex", self.home, self.shared)
+        record_tree(
+            "codex", self.home, self.shared,
+            command=f"tree --charset=utf8 -a -F -I .git {self.shared}",
+        )
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_tree_of_another_directory_records_nothing(self) -> None:
+        other = self.temp / "elsewhere"
+        other.mkdir()
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_source_files("codex", self.home, self.shared)
+        # A tree of a different directory is not gated, but records nothing.
+        self.assertEqual(
+            record_tree("codex", self.home, self.shared, command=f"tree {other}").stdout,
+            "",
+        )
+        denied = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+
+    def test_compound_line_containing_a_tree_segment_is_gated(self) -> None:
+        # A mutating segment must not ride in behind a tree acquisition.
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "Bash",
+            "tool_input": {"command": f'rm -rf {self.temp / "victim"}; tree {self.shared}'},
+        })
+        denied = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+
+    def test_tree_read_is_never_gated(self) -> None:
+        result = record_tree("codex", self.home, self.shared)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_incomplete_tree_records_nothing(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_source_files("codex", self.home, self.shared)
+        for command in (f'tree -L 2 "{self.shared}"', f'tree "{self.shared}" | head'):
+            with self.subTest(command=command):
+                record_tree("codex", self.home, self.shared, command=command)
+                denied = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]
+                self.assertEqual(denied["permissionDecision"], "deny")
+                self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+
+    def test_cd_into_shared_then_tree_records_the_read(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_source_files("codex", self.home, self.shared)
+        record_tree("codex", self.home, self.shared, command=f'cd "{self.shared}" && tree')
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_compact_session_start_clears_reads_and_tree(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        read_conventions("codex", self.home, self.shared)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+        compact = self.event("SessionStart")
+        compact["source"] = "compact"
+        invoke("codex", self.home, compact)
+        denied = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(str(self.home / "memory" / "MEMORY.md"), denied["permissionDecisionReason"])
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
 
     def test_scoped_memory_mutation_loads_ancestor_conventions(self) -> None:
         local = self.home / "memory" / "local"
@@ -626,8 +829,9 @@ class CompactionHookTests(unittest.TestCase):
         event = self.event("PreToolUse")
         event.update({"tool_name": "Write", "tool_input": {"file_path": str(child / "note.md")}})
         reason = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("Keep local.", reason)
-        self.assertIn("Test project.", reason)
+        self.assertIn(str(local / "MEMORY.md"), reason)
+        self.assertIn(str(child / "MEMORY.md"), reason)
+        self.assertIn(f"tree {self.shared}", reason)
 
     def test_declared_shared_scopes_manifests_and_required_reads(self) -> None:
         group = self.shared / "submemory" / "project"
@@ -648,9 +852,10 @@ class CompactionHookTests(unittest.TestCase):
                 reason = json.loads(
                     invoke(agent, self.home, self.mutation(target, agent=agent)).stdout
                 )["hookSpecificOutput"]["permissionDecisionReason"]
-                self.assertIn("Verify first.", reason)
-                self.assertIn("Keep declared project.", reason)
-                self.assertIn("Read declared prerequisite.", reason)
+                self.assertIn(str(self.shared / "MEMORY.md"), reason)
+                self.assertIn(str(group / "MEMORY.md"), reason)
+                self.assertIn(str(prerequisite), reason)
+                self.assertIn(f"tree {self.shared}", reason)
 
     def test_quoted_shell_path_with_spaces_is_scoped_to_declared_shared(self) -> None:
         group = self.shared / "submemory" / "shell project"
@@ -678,7 +883,7 @@ class CompactionHookTests(unittest.TestCase):
                 reason = json.loads(invoke(agent, self.home, event).stdout)[
                     "hookSpecificOutput"
                 ]["permissionDecisionReason"]
-                self.assertIn("Quote shared targets.", reason)
+                self.assertIn(str(group / "MEMORY.md"), reason)
 
     def test_apply_patch_headers_preserve_declared_shared_paths_with_spaces(self) -> None:
         group = self.shared / "submemory" / "patch project"
@@ -719,7 +924,7 @@ class CompactionHookTests(unittest.TestCase):
                 reason = json.loads(invoke("codex", self.home, parent).stdout)[
                     "hookSpecificOutput"
                 ]["permissionDecisionReason"]
-                self.assertIn("Guard patch headers.", reason)
+                self.assertIn(str(group / "MEMORY.md"), reason)
 
     def test_declared_shared_parent_and_subagent_access_boundaries(self) -> None:
         target = self.shared / "note with spaces.md"
@@ -746,7 +951,8 @@ class CompactionHookTests(unittest.TestCase):
                 reason = json.loads(invoke(agent, self.home, parent).stdout)[
                     "hookSpecificOutput"
                 ]["permissionDecisionReason"]
-                self.assertIn("Verify first.", reason)
+                self.assertIn(str(self.shared / "MEMORY.md"), reason)
+                self.assertIn(f"tree {self.shared}", reason)
 
     def test_historical_log_uses_active_group_conventions_only(self) -> None:
         local = self.home / "memory" / "local"
@@ -777,10 +983,11 @@ class CompactionHookTests(unittest.TestCase):
                 event = self.event("PreToolUse", agent=agent)
                 event.update({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
                 reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-                self.assertIn("Keep local.", reason)
-                self.assertIn("Keep project.", reason)
+                self.assertIn(str(local / "MEMORY.md"), reason)
+                self.assertIn(str(group / "MEMORY.md"), reason)
                 self.assertNotIn("Project nodes", reason)
                 self.assertNotIn("missing.md", reason)
+                read_conventions(agent, self.home, self.shared, extra=(group / "MEMORY.md",))
                 self.assertEqual(invoke(agent, self.home, event).stdout, "")
 
     def test_log_cwd_does_not_make_log_manifest_authoritative(self) -> None:
@@ -797,8 +1004,9 @@ class CompactionHookTests(unittest.TestCase):
                 event["cwd"] = str(log)
                 event.update({"tool_name": "Write", "tool_input": {"file_path": "note.md"}})
                 reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-                self.assertIn("Keep local.", reason)
+                self.assertIn(str(local / "MEMORY.md"), reason)
                 self.assertNotIn("required convention manifest is malformed", reason)
+                read_conventions(agent, self.home, self.shared)
                 self.assertEqual(invoke(agent, self.home, event).stdout, "")
 
     def test_git_log_from_declared_shared_log_keeps_active_manifest(self) -> None:
@@ -819,8 +1027,9 @@ class CompactionHookTests(unittest.TestCase):
                     },
                 })
                 reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-                self.assertIn("Keep shared.", reason)
+                self.assertIn(str(self.shared / "MEMORY.md"), reason)
                 self.assertNotIn("required convention manifest is malformed", reason)
+                read_conventions(agent, self.home, self.shared)
                 self.assertEqual(invoke(agent, self.home, event).stdout, "")
 
     def test_nested_node_collections_never_become_group_manifests(self) -> None:
@@ -834,8 +1043,10 @@ class CompactionHookTests(unittest.TestCase):
                 event = self.event("PreToolUse", agent=agent)
                 event.update({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
                 reason = json.loads(invoke(agent, self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn(str(local / "MEMORY.md"), reason)
                 self.assertNotIn("required convention manifest is malformed", reason)
                 self.assertNotIn("Topic index", reason)
+                read_conventions(agent, self.home, self.shared)
                 self.assertEqual(invoke(agent, self.home, event).stdout, "")
 
     def test_active_node_prerequisites_and_group_validation_remain_strict(self) -> None:
@@ -863,10 +1074,13 @@ class CompactionHookTests(unittest.TestCase):
         event = self.event("Stop")
         first = json.loads(invoke("codex", self.home, event).stdout)
         self.assertEqual(first["decision"], "block")
-        self.assertIn("Verify first.", first["reason"])
+        self.assertIn("Convention acknowledgment incomplete", first["reason"])
+        self.assertIn(str(self.home / "memory" / "MEMORY.md"), first["reason"])
+        self.assertIn(f"tree {self.shared}", first["reason"])
+        read_conventions("codex", self.home, self.shared)
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
-    def test_claude_uses_prompt_id_for_receipts(self) -> None:
+    def test_claude_receipt_is_session_scoped(self) -> None:
         event = self.event("PreToolUse", agent="claude")
         event.update({
             "tool_name": "Write",
@@ -876,30 +1090,35 @@ class CompactionHookTests(unittest.TestCase):
         self.assertEqual(
             first["hookSpecificOutput"]["permissionDecision"], "deny"
         )
+        read_conventions("claude", self.home, self.shared)
         self.assertEqual(invoke("claude", self.home, event).stdout, "")
+        # prompt_id is no longer part of the receipt identity.
         event["prompt_id"] = "prompt-2"
-        renewed = json.loads(invoke("claude", self.home, event).stdout)
-        self.assertEqual(
-            renewed["hookSpecificOutput"]["permissionDecision"], "deny"
-        )
+        self.assertEqual(invoke("claude", self.home, event).stdout, "")
 
-    def test_codex_receipts_remain_turn_scoped(self) -> None:
+    def test_codex_receipt_is_session_scoped(self) -> None:
         event = self.event("PreToolUse")
         event.update({
             "tool_name": "Write",
             "tool_input": {"file_path": str(self.temp / "result.txt")},
         })
         self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        read_conventions("codex", self.home, self.shared)
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
+        # turn_id is no longer part of the receipt identity.
         event["turn_id"] = "turn-2"
-        self.assertIn("permissionDecision", invoke("codex", self.home, event).stdout)
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
-    def test_claude_stop_uses_prompt_id_and_allows_retry(self) -> None:
+    def test_claude_stop_retry_is_session_scoped(self) -> None:
         event = self.event("Stop", agent="claude")
         first = json.loads(invoke("claude", self.home, event).stdout)
         self.assertEqual(first["decision"], "block")
+        read_conventions("claude", self.home, self.shared)
         self.assertEqual(invoke("claude", self.home, event).stdout, "")
+        # A new prompt does not reset the session receipt.
         event["prompt_id"] = "prompt-2"
+        self.assertEqual(invoke("claude", self.home, event).stdout, "")
+        # The stop_hook_active escape is still honored.
         event["stop_hook_active"] = True
         self.assertEqual(invoke("claude", self.home, event).stdout, "")
 
@@ -909,9 +1128,9 @@ class CompactionHookTests(unittest.TestCase):
             event.update({"agent_id": "worker-1", "stop_hook_active": False})
             first = json.loads(invoke(agent, self.home, event).stdout)
             self.assertEqual(first["decision"], "block")
+            self.assertIn(f"tree {self.shared}", first["reason"])
+            read_conventions(agent, self.home, self.shared, agent_id="worker-1")
             self.assertEqual(invoke(agent, self.home, event).stdout, "")
-            identity_key = "prompt_id" if agent == "claude" else "turn_id"
-            event[identity_key] = "second-attempt"
             event["stop_hook_active"] = True
             self.assertEqual(invoke(agent, self.home, event).stdout, "")
 
@@ -925,6 +1144,7 @@ class CompactionHookTests(unittest.TestCase):
                 json.loads(invoke(agent, self.home, first).stdout)["decision"],
                 "block",
             )
+            read_conventions(agent, self.home, self.shared, agent_id="worker-1")
             self.assertEqual(invoke(agent, self.home, first).stdout, "")
             self.assertEqual(
                 json.loads(invoke(agent, self.home, second).stdout)["decision"],
@@ -1009,14 +1229,16 @@ class CompactionHookTests(unittest.TestCase):
         self.assertIn("escapes the active memory roots", reason)
         self.assertNotIn("DO-NOT-INJECT", reason)
 
-    def test_missing_turn_identity_fails_closed(self) -> None:
+    def test_missing_session_identity_fails_closed(self) -> None:
         event = self.event("PreToolUse")
-        event.pop("turn_id")
+        event.pop("session_id")
         event.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
         reason = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("lacks stable session_id and turn_id", reason)
+        self.assertIn("Convention acknowledgment cannot be recorded", reason)
+        self.assertIn("stable session_id", reason)
 
-    def test_missing_claude_prompt_identity_fails_closed(self) -> None:
+    def test_missing_prompt_id_is_not_a_gate_identity(self) -> None:
+        # prompt_id/turn_id are no longer required; only session_id is.
         event = self.event("PreToolUse", agent="claude")
         event.pop("prompt_id")
         event.update({
@@ -1026,7 +1248,8 @@ class CompactionHookTests(unittest.TestCase):
         reason = json.loads(invoke("claude", self.home, event).stdout)[
             "hookSpecificOutput"
         ]["permissionDecisionReason"]
-        self.assertIn("lacks stable session_id and prompt_id", reason)
+        self.assertIn("Convention acknowledgment incomplete", reason)
+        self.assertNotIn("cannot be recorded", reason)
 
     def test_unknown_action_tool_is_convention_gated(self) -> None:
         event = self.event("PreToolUse")
@@ -1034,20 +1257,24 @@ class CompactionHookTests(unittest.TestCase):
         output = json.loads(invoke("codex", self.home, event).stdout)
         self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
 
-    def test_main_session_block_is_unchanged_by_the_subagent_scoping(self) -> None:
-        # SessionStart/UserPromptSubmit must keep receiving byte-for-byte the
-        # same full-block behavior as before subagents were scoped out.
+    def test_main_session_receives_the_catalog_for_both_agents(self) -> None:
+        # SessionStart/UserPromptSubmit inject the read catalog for every host;
+        # the convention bodies are never inlined, so acknowledgment is a real
+        # read rather than a passive read of injected tool output.
         for agent in ("claude", "codex"):
             started = json.loads(
                 invoke(
                     agent, self.home, self.event("SessionStart", agent=agent)
                 ).stdout
             )["hookSpecificOutput"]["additionalContext"]
-            self.assertIn("ROOT MEMORY CONTROL", started)
-            self.assertIn("--- BEGIN ROOT memory/MEMORY.md ---", started)
-            self.assertIn("--- BEGIN ROOT RULES.md ---", started)
-            self.assertIn("Keep continuity.", started)
-            self.assertIn("Mandatory use: treat the injected files as current authority", started)
+            self.assertIn("Protocol status: current (test-v1).", started)
+            self.assertIn("ROOT MEMORY CATALOG", started)
+            self.assertIn("Required root reads (read every path):", started)
+            self.assertIn(str(self.home / "memory" / "MEMORY.md"), started)
+            self.assertIn(str(self.home / "RULES.md"), started)
+            self.assertIn(str(self.shared / "MEMORY.md"), started)
+            self.assertIn(f"tree {self.shared}", started)
+            self.assertNotIn("--- BEGIN", started)
 
     def test_claude_hook_ignores_an_inactive_config_profile(self) -> None:
         active = self.temp / "active-config"
@@ -1070,7 +1297,7 @@ class CompactionHookTests(unittest.TestCase):
             config_home=active,
             environment=environment,
         )
-        self.assertIn("ROOT MEMORY CONTROL", result.stdout)
+        self.assertIn("ROOT MEMORY CATALOG", result.stdout)
 
     def test_codex_hook_ignores_an_inactive_config_profile(self) -> None:
         active = self.temp / "active-codex"
@@ -1093,7 +1320,7 @@ class CompactionHookTests(unittest.TestCase):
             config_home=active,
             environment=environment,
         )
-        self.assertIn("ROOT MEMORY CONTROL", result.stdout)
+        self.assertIn("ROOT MEMORY CATALOG", result.stdout)
 
     def test_pretool_fast_path_preserves_the_invalid_root_guard(self) -> None:
         invalid_home = self.temp / "invalid-home"
@@ -1150,18 +1377,31 @@ class CompactionHookTests(unittest.TestCase):
                 output["hookSpecificOutput"]["permissionDecision"], "deny", command
             )
 
-    def test_embedded_script_reads_require_convention_acknowledgment(self) -> None:
-        target = self.home / "memory" / "local" / "note.md"
-        for command in (
-            f"python3 -c \"print(open('{target}').read())\"",
-            f"python3 - <<'PY'\nprint(open('{target}').read())\nPY",
-        ):
-            event = self.event("PreToolUse")
-            event["turn_id"] = "turn-" + str(abs(hash(command)))
-            event.update({"tool_name": "Bash", "tool_input": {"command": command}})
-            first = json.loads(invoke("codex", self.home, event).stdout)
-            self.assertEqual(first["hookSpecificOutput"]["permissionDecision"], "deny")
-            self.assertEqual(invoke("codex", self.home, event).stdout, "", command)
+    def test_embedded_script_read_records_the_source(self) -> None:
+        root = self.home / "memory" / "MEMORY.md"
+        gated = self.event("PreToolUse")
+        gated.update({"tool_name": "Write", "tool_input": {"file_path": str(self.temp / "result.txt")}})
+        # Seed the receipt so the denial lists every source.
+        self.assertIn("permissionDecision", invoke("codex", self.home, gated).stdout)
+        script = f"python3 -c \"print(open('{root}').read())\""
+        read_event = self.event("PreToolUse")
+        read_event.update({"tool_name": "Bash", "tool_input": {"command": script}})
+        # A whole-file print(open(...).read()) is a read, not a gated action.
+        self.assertEqual(invoke("codex", self.home, read_event).stdout, "")
+        reason = json.loads(invoke("codex", self.home, gated).stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertNotIn(str(root), reason)
+        self.assertIn(str(self.home / "RULES.md"), reason)
+
+    def test_heredoc_reader_still_requires_acknowledgment(self) -> None:
+        root = self.home / "memory" / "MEMORY.md"
+        command = f"python3 - <<'PY'\nprint(open('{root}').read())\nPY"
+        event = self.event("PreToolUse")
+        event["session_id"] = "heredoc-session"
+        event.update({"tool_name": "Bash", "tool_input": {"command": command}})
+        first = json.loads(invoke("codex", self.home, event).stdout)
+        self.assertEqual(first["hookSpecificOutput"]["permissionDecision"], "deny")
+        read_conventions("codex", self.home, self.shared, session="heredoc-session")
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
 
     def test_interpreter_indirect_mutation_is_convention_gated(self) -> None:
         event = self.event("PreToolUse")

@@ -110,10 +110,10 @@ def invoke_pi(home: Path, event: dict[str, object], *, canonical_root: Path | No
     )
 
 
-def read_conventions(
+def read_source_files(
     home: Path, shared: Path, session: str = "pi-session", turn: str = "turn-1"
 ) -> None:
-    """Open every required convention source the way the model must."""
+    """Open every required convention source the way the read tool must."""
     for path in (
         home / "memory" / "MEMORY.md",
         home / "RULES.md",
@@ -128,6 +128,32 @@ def read_conventions(
             "tool_input": {"path": str(path)},
             "cwd": str(home),
         })
+
+
+def record_tree_pi(
+    home: Path,
+    shared: Path,
+    session: str = "pi-session",
+    turn: str = "turn-1",
+    command: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Read the declared shared structure through a `tree` shell invocation."""
+    return invoke_pi(home, {
+        "hook_event_name": "PreToolUse",
+        "session_id": session,
+        "turn_id": turn,
+        "tool_name": "Bash",
+        "tool_input": {"command": command or f"tree {shared}"},
+        "cwd": str(home),
+    })
+
+
+def read_conventions(
+    home: Path, shared: Path, session: str = "pi-session", turn: str = "turn-1"
+) -> None:
+    """Read every source and the declared shared tree; the gate then opens."""
+    read_source_files(home, shared, session=session, turn=turn)
+    record_tree_pi(home, shared, session=session, turn=turn)
 
 
 class PiHookTests(unittest.TestCase):
@@ -298,6 +324,147 @@ class PiHookTests(unittest.TestCase):
             "cwd": str(self.home),
         })
         self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+
+    def test_compound_line_containing_a_tree_segment_is_gated(self) -> None:
+        # A mutating segment must not ride in behind a tree acquisition.
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        event = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "pi-session",
+            "tool_name": "Bash",
+            "tool_input": {"command": f'rm -rf {self.temp / "victim"}; tree {self.shared}'},
+            "cwd": str(self.temp),
+        }
+        denied = self.output(invoke_pi(self.home, event))["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+
+    def test_embedded_script_read_records_the_source(self) -> None:
+        root = self.home / "memory" / "MEMORY.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        script = f"python3 -c \"print(open('{root}').read())\""
+        read_event = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "pi-session",
+            "tool_name": "Bash",
+            "tool_input": {"command": script},
+            "cwd": str(self.home),
+        }
+        # A whole-file print(open(...).read()) is a read, not a gated action.
+        self.assertEqual(invoke_pi(self.home, read_event).stdout.strip(), "")
+        denied = self.output(invoke_pi(self.home, self.write(root)))["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertNotIn(str(root), denied["permissionDecisionReason"])
+        self.assertIn(str(self.home / "RULES.md"), denied["permissionDecisionReason"])
+
+    def test_gate_requires_the_shared_tree_read(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        read_source_files(self.home, self.shared)
+        denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+        record_tree_pi(self.home, self.shared)
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+
+    def test_tree_read_is_never_gated(self) -> None:
+        result = record_tree_pi(self.home, self.shared)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_tree_of_another_directory_records_nothing(self) -> None:
+        other = self.temp / "elsewhere"
+        other.mkdir()
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        read_source_files(self.home, self.shared)
+        # A tree of a different directory is not gated, but records nothing.
+        result = record_tree_pi(self.home, self.shared, command=f"tree {other}")
+        self.assertEqual(result.stdout.strip(), "")
+        target = self.home / "memory" / "local" / "note.md"
+        denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+
+    def test_incomplete_tree_records_nothing(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        read_source_files(self.home, self.shared)
+        for command in (f'tree -L 2 {self.shared}', f'tree {self.shared} | head'):
+            with self.subTest(command=command):
+                record_tree_pi(self.home, self.shared, command=command)
+                denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+                self.assertEqual(denied["permissionDecision"], "deny")
+                self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
+
+    def test_cd_into_shared_then_tree_records_the_read(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        read_source_files(self.home, self.shared)
+        record_tree_pi(self.home, self.shared, command=f'cd "{self.shared}" && tree')
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+
+    def test_session_receipt_is_reused_without_re_reading(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        read_conventions(self.home, self.shared)
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+        # A second gated action in the same session needs no re-read.
+        other = self.home / "memory" / "local" / "other.md"
+        self.assertEqual(invoke_pi(self.home, self.write(other)).stdout.strip(), "")
+
+    def test_missing_session_id_denies(self) -> None:
+        event = self.write(self.home / "memory" / "local" / "note.md")
+        event.pop("session_id")
+        denied = self.output(invoke_pi(self.home, event))["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn("Convention acknowledgment cannot be recorded", denied["permissionDecisionReason"])
+
+    def test_compact_session_start_clears_reads_and_tree(self) -> None:
+        target = self.home / "memory" / "local" / "note.md"
+        invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        read_conventions(self.home, self.shared)
+        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
+        invoke_pi(self.home, {
+            "hook_event_name": "SessionStart",
+            "session_id": "pi-session",
+            "source": "compact",
+        })
+        denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        self.assertIn(str(self.home / "memory" / "MEMORY.md"), denied["permissionDecisionReason"])
+        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
 
     def test_pre_memory_pulls_shared_and_records_a_session_receipt(self) -> None:
         origin = self.temp / "origin.git"

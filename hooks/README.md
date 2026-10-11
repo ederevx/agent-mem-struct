@@ -33,18 +33,21 @@ The shared hook `root-memory-context.py`:
 6. verifies the installed root rules and structure content against the
    canonical documents beside the running hook, catching detached hardlinks
    and stale copies that a version-only comparison misses;
-7. injects the exact current root memory, rules, and shared mandatory
-   conventions at session start; each later
-   user turn receives only a compact authority/task-boundary reminder instead
-   of another copy of both files;
-8. injects the same root context into spawned subagents;
+7. injects a short read catalog (the required source paths and navigation
+   rules, never the convention bodies) at session start and on each user turn;
+8. injects the same catalog, plus the read-only boundary, into spawned
+   subagents;
 9. gates mutating and unknown actions, including writes embedded in an
    interpreter one-liner or heredoc rather than a shell redirect, and fails
    closed when the root authority is missing or malformed;
-10. builds a hash-bound convention bundle for each mutation, adding ancestor
-   group manifests and `requires_read` prerequisites for scoped memory writes;
-11. refuses the first mutation or turn completion for each new bundle, injects
-    its exact sources, and treats a same-turn retry as explicit acknowledgment;
+10. resolves the full convention set for each mutation, adding ancestor group
+   manifests and recursive `requires_read` prerequisites for scoped memory
+   writes;
+11. records each convention source the agent opens with its read tool (a bare
+    `cat`, a complete `sed -n` range, or `print(open(...).read())` count for a
+    shell-only host) and each `tree` read of the declared shared root, then
+    refuses a mutation or turn completion until every current source and the
+    shared structure have been read;
 12. reports a stale structure as a mandatory migrate-first condition without
     hard-blocking the migration itself;
 13. exposes the declared shared-memory directory, including whether it is an
@@ -127,9 +130,9 @@ python3 hooks/codex/manage.py uninstall
 
 ## Claude Code only
 
-Claude Code 2.1.196 or newer is required. The convention gate uses the
-per-user-prompt `prompt_id` added in that release; on an older host it fails
-closed rather than reusing an acknowledgment across prompts.
+Claude Code 2.1.196 or newer is recommended: the convention receipt is
+session-scoped and keyed by `session_id` and `agent_id`, so the per-user-prompt
+`prompt_id` is no longer required.
 
 From the repository root:
 
@@ -236,11 +239,12 @@ The bridge maps Pi events onto the hook's event vocabulary:
   summarized transcript unaware that memory and conventions load through
   `pre_memory`. A failed load is surfaced on the next turn instead of dropped.
 - `tool_call` drives the `PreToolUse` memory-mutation gate. Until the session
-  acknowledges the current conventions, a memory mutation is denied with a
-  short "call `pre_memory` first" reason; the bundle is delivered only by the
-  `pre_memory` tool, so the gate's enforcement contract survives on Pi because
-  Pi can block tool calls. Bridge failures fail open with a notice injected on
-  the next turn rather than silently disabling memory.
+  has called `pre_memory` and then read every listed source and run
+  `tree <shared>`, a memory mutation is denied with the missing paths; the read
+  catalog is delivered only by the `pre_memory` tool, so the gate's enforcement
+  contract survives on Pi because Pi can block tool calls. Bridge failures fail
+  open with a notice injected on the next turn rather than silently disabling
+  memory.
 - The bridge registers `pre_memory`, which runs the hook's `PreMemory` event:
   it fast-forwards the declared shared worktree, loads the root/shared
   convention union, records a session-scoped receipt, and returns that catalog
@@ -368,19 +372,22 @@ invalid values are reported with the canonical checkout's `.shared/` directory
 as a possible discovery hint; the installer and hook never create that
 directory, fall back to it, or silently substitute it.
 
-Convention receipts are private, per-session/turn files. Codex keys them by
-`session_id` and `turn_id`; Claude keys them by `session_id` and `prompt_id`;
-Pi keys them by `session_id` alone, since `pre_memory` owns the pull and the
-acknowledgment for the whole session. Subagent receipts additionally include
-`agent_id`. For Codex and Claude a denial delivers the exact current bundle and
-the retry acknowledges only the recorded source hashes; on Pi the denial
-instead points at `pre_memory`. Changing any source invalidates that part of
-the receipt. For memory writes,
-the bundle expands from shared conventions through active ancestor group
-manifests and any declared `requires_read` files. Node-collection indexes and
-historical `log/MEMORY.md` files are not convention manifests. Targets beneath
-`nodes/` or `log/` retain their enclosing group conventions; historical logs
-do not introduce independent prerequisites.
+Convention receipts are private, session-scoped files keyed by host,
+`session_id`, and `agent_id` (or parent). Every agent reads the conventions
+once per session and re-reads a source only when its digest changes; a
+`resume` keeps the receipt, a fresh session clears it, and a compaction clears
+the recorded reads and tree so they are re-read. The declared shared root must
+be read with `tree` once per session. For Pi the denial points at `pre_memory`
+until the receipt is seeded; for Codex and Claude the gate seeds the receipt
+itself and denies with the exact missing source paths and the `tree` command.
+A read is recorded only when it shows a whole source; a piped or windowed read
+does not count. Changing any source or the declared shared root invalidates
+that part of the receipt. For memory writes the required set expands from
+shared conventions through active ancestor group manifests and any declared
+`requires_read` files, recursively. Node-collection indexes and historical
+`log/MEMORY.md` files are not convention manifests. Targets beneath `nodes/`
+or `log/` retain their enclosing group conventions; historical logs do not
+introduce independent prerequisites.
 
 `Stop` and `SubagentStop` block only the first unacknowledged completion
 attempt. If the host re-enters either event with `stop_hook_active` set, the

@@ -18,6 +18,7 @@ from typing import Any
 from rm_control import RootState
 from rm_scan import MutationScanner
 from rm_support import TEMP_MAX_AGE, read_text, safe_identity, under
+from rm_tree import SharedTree
 
 RECEIPT_MAX_AGE = 7 * 24 * 60 * 60
 RECEIPT_MAX_FILES = 512
@@ -38,23 +39,19 @@ class ConventionGate:
         self.state = state
 
     def identity(self, event: dict[str, Any]) -> str | None:
+        """The session-scoped, agent-isolated receipt identity.
+
+        Every host reads the conventions once per session and re-reads only a
+        changed source; a per-prompt identity would force a full re-read every
+        turn, and including the agent id keeps a subagent from inheriting the
+        parent's reads.
+        """
         session = event.get("session_id") or event.get("sessionId")
         agent = event.get("agent_id") or event.get("agentId") or "parent"
         host = self.state.agent or "unknown"
         if not isinstance(session, str) or not session.strip():
             return None
-        if self.state.agent == "pi":
-            # Pi acknowledges once per session: pre_memory owns the pull and the
-            # receipt, and a changed source is caught by the digest comparison.
-            identity_parts = (host, session, agent)
-        else:
-            if self.state.agent == "claude":
-                turn = event.get("prompt_id") or event.get("promptId")
-            else:
-                turn = event.get("turn_id") or event.get("turnId")
-            if not isinstance(turn, str) or not turn.strip():
-                return None
-            identity_parts = (host, session, turn, agent)
+        identity_parts = (host, session, agent)
         raw = "\0".join(str(value) for value in identity_parts)
         readable = "--".join(
             safe_identity(value)[:32] for value in identity_parts
@@ -67,8 +64,7 @@ class ConventionGate:
     def path(self, event: dict[str, Any]) -> Path:
         identity = self.identity(event)
         if identity is None:
-            expected = "prompt_id" if self.state.agent == "claude" else "turn_id"
-            raise ValueError(f"hook event lacks a stable session_id and {expected}")
+            raise ValueError("hook event lacks a stable session_id")
         return self.dir() / f"{identity}.json"
 
     def remove_receipt(self, event: dict[str, Any]) -> None:
@@ -232,22 +228,97 @@ class ConventionGate:
         return digest, body, paths, None
 
     def receipt_covers(self, event: dict[str, Any], *, scoped: bool) -> tuple[bool, str]:
-        """Whether this session already acknowledged and read current sources.
+        """Whether this session has read every current convention source.
 
-        Pi acknowledges in two steps: `pre_memory` records the current source
-        digests, then the model must open every required source with the read
-        tool. A missing read is denied by name so the model can correct it.
+        The gate seeds the source digests when the session has no receipt yet
+        (Codex and Claude have no pre_memory to do it), then denies until every
+        required source has been opened with its read tool and the declared
+        shared tree has been read.
         """
-        digest, body, paths, source_digests = self.bundle(event, scoped=scoped)
+        if self.identity(event) is None:
+            return False, (
+                "Convention acknowledgment cannot be recorded: the hook event "
+                "lacks a stable session_id."
+            )
+        digest, body, _paths, source_digests = self.bundle(event, scoped=scoped)
         if digest is None or body is None:
             return False, body or "required convention bundle could not be built"
         if not self.receipt_is_current(event, source_digests):
-            return False, PREMEMORY_DENIAL
+            if self.state.agent == "pi":
+                return False, PREMEMORY_DENIAL
+            try:
+                self.acknowledge_receipt(event, source_digests)
+            except (OSError, ValueError) as exc:
+                return False, f"Convention acknowledgment could not be recorded safely: {exc}"
         missing = self.missing_reads(event, scoped=scoped)
-        if missing:
-            listing = ", ".join(str(path) for path in missing)
-            return False, READ_DENIAL + listing + "."
+        tree = self.missing_tree(event)
+        if missing or tree is not None:
+            return False, self.read_denial(missing, tree)
         return True, ""
+
+    def read_denial(self, missing: list[Path], tree: Path | None) -> str:
+        """A short denial naming the sources still to read, never the bodies."""
+        lines = [READ_DENIAL.rstrip()]
+        for path in missing:
+            lines.append(f"- read: {path}")
+        if tree is not None:
+            lines.append(
+                f"- shared structure: run `tree {tree}` "
+                f"(on Windows, in bash: `tree {tree}`)"
+            )
+        lines.append("Then retry the same action.")
+        return "\n".join(lines)
+
+    def missing_tree(self, event: dict[str, Any]) -> Path | None:
+        """The declared shared root until this session has read its structure."""
+        shared = self.state.shared_resolved
+        if shared is None:
+            return None
+        recorded = self.read_receipt(event).get("tree")
+        if isinstance(recorded, dict) and recorded.get("root") == os.path.normcase(
+            str(shared.resolve(strict=False))
+        ):
+            return None
+        return shared
+
+    def record_tree(self, event: dict[str, Any], target: Path) -> None:
+        """Record a `tree` read of exactly the declared shared root.
+
+        The digest is kept for the record; the requirement is a per-session
+        structural acknowledgment, so the agent's own later writes do not force
+        another tree read.
+        """
+        shared = self.state.shared_resolved
+        if shared is None or not SharedTree(shared).names_root(target):
+            return
+        digest = SharedTree(shared).digest()
+        if digest is None:
+            return
+        current = self.read_receipt(event)
+        sources = current.get("sources")
+        reads = current.get("reads")
+        self._store_receipt(
+            event,
+            sources if isinstance(sources, dict) else {},
+            reads if isinstance(reads, dict) else {},
+            tree={
+                "root": os.path.normcase(str(shared.resolve(strict=False))),
+                "digest": digest,
+            },
+        )
+
+    def clear_reads(self, event: dict[str, Any]) -> None:
+        """Drop read and tree evidence after a compaction loses that context."""
+        if self.identity(event) is None:
+            return
+        current = self.read_receipt(event)
+        sources = current.get("sources")
+        self._store_receipt(
+            event,
+            sources if isinstance(sources, dict) else {},
+            {},
+            tree=None,
+        )
 
     def _is_convention_source(self, resolved: Path) -> bool:
         """Whether a read opened a convention source worth recording."""
@@ -286,6 +357,7 @@ class ConventionGate:
                 for raw in MutationScanner.target_strings(tool_input):
                     for candidate in MutationScanner.candidate_paths(raw, cwd):
                         paths.extend(self.manifest_chain(candidate))
+                        paths.extend(self._prerequisite_closure(candidate))
         unique: list[Path] = []
         seen: set[str] = set()
         for path in paths:
@@ -296,6 +368,21 @@ class ConventionGate:
             if path.is_file():
                 unique.append(path)
         return unique
+
+    def _prerequisite_closure(self, candidate: Path) -> list[Path]:
+        """Every active `requires_read` source a candidate declares, recursively."""
+        found: list[Path] = []
+        pending = [candidate]
+        while pending:
+            current = pending.pop(0)
+            prerequisites, error = self.required_reads(current)
+            if error:
+                continue
+            for path in prerequisites:
+                if path not in found:
+                    found.append(path)
+                    pending.append(path)
+        return found
 
     def missing_reads(self, event: dict[str, Any], *, scoped: bool) -> list[Path]:
         """Required sources whose current bytes this session has not read."""
@@ -315,6 +402,7 @@ class ConventionGate:
         Best-effort evidence only: a read under the memory roots is hashed
         into the session receipt so the mutation gate can prove it happened.
         """
+        tool_name = str(event.get("tool_name") or "")
         tool_input = event.get("tool_input")
         if not isinstance(tool_input, dict):
             return
@@ -323,24 +411,25 @@ class ConventionGate:
         prior = current.get("reads")
         reads = dict(prior) if isinstance(prior, dict) else {}
         changed = False
-        for raw in MutationScanner.target_strings(tool_input):
-            for candidate in MutationScanner.candidate_paths(raw, cwd):
-                resolved = candidate.resolve(strict=False)
-                if not self._is_convention_source(resolved):
-                    continue
-                digest = self._source_digest(resolved)
-                if digest is None:
-                    continue
-                key = os.path.normcase(str(resolved))
-                if reads.get(key) != digest:
-                    reads[key] = digest
-                    changed = True
+        for candidate in MutationScanner.acquisition_targets(tool_name, tool_input, cwd):
+            resolved = candidate.resolve(strict=False)
+            if not self._is_convention_source(resolved):
+                continue
+            digest = self._source_digest(resolved)
+            if digest is None:
+                continue
+            key = os.path.normcase(str(resolved))
+            if reads.get(key) != digest:
+                reads[key] = digest
+                changed = True
         if changed:
             sources = current.get("sources")
+            tree = current.get("tree")
             self._store_receipt(
                 event,
                 sources if isinstance(sources, dict) else {},
                 reads,
+                tree=tree if isinstance(tree, dict) else None,
             )
 
     def _digest(
@@ -408,10 +497,17 @@ class ConventionGate:
         sources.update(source_digests)
         prior_reads = prior.get("reads")
         reads = dict(prior_reads) if isinstance(prior_reads, dict) else {}
-        self._store_receipt(event, sources, reads)
+        prior_tree = prior.get("tree")
+        self._store_receipt(
+            event, sources, reads, tree=prior_tree if isinstance(prior_tree, dict) else None
+        )
 
     def _store_receipt(
-        self, event: dict[str, Any], sources: dict[str, str], reads: dict[str, str]
+        self,
+        event: dict[str, Any],
+        sources: dict[str, str],
+        reads: dict[str, str],
+        tree: dict[str, str] | None = None,
     ) -> None:
         """Atomically write one session receipt; the only receipt writer."""
         directory = self.dir()
@@ -433,6 +529,7 @@ class ConventionGate:
                     "shared_root": os.path.normcase(str(self.state.shared_resolved)),
                     "sources": sources,
                     "reads": reads,
+                    "tree": tree,
                 }, separators=(",", ":")) + "\n",
                 encoding="utf-8",
             )
@@ -444,28 +541,3 @@ class ConventionGate:
         finally:
             # A failed acknowledgment must not strand an orphan beside the target.
             temporary.unlink(missing_ok=True)
-
-    def gate(self, event: dict[str, Any], *, scoped: bool) -> tuple[bool, str]:
-        if self.identity(event) is None:
-            expected = "prompt_id" if self.state.agent == "claude" else "turn_id"
-            return False, (
-                "Convention acknowledgment cannot be recorded: hook event lacks stable "
-                f"session_id and {expected}."
-            )
-        digest, body, paths, source_digests = self.bundle(event, scoped=scoped)
-        if digest is None or body is None:
-            return False, body or "required convention bundle could not be built"
-        if self.receipt_is_current(event, source_digests):
-            return True, ""
-        try:
-            self.acknowledge_receipt(event, source_digests)
-        except (OSError, ValueError) as exc:
-            return False, f"Convention acknowledgment could not be recorded safely: {exc}"
-        listing = ", ".join(str(path) for path in paths)
-        reason = (
-            "Convention acknowledgment required before continuing. The authoritative "
-            f"sources for this action are now injected ({listing}). Read and obey them, "
-            "then retry the same action; that retry is the explicit acknowledgment of "
-            f"this exact bundle (sha256:{digest}).\n\n{body}"
-        )
-        return False, reason

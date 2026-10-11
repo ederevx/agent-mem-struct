@@ -118,15 +118,6 @@ def main() -> int:
     event_name = str(event.get("hook_event_name") or event.get("hookEventName") or "")
     if event_name not in SUPPORTED_EVENTS:
         return 0
-    reading = False
-    if event_name == "PreToolUse":
-        tool_name = str(event.get("tool_name") or "")
-        tool_input = event.get("tool_input")
-        if not isinstance(tool_input, dict):
-            return 0
-        reading = args.agent == "pi" and MutationScanner.tool_is_read(tool_name, tool_input)
-        if not reading and not MutationScanner.tool_requires_acknowledgment(tool_name, tool_input):
-            return 0
 
     control = RootControl(home, canonical_root)
     state = control.load(args.agent)
@@ -134,24 +125,51 @@ def main() -> int:
     gate = ConventionGate(state)
     dispatcher = EventDispatcher(args.agent, control, checkpoints, gate)
 
+    if event_name == "PreToolUse":
+        tool_name = str(event.get("tool_name") or "")
+        tool_input = event.get("tool_input")
+        if not isinstance(tool_input, dict):
+            return 0
+        cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+        is_tree, tree_target = MutationScanner.shell_tree(tool_name, tool_input, cwd)
+        if is_tree:
+            # The tree read is the acquisition itself; never gate it. Only a
+            # complete, unfiltered invocation naming the shared root counts.
+            if tree_target is not None:
+                try:
+                    gate.record_tree(event, tree_target)
+                except (OSError, ValueError):
+                    pass
+            return 0
+        reading = MutationScanner.tool_is_read(tool_name, tool_input)
+        gated = MutationScanner.tool_requires_acknowledgment(tool_name, tool_input)
+        acquisition = MutationScanner.acquisition_targets(tool_name, tool_input, cwd)
+        # A read that will run is recorded before the model sees it; a gated
+        # call that merely contains a read may be denied, so it is not recorded
+        # until it is allowed.
+        if reading or (acquisition and not gated):
+            try:
+                gate.record_read(event)
+            except (OSError, ValueError):
+                pass
+        if reading or not gated:
+            return 0
+        dispatcher.handle_pretool(event, state)
+        return 0
+
     if event_name in {"SessionStart", "UserPromptSubmit", "SubagentStart"}:
         gate.prune_receipts()
-        resets_receipt = not (
-            event_name == "SessionStart" and event.get("source") == "compact"
-        )
-        # A Pi receipt is session-scoped and owned by pre_memory: a per-prompt
-        # reset would force a new acknowledgment on every turn.
-        if event_name == "UserPromptSubmit" and args.agent == "pi":
-            resets_receipt = False
-        if resets_receipt:
-            gate.remove_receipt(event)
-        if event_name != "UserPromptSubmit":
-            keep = (
-                checkpoints.path(event)
-                if event_name == "SessionStart" and event.get("source") == "compact"
-                else None
+        if event_name == "SessionStart":
+            source = event.get("source")
+            if source == "compact":
+                # A compaction drops the read text from context, so the agent
+                # must re-read the conventions and the shared tree.
+                gate.clear_reads(event)
+            elif source != "resume":
+                gate.remove_receipt(event)
+            checkpoints.prune(
+                keep=checkpoints.path(event) if source == "compact" else None
             )
-            checkpoints.prune(keep=keep)
         dispatcher.emit_context(event_name, state, event)
         return 0
     if event_name == "PreMemory":
@@ -160,16 +178,6 @@ def main() -> int:
         return dispatcher.handle_memory_update(event, state)
     if event_name == "PreCompact":
         return dispatcher.handle_precompact(event, state)
-    if event_name == "PreToolUse":
-        if reading:
-            # Record the read, then let the tool run; reads are never gated.
-            try:
-                gate.record_read(event)
-            except (OSError, ValueError):
-                pass
-            return 0
-        dispatcher.handle_pretool(event, state)
-        return 0
     if event_name in {"Stop", "SubagentStop"}:
         dispatcher.handle_stop(event, state)
         return 0
