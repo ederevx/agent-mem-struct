@@ -62,11 +62,19 @@ READ_TOOL_NAMES = {"read", "read_file", "view"}
 SHELL_TOOL_NAMES = {"bash", "powershell", "shell", "exec_command", "command"}
 SHELL_READ_ONLY_RE = re.compile(
     r"^\s*(?:(?:pwd|ls|dir|cat|head|tail|stat|where|which|rg|grep|find|tree|"
-    r"Get-Content|Get-ChildItem|Select-String|Test-Path|Resolve-Path|"
+    r"Get-Content|Get-ChildItem|gci|Select-String|Test-Path|Resolve-Path|"
     r"git\s+(?:status|diff|log|show|grep|rev-parse|branch\s+--list))\b|"
     r"sed\s+-n\s+(['\"]?)\d+(?:,\d+)?p\1\s+(?:--\s+)?"
     r"(?!-)\S+(?:\s+(?!-)\S+)*\s*$)",
     re.IGNORECASE,
+)
+# find's own mutators do not run through a shell operator, so they need their
+# own pattern. Quoting is stripped first, because `-de'lete'` is the same
+# command to the shell.
+FIND_MUTATION_RE = re.compile(
+    r"(?:^|[;&|(]\s*)find\b(?:(?!;|&|\|).)*?\s-(?:delete|exec|execdir|ok|okdir|"
+    r"fprint0|fprintf|fprint|fls)\b",
+    re.IGNORECASE | re.DOTALL,
 )
 # A `tree` invocation, optionally wrapped in `cmd /c` or `env`, at the start of
 # a shell segment. The rest of the segment is the option/path list.
@@ -133,6 +141,9 @@ class MutationScanner:
         if SHELL_MUTATION_RE.search(command) or SED_MUTATION_RE.search(command) or REDIRECT_RE.search(command):
             return True
         if INTERPRETER_RE.search(command) and SCRIPT_MUTATION_RE.search(command):
+            return True
+        dequoted = command.replace("'", "").replace('"', "")
+        if FIND_MUTATION_RE.search(dequoted):
             return True
         return False
 
@@ -374,33 +385,41 @@ class MutationScanner:
     # -- tree acquisition ----------------------------------------------------
 
     @staticmethod
-    def shell_tree(
+    def shell_structure_read(
         tool_name: str, tool_input: dict[str, Any], cwd: Path
-    ) -> tuple[bool, Path | None]:
-        """Whether a shell call is a tree read, and the directory it names.
+    ) -> tuple[bool, Path | None, bool]:
+        """Whether a shell call reads a complete directory structure.
 
-        The first element is True for any `tree` invocation so the gate never
-        blocks the command it asks for. The second is the resolved directory
-        when the invocation reads a complete, unfiltered layout, or None when a
-        flag or pipeline hides part of the tree.
+        Recognizes `tree` and its fallbacks: `find`, `ls -aR`, PowerShell
+        `Get-ChildItem -Recurse -Force`. The first element is True for any
+        recognized listing so the gate never blocks the command it asks for;
+        the second is the resolved directory when the listing is complete and
+        unfiltered; the third is True only for a clean listing - no pipe,
+        redirect, substitution, or mutation - which is the only form the
+        caller may exempt from the gate.
         """
+        name = str(tool_name).lower()
+        powershell = "powershell" in name or "pwsh" in name
         for command in MutationScanner._shell_commands(tool_name, tool_input):
-            found = MutationScanner._tree_in_command(command, cwd)
+            found = MutationScanner._structure_in_command(command, cwd, powershell)
             if found is not None:
-                return found
-        return (False, None)
+                recognized, target = found
+                clean = not _hides_output(command) and not MutationScanner.command_is_mutating(command)
+                return (recognized, target, clean)
+        return (False, None, False)
 
     @staticmethod
-    def _tree_in_command(command: str, cwd: Path) -> tuple[bool, Path | None] | None:
-        """Report a tree read only when tree is the command's sole segment.
+    def _structure_in_command(
+        command: str, cwd: Path, powershell: bool
+    ) -> tuple[bool, Path | None] | None:
+        """Report one structure listing, or None when the line is not one.
 
-        A compound line that merely contains a tree segment is not a tree read:
-        it is gated as the ordinary command it is, so a mutating segment cannot
-        ride in behind the tree acquisition. `cd DIR && tree` is the one
-        allowed prefix, because `cd` alone writes nothing.
+        Only a single command segment counts (after an optional `cd DIR &&`
+        prefix): a compound line is gated as the ordinary command it is, so a
+        mutating segment cannot ride in behind a listing. A piped or redirected
+        listing is recognized but records nothing.
         """
         base = cwd
-        # `cd DIR && tree` runs tree against DIR, not the event cwd.
         cd_match = re.match(
             r"\s*cd\s+(?P<dir>'[^']*'|\"[^\"]*\"|\S+)\s*&&\s*(?P<rest>.+)$",
             command, re.IGNORECASE | re.DOTALL,
@@ -410,31 +429,202 @@ class MutationScanner:
             if directory is not None:
                 base = directory
             command = cd_match.group("rest")
-        segments = [segment for segment in re.split(r"&&|;", command) if segment.strip()]
+        segments = [
+            segment
+            for segment in re.split(r"\|\||&&|;|&|\n", command)
+            if segment.strip()
+        ]
         if len(segments) != 1:
             return None
-        match = TREE_TOKEN_RE.match(segments[0])
-        if not match:
+        segment = segments[0].strip()
+        matches_tree = TREE_TOKEN_RE.match(segment)
+        if matches_tree:
+            if _hides_output(segment):
+                return (True, None)
+            windows_tree = bool(
+                re.search(r"tree(?:\.com|\.exe)\b", segment, re.IGNORECASE)
+                or re.match(r"\s*cmd(?:\.exe)?\b", segment, re.IGNORECASE)
+            )
+            target, complete = MutationScanner._tree_operand(
+                matches_tree.group("rest"), base, windows_tree
+            )
+            return (True, target if complete else None)
+        parser = (
+            MutationScanner._powershell_structure
+            if powershell
+            else MutationScanner._bash_structure
+        )
+        parsed = parser(segment, base)
+        if parsed is None:
             return None
-        if _hides_output(segments[0]):
+        target, complete = parsed
+        if _hides_output(segment):
             return (True, None)
-        target, complete = MutationScanner._tree_operand(match.group("rest"), base)
         return (True, target if complete else None)
 
     @staticmethod
-    def _tree_operand(rest: str, base: Path) -> tuple[Path | None, bool]:
+    def _bash_structure(segment: str, base: Path) -> tuple[Path | None, bool] | None:
+        """A `find`, `ls -aR`, or cmd `dir /s /a` listing on a POSIX shell."""
+        for parser in (
+            MutationScanner._find_structure,
+            MutationScanner._ls_structure,
+        ):
+            parsed = parser(segment, base)
+            if parsed is not None:
+                return parsed
+        return None
+
+    @staticmethod
+    def _powershell_structure(segment: str, base: Path) -> tuple[Path | None, bool] | None:
+        """A `Get-ChildItem -Recurse -Force` listing in a PowerShell tool."""
+        match = re.match(r"\s*(?:get-childitem|gci|dir|ls)\b(?P<rest>.*)$", segment, re.IGNORECASE)
+        if not match:
+            return None
+        tokens = _tokens(match.group("rest"))
+        recurse = force = False
+        complete = True
+        operand_tokens: list[str] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            lowered = token.lower()
+            if lowered in ("-recurse", "/recurse"):
+                recurse = True
+            elif lowered in ("-force", "/force"):
+                force = True
+            elif lowered in ("-literalpath", "-path", "/path"):
+                following = tokens[index + 1] if index + 1 < len(tokens) else ""
+                if following:
+                    operand_tokens.append(following)
+                    index += 1
+                else:
+                    complete = False
+            elif lowered.startswith(("-depth", "-filter", "-include", "-exclude",
+                                     "-directory", "-file", "-attributes", "-name",
+                                     "-erroraction", "-outfile")):
+                complete = False
+            elif token.startswith("-"):
+                complete = False
+            else:
+                operand_tokens.append(token)
+            index += 1
+        if not recurse or not force or len(operand_tokens) > 1:
+            complete = False
+        target = (
+            MutationScanner.path_from_string(operand_tokens[0], base)
+            if operand_tokens
+            else base
+        )
+        return (target, complete and target is not None)
+
+    @staticmethod
+    def _find_structure(segment: str, base: Path) -> tuple[Path | None, bool] | None:
+        """A `find DIR [-print]` listing; a mutating find is not a read."""
+        match = re.match(r"\s*find\b(?P<rest>.*)$", segment, re.IGNORECASE)
+        if not match:
+            return None
+        tokens = _tokens(match.group("rest"))
+        mutators = {
+            "-delete", "-exec", "-execdir", "-ok", "-okdir",
+            "-fprint", "-fprint0", "-fprintf", "-fls",
+        }
+        if any(token.replace("'", "").replace('"', "").lower() in mutators for token in tokens):
+            return None
+        complete = True
+        operand_tokens: list[str] = []
+        for token in tokens:
+            lowered = token.lower()
+            if lowered in ("-h", "-l", "-print"):
+                continue
+            if token.startswith(("-", "!", "(", ")")):
+                complete = False
+                continue
+            operand_tokens.append(token)
+        if len(operand_tokens) != 1:
+            complete = False
+        if not operand_tokens:
+            return (base, False)
+        target = MutationScanner.path_from_string(operand_tokens[0], base)
+        if (
+            target is not None
+            and target.is_symlink()
+            and not operand_tokens[0].endswith(("/", "\\"))
+        ):
+            complete = False
+        return (target, complete and target is not None)
+
+    @staticmethod
+    def _ls_structure(segment: str, base: Path) -> tuple[Path | None, bool] | None:
+        """An `ls -aR DIR` listing; a missing -R or hidden-entry flag fails it."""
+        match = re.match(r"\s*ls\b(?P<rest>.*)$", segment, re.IGNORECASE)
+        if not match:
+            return None
+        tokens = _tokens(match.group("rest"))
+        recursive = hidden = False
+        complete = True
+        operand_tokens: list[str] = []
+        allowed_flags = set("aARlh1F")
+        for token in tokens:
+            if token == "--":
+                continue
+            if token.startswith("--"):
+                if token in ("--all", "--recursive"):
+                    hidden = hidden or token == "--all"
+                    recursive = recursive or token == "--recursive"
+                else:
+                    complete = False
+                continue
+            if token.startswith("-") and len(token) > 1:
+                letters = token[1:]
+                if not set(letters) <= allowed_flags:
+                    complete = False
+                    continue
+                recursive = recursive or ("R" in letters)
+                hidden = hidden or ("a" in letters or "A" in letters)
+                continue
+            operand_tokens.append(token)
+        if not recursive or not hidden or len(operand_tokens) > 1:
+            complete = False
+        target = (
+            MutationScanner.path_from_string(operand_tokens[0], base)
+            if operand_tokens
+            else base
+        )
+        if (
+            target is not None
+            and operand_tokens
+            and target.is_symlink()
+            and not operand_tokens[0].endswith(("/", "\\"))
+        ):
+            # `ls -R LINK` prints the link itself, not the tree it names.
+            complete = False
+        return (target, complete and target is not None)
+
+    @staticmethod
+    def _tree_operand(
+        rest: str, base: Path, windows_tree: bool = False
+    ) -> tuple[Path | None, bool]:
         """The directory a tree invocation names, and whether it is complete.
 
-        The path runs to the end of the option list, because an unquoted
-        directory may contain spaces; a rejected or unknown flag marks the read
-        incomplete so it records nothing.
+        Options are recognized wherever they appear, and every non-flag token
+        is part of the path (an unquoted directory may contain spaces). A
+        rejected or unknown flag marks the read incomplete, so it records
+        nothing. A Windows `tree`/`tree.com` lists directories only unless `/F`
+        is given, so `/F` is required there; on a POSIX shell `/a` and `/f` are
+        ordinary absolute paths.
         """
         tokens = _tokens(rest)
         complete = True
+        saw_win_full = False
         path_tokens: list[str] = []
         index = 0
         while index < len(tokens):
             token = tokens[index]
+            lowered = token.lower()
+            if windows_tree and lowered in ("/f", "/a"):
+                saw_win_full = saw_win_full or lowered == "/f"
+                index += 1
+                continue
             if token in TREE_REJECTED_FLAGS or token.startswith(
                 ("--filelimit", "--prune", "--fromfile", "--fromtabfile")
             ):
@@ -458,15 +648,26 @@ class MutationScanner:
                     complete = False
                 index += 2
                 continue
-            if token.startswith("-"):
+            if token.startswith("-") and len(token) > 1:
                 # An unknown flag may hide entries; do not count the read.
                 complete = False
                 index += 1
                 continue
-            path_tokens = tokens[index:]
-            break
+            path_tokens.append(token)
+            index += 1
+        if windows_tree and not saw_win_full:
+            complete = False
+        joined = " ".join(path_tokens) if path_tokens else ""
         if path_tokens:
-            target = MutationScanner.path_from_string(" ".join(path_tokens), base)
+            target = MutationScanner.path_from_string(joined, base)
         else:
             target = base
+        if (
+            target is not None
+            and target.is_symlink()
+            and joined
+            and not joined.endswith(("/", "\\"))
+        ):
+            # `tree LINK` prints the link itself, not the tree it names.
+            complete = False
         return (target, complete and target is not None)

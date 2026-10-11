@@ -131,18 +131,20 @@ def main() -> int:
         if not isinstance(tool_input, dict):
             return 0
         cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
-        is_tree, tree_target = MutationScanner.shell_tree(tool_name, tool_input, cwd)
-        if is_tree:
-            # The tree read is the acquisition itself; never gate it. Only a
-            # complete, unfiltered invocation naming the shared root counts.
-            if tree_target is not None:
+        gated = MutationScanner.tool_requires_acknowledgment(tool_name, tool_input)
+        is_structure, structure_target, structure_clean = MutationScanner.shell_structure_read(
+            tool_name, tool_input, cwd
+        )
+        if is_structure and structure_clean:
+            # A complete structure read is the acquisition itself; never gate
+            # it. A compound or mutating line is not granted this bypass.
+            if structure_target is not None:
                 try:
-                    gate.record_tree(event, tree_target)
+                    gate.record_tree(event, structure_target)
                 except (OSError, ValueError):
                     pass
             return 0
         reading = MutationScanner.tool_is_read(tool_name, tool_input)
-        gated = MutationScanner.tool_requires_acknowledgment(tool_name, tool_input)
         acquisition = MutationScanner.acquisition_targets(tool_name, tool_input, cwd)
         # A read that will run is recorded before the model sees it; a gated
         # call that merely contains a read may be denied, so it is not recorded

@@ -144,13 +144,15 @@ def record_tree(
     session: str = "session-1",
     agent_id: str | None = None,
     command: str | None = None,
+    tool_name: str = "Bash",
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Read the declared shared structure with a `tree` shell invocation."""
+    """Read the declared shared structure with a `tree`/fallback shell call."""
     event: dict[str, object] = {
         "hook_event_name": "PreToolUse",
         "session_id": session,
-        "cwd": str(home),
-        "tool_name": "Bash",
+        "cwd": str(cwd if cwd is not None else home),
+        "tool_name": tool_name,
         "tool_input": {"command": command or f"tree {shared}"},
     }
     if agent_id:
@@ -166,12 +168,15 @@ def read_conventions(
     session: str = "session-1",
     agent_id: str | None = None,
     extra: tuple[Path, ...] = (),
+    command: str | None = None,
 ) -> None:
     """Read every source and the declared shared tree; the gate then opens."""
     read_source_files(
         agent, home, shared, session=session, agent_id=agent_id, extra=extra
     )
-    record_tree(agent, home, shared, session=session, agent_id=agent_id)
+    record_tree(
+        agent, home, shared, session=session, agent_id=agent_id, command=command
+    )
 
 
 class CompactionHookTests(unittest.TestCase):
@@ -802,6 +807,163 @@ class CompactionHookTests(unittest.TestCase):
         read_source_files("codex", self.home, self.shared)
         record_tree("codex", self.home, self.shared, command=f'cd "{self.shared}" && tree')
         self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    # -- tree fallbacks ------------------------------------------------------
+
+    def structure_fallback_write_output(self, command: str, *, tool_name: str = "Bash") -> str:
+        """Read every source, run one structure command, then attempt a write."""
+        read_source_files("codex", self.home, self.shared)
+        recorded = record_tree(
+            "codex", self.home, self.shared, command=command, tool_name=tool_name
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        self.assertEqual(recorded.stdout, "")
+        return invoke("codex", self.home, self.mutation(self.temp / "result.txt")).stdout
+
+    def denied_structure_reason(self, output: str) -> str:
+        denied = json.loads(output)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+        return denied["permissionDecisionReason"]
+
+    def test_find_print_fallback_records_and_unlocks_write(self) -> None:
+        event = self.mutation(self.temp / "result.txt")
+        read_conventions(
+            "codex", self.home, self.shared, command=f'find "{self.shared}" -print'
+        )
+        self.assertEqual(invoke("codex", self.home, event).stdout, "")
+
+    def test_find_without_print_fallback_records(self) -> None:
+        self.assertEqual(
+            self.structure_fallback_write_output(f'find "{self.shared}"'), ""
+        )
+
+    def test_find_with_extra_operand_records_nothing(self) -> None:
+        reason = self.denied_structure_reason(
+            self.structure_fallback_write_output(f"find {self.shared} extra")
+        )
+        self.assertIn(f"tree {self.shared}", reason)
+
+    def test_ls_recursive_hidden_fallback_records(self) -> None:
+        self.assertEqual(
+            self.structure_fallback_write_output(f'ls -laR "{self.shared}"'), ""
+        )
+
+    def test_ls_recursive_without_hidden_records_nothing(self) -> None:
+        reason = self.denied_structure_reason(
+            self.structure_fallback_write_output(f'ls -R "{self.shared}"')
+        )
+        self.assertIn(f"tree {self.shared}", reason)
+        self.assertIn(f"find {self.shared} -print", reason)
+
+    def test_windows_tree_requires_full_flag(self) -> None:
+        reason = self.denied_structure_reason(
+            self.structure_fallback_write_output(f"tree.com {self.shared}")
+        )
+        self.assertIn(f"tree {self.shared}", reason)
+
+    def test_windows_tree_full_flag_records(self) -> None:
+        self.assertEqual(
+            self.structure_fallback_write_output(f'tree.com /F "{self.shared}"'), ""
+        )
+
+    def test_tree_trailing_allowed_flag_records(self) -> None:
+        self.assertEqual(
+            self.structure_fallback_write_output(f'tree "{self.shared}" -F'), ""
+        )
+
+    def test_tree_trailing_rejected_flag_records_nothing(self) -> None:
+        reason = self.denied_structure_reason(
+            self.structure_fallback_write_output(f'tree "{self.shared}" -L 2')
+        )
+        self.assertIn(f"tree {self.shared}", reason)
+
+    def test_posix_tree_slash_flag_is_a_path_not_a_switch(self) -> None:
+        # On a POSIX shell `/a` and `/f` are absolute paths, not Windows flags.
+        for command in ("tree /a", "tree /f"):
+            with self.subTest(command=command):
+                read_source_files("codex", self.home, self.shared)
+                record_tree(
+                    "codex", self.home, self.shared, command=command, cwd=self.shared
+                )
+                reason = self.denied_structure_reason(
+                    invoke(
+                        "codex", self.home, self.mutation(self.temp / "result.txt")
+                    ).stdout
+                )
+                self.assertIn(f"tree {self.shared}", reason)
+
+    def test_powershell_listing_requires_force(self) -> None:
+        reason = self.denied_structure_reason(
+            self.structure_fallback_write_output(
+                f'Get-ChildItem -Recurse "{self.shared}"', tool_name="PowerShell"
+            )
+        )
+        self.assertIn(f"tree {self.shared}", reason)
+
+    def test_powershell_literalpath_force_records(self) -> None:
+        self.assertEqual(
+            self.structure_fallback_write_output(
+                f'Get-ChildItem -LiteralPath "{self.shared}" -Recurse -Force',
+                tool_name="PowerShell",
+            ),
+            "",
+        )
+
+    def test_find_delete_is_gated_as_a_mutation_not_a_read(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "Bash",
+            "tool_input": {"command": f'find "{self.shared}" -delete'},
+        })
+        output = invoke("codex", self.home, event).stdout
+        self.assertNotEqual(output, "", "a destructive `find ... -delete` must be gated")
+        denied = json.loads(output)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+
+    def test_mutation_before_find_fallback_is_gated(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "Bash",
+            "tool_input": {"command": f'rm -rf X; find "{self.shared}"'},
+        })
+        denied = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+
+    def test_piped_or_redirected_listing_is_gated(self) -> None:
+        capture = self.temp / "capture.txt"
+        for command in (
+            f'find "{self.shared}" | head',
+            f'find "{self.shared}" | xargs rm -rf',
+            f'tree "{self.shared}" > {capture}',
+            f'find "{self.shared}" | tee {capture}',
+        ):
+            with self.subTest(command=command):
+                event = self.event("PreToolUse")
+                event.update({"tool_name": "Bash", "tool_input": {"command": command}})
+                denied = json.loads(invoke("codex", self.home, event).stdout)["hookSpecificOutput"]
+                self.assertEqual(denied["permissionDecision"], "deny")
+
+    def test_quoted_find_mutator_is_gated(self) -> None:
+        event = self.event("PreToolUse")
+        event.update({
+            "tool_name": "Bash",
+            "tool_input": {"command": f"find \"{self.shared}\" -de'lete'"},
+        })
+        output = invoke("codex", self.home, event).stdout
+        self.assertNotEqual(output, "", "a quoted `find` mutator must be gated")
+        denied = json.loads(output)["hookSpecificOutput"]
+        self.assertEqual(denied["permissionDecision"], "deny")
+
+    def test_cd_into_shared_then_find_records(self) -> None:
+        self.assertEqual(
+            self.structure_fallback_write_output(f'cd "{self.shared}" && find .'), ""
+        )
+
+    def test_catalog_names_the_find_fallback(self) -> None:
+        context = json.loads(
+            invoke("codex", self.home, self.event("SessionStart")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(f'find "{self.shared}" -print', context)
 
     def test_compact_session_start_clears_reads_and_tree(self) -> None:
         event = self.event("PreToolUse")

@@ -263,8 +263,8 @@ class ConventionGate:
             lines.append(f"- read: {path}")
         if tree is not None:
             lines.append(
-                f"- shared structure: run `tree {tree}` "
-                f"(on Windows, in bash: `tree {tree}`)"
+                f"- shared structure: run `tree {tree}`, or "
+                f"`find {tree} -print` if `tree` is unavailable"
             )
         lines.append("Then retry the same action.")
         return "\n".join(lines)

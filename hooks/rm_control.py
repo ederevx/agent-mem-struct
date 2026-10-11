@@ -385,13 +385,15 @@ class RootControl:
             or ["- (none declared; the root reads above are the whole convention set)"]
         )
         if state.shared_resolved is not None:
+            shared = state.shared_resolved
             lines.extend(
                 (
                     "",
-                    "Shared-memory structure (required): run "
-                    f"`tree {state.shared_resolved}` (on Windows, in bash: "
-                    f"`tree {state.shared_resolved}`) so the shared layout has "
-                    "been read; the hook records it.",
+                    "Shared-memory structure (required): read the complete "
+                    f"layout once with `tree {shared}`; if `tree` is not "
+                    f"installed, use `find \"{shared}\" -print` (in a "
+                    f"PowerShell tool: `Get-ChildItem -LiteralPath '{shared}' "
+                    "-Recurse -Force`). The hook records it.",
                 )
             )
         lines.extend(

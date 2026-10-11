@@ -45,9 +45,11 @@ The shared hook `root-memory-context.py`:
    writes;
 11. records each convention source the agent opens with its read tool (a bare
     `cat`, a complete `sed -n` range, or `print(open(...).read())` count for a
-    shell-only host) and each `tree` read of the declared shared root, then
-    refuses a mutation or turn completion until every current source and the
-    shared structure have been read;
+    shell-only host) and each complete structure read of the declared shared
+    root - `tree`, `find DIR [-print]`, `ls -aR`, or PowerShell
+    `Get-ChildItem -Recurse -Force` - then refuses a
+    mutation or turn completion until every current source and the shared
+    structure have been read;
 12. reports a stale structure as a mandatory migrate-first condition without
     hard-blocking the migration itself;
 13. exposes the declared shared-memory directory, including whether it is an
@@ -240,7 +242,7 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `pre_memory`. A failed load is surfaced on the next turn instead of dropped.
 - `tool_call` drives the `PreToolUse` memory-mutation gate. Until the session
   has called `pre_memory` and then read every listed source and run
-  `tree <shared>`, a memory mutation is denied with the missing paths; the read
+  `tree <shared>` (or the `find` fallback), a memory mutation is denied with the missing paths; the read
   catalog is delivered only by the `pre_memory` tool, so the gate's enforcement
   contract survives on Pi because Pi can block tool calls. Bridge failures fail
   open with a notice injected on the next turn rather than silently disabling
@@ -377,7 +379,9 @@ Convention receipts are private, session-scoped files keyed by host,
 once per session and re-reads a source only when its digest changes; a
 `resume` keeps the receipt, a fresh session clears it, and a compaction clears
 the recorded reads and tree so they are re-read. The declared shared root must
-be read with `tree` once per session. For Pi the denial points at `pre_memory`
+be read once per session with `tree` or, when `tree` is absent, a complete
+`find DIR [-print]` / `ls -aR` (PowerShell `Get-ChildItem -Recurse -Force`).
+For Pi the denial points at `pre_memory`
 until the receipt is seeded; for Codex and Claude the gate seeds the receipt
 itself and denies with the exact missing source paths and the `tree` command.
 A read is recorded only when it shows a whole source; a piped or windowed read
