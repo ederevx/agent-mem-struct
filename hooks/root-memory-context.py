@@ -131,6 +131,16 @@ def main() -> int:
         if not isinstance(tool_input, dict):
             return 0
         cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+        lister_root = MutationScanner.lister_invocation(
+            tool_name, tool_input, cwd, Path(__file__).resolve().parent / "rm_tree.py"
+        )
+        if lister_root is not None:
+            # The protocol's own bounded lister is the acquisition itself.
+            try:
+                gate.record_tree(event, lister_root)
+            except (OSError, ValueError):
+                pass
+            return 0
         gated = MutationScanner.tool_requires_acknowledgment(tool_name, tool_input)
         is_structure, structure_target, structure_clean = MutationScanner.shell_structure_read(
             tool_name, tool_input, cwd

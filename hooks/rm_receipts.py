@@ -262,9 +262,10 @@ class ConventionGate:
         for path in missing:
             lines.append(f"- read: {path}")
         if tree is not None:
+            primary = self.state.lister_command or f"find {tree} -print"
             lines.append(
-                f"- shared structure: run `tree {tree}`, or "
-                f"`find {tree} -print` if `tree` is unavailable"
+                f"- shared structure: run `{primary}` "
+                f"(fallback: `tree {tree}` or `find {tree} -print`)"
             )
         lines.append("Then retry the same action.")
         return "\n".join(lines)

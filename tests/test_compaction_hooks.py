@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -176,6 +177,19 @@ def read_conventions(
     )
     record_tree(
         agent, home, shared, session=session, agent_id=agent_id, command=command
+    )
+
+
+LISTER_SCRIPT = REPO / "hooks" / "rm_tree.py"
+
+
+def run_lister(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run the shipped structure lister the way the protocol invokes it."""
+    return subprocess.run(
+        [sys.executable, str(LISTER_SCRIPT), *arguments],
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
 
@@ -1646,6 +1660,223 @@ class CompactionHookTests(unittest.TestCase):
         invoke("codex", self.home, self.event("PreCompact"))
         self.assertLessEqual(len(list(directory.glob("*.json"))), 256)
         self.assertTrue((directory / "session-1.json").exists())
+
+
+class StructureListerTests(unittest.TestCase):
+    """The shipped `rm_tree.py` command and the hook's lister recognition."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="agent-mem-struct-lister-", dir=SCRATCH_ROOT))
+        self.home = self.temp / "home"
+        self.shared = make_home(self.home)
+        self.cli_root = self.temp / "cli-root"
+        (self.cli_root / "a_dir").mkdir(parents=True)
+        (self.cli_root / "a_dir" / "inner.txt").write_text("inner\n", encoding="utf-8")
+        (self.cli_root / "b_file.txt").write_text("leaf\n", encoding="utf-8")
+        (self.cli_root / ".git").mkdir()
+        (self.cli_root / ".git" / "config").write_text("gitdir\n", encoding="utf-8")
+        try:
+            os.symlink("a_dir", self.cli_root / "link")
+        except (OSError, NotImplementedError):  # pragma: no cover - host dependent
+            self.skipTest("symlinks are unavailable on this host")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp)
+
+    # -- the shipped command -------------------------------------------------
+
+    def test_header_names_the_root_and_a_sha256_digest(self) -> None:
+        result = run_lister(str(self.cli_root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        header = result.stdout.splitlines()[0]
+        match = re.fullmatch(
+            r"# shared: (.+)  entries: (\d+)  sha256: ([0-9a-f]{64})", header
+        )
+        self.assertIsNotNone(match, header)
+        self.assertEqual(Path(match.group(1)).resolve(), self.cli_root.resolve())
+        self.assertGreater(int(match.group(2)), 0)
+
+    def test_listing_skips_git_and_prints_relative_names(self) -> None:
+        result = run_lister(str(self.cli_root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(".git", result.stdout)
+        listing = result.stdout.splitlines()[1:]
+        self.assertEqual(
+            listing,
+            ["a_dir/", "  inner.txt", "b_file.txt", "link -> a_dir"],
+        )
+        for line in listing:
+            self.assertNotIn(str(self.temp), line)
+
+    def test_root_operand_is_required_and_a_missing_directory_fails(self) -> None:
+        no_root = run_lister()
+        self.assertEqual(no_root.returncode, 2)
+        self.assertEqual(no_root.stdout, "")
+        missing = run_lister(str(self.temp / "absent"))
+        self.assertEqual(missing.returncode, 1)
+        self.assertEqual(missing.stdout, "")
+        not_a_directory = run_lister(str(self.cli_root / "b_file.txt"))
+        self.assertEqual(not_a_directory.returncode, 1)
+        self.assertEqual(not_a_directory.stdout, "")
+
+    def test_output_is_deterministic(self) -> None:
+        self.assertEqual(
+            run_lister(str(self.cli_root)).stdout, run_lister(str(self.cli_root)).stdout
+        )
+
+    def test_list_flag_and_double_dash_are_equivalent(self) -> None:
+        plain = run_lister(str(self.cli_root))
+        self.assertEqual(run_lister("--list", str(self.cli_root)).stdout, plain.stdout)
+        self.assertEqual(run_lister("--", str(self.cli_root)).stdout, plain.stdout)
+        self.assertEqual(
+            run_lister("--list", "--", str(self.cli_root)).stdout, plain.stdout
+        )
+
+    def test_symlink_is_listed_but_not_followed(self) -> None:
+        result = run_lister(str(self.cli_root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("link -> a_dir", result.stdout)
+        self.assertNotIn("link/inner.txt", result.stdout)
+        self.assertEqual(result.stdout.count("inner.txt"), 1)
+
+    # -- hook recognition ----------------------------------------------------
+
+    def lister(self, *operands: str) -> str:
+        """The lister command, quoting any operand a shell would split."""
+        parts = [f'"{sys.executable}"', f'"{LISTER_SCRIPT}"']
+        parts.extend(f'"{operand}"' if " " in operand else operand for operand in operands)
+        return " ".join(parts)
+
+    def write_event(self, session: str) -> dict[str, object]:
+        return {
+            "hook_event_name": "PreToolUse",
+            "session_id": session,
+            "cwd": str(self.home),
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(self.temp / "result.txt")},
+        }
+
+    def write_output(self, session: str) -> str:
+        return invoke("codex", self.home, self.write_event(session)).stdout
+
+    def denial_reason(self, session: str) -> str:
+        return json.loads(self.write_output(session))["hookSpecificOutput"][
+            "permissionDecisionReason"
+        ]
+
+    def assert_structure_unread(self, session: str) -> None:
+        self.assertIn(str(self.shared), self.denial_reason(session))
+
+    def assert_lister_records(
+        self, command: str, *, session: str, cwd: Path | None = None
+    ) -> None:
+        read_source_files("codex", self.home, self.shared, session=session)
+        self.assert_structure_unread(session)
+        result = record_tree(
+            "codex", self.home, self.shared, session=session, command=command, cwd=cwd
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.write_output(session), "")
+
+    def assert_lister_ignored(
+        self, command: str, *, session: str, cwd: Path | None = None
+    ) -> None:
+        read_source_files("codex", self.home, self.shared, session=session)
+        gated = record_tree(
+            "codex", self.home, self.shared, session=session, command=command, cwd=cwd
+        )
+        self.assertNotEqual(gated.stdout, "", "an unrecognized lister must be gated")
+        self.assertEqual(
+            json.loads(gated.stdout)["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assert_structure_unread(session)
+
+    def test_lister_is_never_gated_and_records_the_structure(self) -> None:
+        command = self.lister("--list", str(self.shared))
+        allowed = record_tree("codex", self.home, self.shared, command=command)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertEqual(allowed.stdout, "")
+        # Allowed before any source was read, and the following write no longer
+        # asks for the shared structure (it may still name unread sources).
+        reason = self.denial_reason("session-1")
+        self.assertNotIn("rm_tree.py", reason)
+        self.assertNotIn(f"tree {self.shared}", reason)
+
+    def test_lister_forms_are_accepted(self) -> None:
+        cases = (
+            ("plain", self.lister(str(self.shared)), None),
+            ("list", self.lister("--list", str(self.shared)), None),
+            ("double-dash", self.lister("--", str(self.shared)), None),
+            ("cd-prefix", f'cd "{self.shared}" && ' + self.lister("--list", "."), None),
+            (
+                "relative-script",
+                f'"{sys.executable}" "hooks/rm_tree.py" --list "{self.shared}"',
+                REPO,
+            ),
+        )
+        for index, (name, command, cwd) in enumerate(cases):
+            with self.subTest(name=name):
+                self.assert_lister_records(command, session=f"lister-ok-{index}", cwd=cwd)
+
+    def test_untrusted_lister_forms_are_gated_and_record_nothing(self) -> None:
+        spoof = self.temp / "spoof"
+        spoof.mkdir()
+        (spoof / "rm_tree.py").write_text("# not the protocol lister\n", encoding="utf-8")
+        cases = (
+            ("piped", self.lister("--list", str(self.shared)) + " | head"),
+            ("no-root", self.lister("--list")),
+            ("unknown-flag", self.lister("--bogus", str(self.shared))),
+            ("extra-operand", self.lister(str(self.shared), str(self.cli_root))),
+            (
+                "spoofed-script",
+                f'"{sys.executable}" "{spoof / "rm_tree.py"}" --list "{self.shared}"',
+            ),
+            (
+                "missing-interpreter",
+                f'"./python" "{LISTER_SCRIPT}" --list "{self.shared}"',
+            ),
+            ("backgrounded", self.lister("--list", str(self.shared)) + " &"),
+        )
+        for index, (name, command) in enumerate(cases):
+            with self.subTest(name=name):
+                self.assert_lister_ignored(command, session=f"lister-bad-{index}")
+
+    def test_lister_of_another_directory_records_nothing(self) -> None:
+        session = "lister-other"
+        read_source_files("codex", self.home, self.shared, session=session)
+        result = record_tree(
+            "codex",
+            self.home,
+            self.shared,
+            session=session,
+            command=self.lister(str(self.cli_root)),
+        )
+        self.assertEqual(result.stdout, "")
+        self.assert_structure_unread(session)
+
+    def test_catalog_and_denial_lead_with_the_lister(self) -> None:
+        context = json.loads(
+            invoke(
+                "codex",
+                self.home,
+                {
+                    "hook_event_name": "SessionStart",
+                    "session_id": "session-1",
+                    "cwd": str(self.home),
+                },
+            ).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("rm_tree.py", context)
+        self.assertIn(f"tree {self.shared}", context)
+        self.assertIn(f'find "{self.shared}" -print', context)
+
+        read_source_files("codex", self.home, self.shared)
+        reason = self.denial_reason("session-1")
+        self.assertIn("rm_tree.py", reason)
+        self.assertIn(f"tree {self.shared}", reason)
+        self.assertIn(f"find {self.shared} -print", reason)
 
 
 class InstallerTests(unittest.TestCase):

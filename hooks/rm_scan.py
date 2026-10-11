@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -68,6 +69,9 @@ SHELL_READ_ONLY_RE = re.compile(
     r"(?!-)\S+(?:\s+(?!-)\S+)*\s*$)",
     re.IGNORECASE,
 )
+# The protocol's own lister is invoked as `INTERPRETER SCRIPT [--list] [--] ROOT`.
+INTERPRETER_NAME_RE = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$", re.IGNORECASE)
+INTERPRETER_FLAGS = frozenset({"-I", "-B", "-E", "-S", "-u"})
 # find's own mutators do not run through a shell operator, so they need their
 # own pattern. Quoting is stripped first, because `-de'lete'` is the same
 # command to the shell.
@@ -113,6 +117,20 @@ def _line_count(path: Path) -> int | None:
 def _hides_output(text: str) -> bool:
     """Whether a shell line pipes, redirects, or hides the read output."""
     return any(token in text for token in ("|", ">", "<", "$(", "`"))
+
+
+def _interpreter_available(token: str, base: Path) -> bool:
+    """Whether a python-like interpreter token actually resolves to a program.
+
+    A relative token such as `./python` must exist and be executable; a bare
+    name is looked up on PATH. This keeps a nonexistent shim from earning the
+    structure credit for a lister that never ran.
+    """
+    path = Path(token)
+    if path.is_absolute() or os.sep in token or (os.altsep and os.altsep in token):
+        candidate = path if path.is_absolute() else base / path
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    return shutil.which(token) is not None
 
 
 def _tokens(text: str) -> list[str]:
@@ -407,6 +425,88 @@ class MutationScanner:
                 clean = not _hides_output(command) and not MutationScanner.command_is_mutating(command)
                 return (recognized, target, clean)
         return (False, None, False)
+
+    @staticmethod
+    def lister_invocation(
+        tool_name: str, tool_input: dict[str, Any], cwd: Path, script_path: Path
+    ) -> Path | None:
+        """The shared root a trusted `rm_tree.py` invocation names, or None.
+
+        Only the protocol's own lister counts: a python-like interpreter, the
+        exact hook script, a single segment with no pipe or redirect, and
+        exactly one root operand. The root is never guessed from the working
+        directory, so an accidental call cannot credit the wrong tree.
+        """
+        script = Path(script_path).resolve(strict=False)
+        for command in MutationScanner._shell_commands(tool_name, tool_input):
+            if _hides_output(command):
+                continue
+            if re.search(r"(?<!&)&(?!&)", command):
+                # A background `&` is a second command, not a clean listing.
+                continue
+            base = cwd
+            cd_match = re.match(
+                r"\s*cd\s+(?P<dir>'[^']*'|\"[^\"]*\"|\S+)\s*&&\s*(?P<rest>.+)$",
+                command, re.IGNORECASE | re.DOTALL,
+            )
+            if cd_match:
+                directory = MutationScanner.path_from_string(cd_match.group("dir"), cwd)
+                if directory is not None:
+                    base = directory
+                command = cd_match.group("rest")
+            segments = [s for s in re.split(r"\|\||&&|;|&|\n", command) if s.strip()]
+            if len(segments) != 1:
+                continue
+            tokens = _tokens(segments[0])
+            if not tokens or not INTERPRETER_NAME_RE.match(Path(tokens[0]).name):
+                continue
+            if not _interpreter_available(tokens[0], base):
+                continue
+            name = Path(tokens[0]).name
+            lowered = name[:-4].lower() if name.lower().endswith(".exe") else name.lower()
+            index = 1
+            while index < len(tokens) and tokens[index] in INTERPRETER_FLAGS:
+                index += 1
+            if lowered == "py" and index < len(tokens) and re.match(
+                r"^-\d(?:\.\d+)?$", tokens[index]
+            ):
+                index += 1
+            if index >= len(tokens):
+                continue
+            candidate = MutationScanner.path_from_string(tokens[index], base)
+            index += 1
+            if candidate is None:
+                continue
+            try:
+                same = os.path.samefile(candidate, script)
+            except OSError:
+                same = candidate.resolve(strict=False) == script
+            if not same:
+                continue
+            root_token = None
+            valid = True
+            while index < len(tokens):
+                token = tokens[index]
+                if token == "--list":
+                    index += 1
+                    continue
+                if token == "--":
+                    index += 1
+                    if index < len(tokens) and root_token is None:
+                        root_token = tokens[index]
+                        index += 1
+                    continue
+                if token.startswith("-") or root_token is not None:
+                    valid = False
+                    break
+                root_token = token
+                index += 1
+            if not valid or root_token is None:
+                continue
+            root = MutationScanner.path_from_string(root_token, base)
+            if root is not None:
+                return root
+        return None
 
     @staticmethod
     def _structure_in_command(
