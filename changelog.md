@@ -4,6 +4,18 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-16T16:21:24-04:00 - name the shared upstream explicitly when syncing
+
+On a host whose environment injected a second `branch.<name>.merge`
+(through `GIT_CONFIG_COUNT`), every pre_memory and memory_update was
+refused: the shared fast-forward saw two merge heads and reported
+`shared-diverged`, and the publish push refused the same way. The shared
+fast-forward, the publish push, and its racing replay now read the branch's
+remote and merge ref from the repository's own config and name them
+explicitly, so an injected merge ref can no longer add a head. This changes
+only the hook layer. It does not change the memory tree or canonical
+operational rules, so no `Structure-Version` migration is required.
+
 ## 2026-10-15T23:26:00-04:00 - make rule 9 consistent about who lands main
 
 Rule 9 ordered the agent to reconcile stale branches into `main` itself, then

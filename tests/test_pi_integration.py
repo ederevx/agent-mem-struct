@@ -748,6 +748,42 @@ class PiHookTests(unittest.TestCase):
         self.assertIn("shared worktree could not be", result.stdout)
         self.assertFalse((home / ".agent-mem-struct" / "convention-receipts").exists())
 
+    def test_pre_memory_pull_ignores_an_environment_merge_ref(self) -> None:
+        origin = self.temp / "origin.git"
+        shared = make_git_shared(origin, self.temp / "git shared")
+        home, _ = make_home(self.temp / "injected-home", shared)
+        writer = self.temp / "writer"
+        subprocess.run(["git", "clone", str(origin), str(writer)],
+                       text=True, capture_output=True, check=False)
+        git_run("checkout", "-b", "extra", cwd=writer)
+        (writer / "extra.md").write_text("extra\n", encoding="utf-8")
+        git_run("add", "extra.md", cwd=writer)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "extra", cwd=writer)
+        self.assertEqual(git_run("push", "origin", "extra", cwd=writer).returncode, 0)
+        git_run("checkout", "main", cwd=writer)
+        with open(writer / "MEMORY.md", "a", encoding="utf-8") as handle:
+            handle.write("- Pulled rule.\n")
+        git_run("add", "MEMORY.md", cwd=writer)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "change", cwd=writer)
+        self.assertEqual(git_run("push", "origin", "main", cwd=writer).returncode, 0)
+
+        # A second merge ref from the process environment must not add a head.
+        injected = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "branch.main.merge",
+            "GIT_CONFIG_VALUE_0": "refs/heads/extra",
+        }
+        with mock.patch.dict(os.environ, injected):
+            result = invoke_pi(home, {
+                "hook_event_name": "PreMemory",
+                "session_id": "pi-session",
+                "turn_id": "turn-1",
+            })
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("multiple branches", result.stdout)
+        self.assertIn("Pulled rule.", (shared / "MEMORY.md").read_text(encoding="utf-8"))
+        self.assertFalse((shared / "extra.md").exists())
+
     def test_config_is_active_matches_pi_environment(self) -> None:
         spec = importlib.util.spec_from_file_location("pi_hook_module", HOOK)
         assert spec and spec.loader
@@ -1693,6 +1729,21 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         with mock.patch.object(module.subprocess, "run",
                                side_effect=subprocess.TimeoutExpired("git", 5)):
             self.assertFalse(worktree.has_sync_target())
+
+    def test_shared_write_pushes_despite_an_environment_merge_ref(self) -> None:
+        # A second merge ref stops a bare `git push` even when it names no
+        # fetched branch, because push counts every configured merge value.
+        injected = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "branch.main.merge",
+            "GIT_CONFIG_VALUE_0": "refs/heads/absent",
+        }
+        with mock.patch.dict(os.environ, injected):
+            result = self.create_note()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("pushed", self.text(result))
+        self.assertIn("memory_update create: note",
+                      git_run("log", "--format=%s", cwd=self.origin).stdout)
 
     def test_a_diverging_write_leaves_the_commit_local_and_reports_it(self) -> None:
         self.create_note()

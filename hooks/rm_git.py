@@ -129,3 +129,29 @@ class GitWorktree:
             budget=self.limit(budget, QUERY_BUDGET),
         )
         return upstream.returncode == 0
+
+    def upstream(self, budget: float | None = None) -> tuple[str, str] | None:
+        """The current branch's remote and merge ref, from this repo's own config.
+
+        Read with `--local` so a `branch.<name>.merge` added through the
+        environment (`GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`) or a
+        redirected global config cannot name a second head. None when HEAD is
+        detached or the local config does not name exactly one upstream.
+        """
+        head = self.run(
+            "symbolic-ref", "-q", "HEAD", budget=self.limit(budget, QUERY_BUDGET)
+        ).stdout.strip()
+        if not head.startswith("refs/heads/"):
+            return None
+        branch = head[len("refs/heads/"):]
+        values: list[str] = []
+        for key in ("remote", "merge"):
+            found = self.run(
+                "config", "--local", "--get-all", f"branch.{branch}.{key}",
+                budget=self.limit(budget, QUERY_BUDGET),
+            )
+            lines = found.stdout.splitlines()
+            if found.returncode != 0 or len(lines) != 1 or not lines[0] or lines[0].startswith("-"):
+                return None
+            values.append(lines[0])
+        return values[0], values[1]

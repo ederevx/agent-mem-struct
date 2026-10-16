@@ -116,9 +116,16 @@ class CommitPublisher:
         )
 
     def push(self, sha: str) -> CommitOutcome:
-        """Push the local commit, replaying it onto the shared tip if it raced."""
+        """Push the local commit, replaying it onto the shared tip if it raced.
+
+        The remote and branch are named explicitly, so a
+        `branch.<name>.merge` the environment adds cannot make Git refuse the
+        push or the replay as a multi-head one.
+        """
+        target = self.worktree.upstream()
+        refspec = (target[0], f"HEAD:{target[1]}") if target else ()
         for _ in range(PUSH_ATTEMPTS):
-            if self.worktree.run("push").returncode == 0:
+            if self.worktree.run("push", *refspec).returncode == 0:
                 published = self.worktree.head() or sha
                 return CommitOutcome(
                     committed=True,
@@ -130,7 +137,9 @@ class CommitPublisher:
                 return self.unpushed(
                     sha, f"publishing it did not finish within {PUBLISH_SECONDS:g}s."
                 )
-            replay = self.worktree.run("pull", "--rebase", "--autostash")
+            replay = self.worktree.run(
+                "pull", "--rebase", "--autostash", *(target or ())
+            )
             if replay.returncode != 0:
                 self.abort_replay()
                 return CommitOutcome(
