@@ -4,6 +4,18 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-15T23:24:00-04:00 - report leftovers at session start
+
+Work left behind by an earlier session - local-only commits no remote carries,
+and stale scratch directories - was invisible to the next one. The hook now
+appends a read-only leftovers report at a non-compaction session start, built
+from a private ledger of the repository top levels an agent's history-changing
+git commands touched and from the stale immediate children of the scratch
+root. It only reports: resolving an item stays with the agent and the user,
+and another agent's directory is never touched. This changes only the hook
+layer. It does not change the memory tree or canonical operational rules, so
+no `Structure-Version` migration is required.
+
 ## 2026-10-15T23:22:00-04:00 - keep memory_update log history ASCII
 
 `memory_update log` appended whatever text it was given, so a Unicode dash

@@ -29,6 +29,13 @@ SCRATCH_ROOT = Path(
         str(Path.home() / "tmp" / "agent-mem-struct-tests"),
     )
 )
+# The session-start leftovers report scans the scratch root; an empty owned
+# root keeps session-start assertions deterministic, and a test that exercises
+# the report points AMS_SCRATCH_ROOT at its own tree.
+SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+os.environ["AMS_SCRATCH_ROOT"] = tempfile.mkdtemp(
+    prefix="ams-hook-scratch-", dir=SCRATCH_ROOT
+)
 
 
 def make_shared(path: Path) -> Path:

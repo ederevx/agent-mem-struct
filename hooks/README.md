@@ -66,6 +66,9 @@ The shared hook `root-memory-context.py`:
 17. refuses a memory commit or a shell `git push` whose commit message breaks
     the mechanical convention, and reports a message-shape deviation in the
     publish attestation only as advice.
+18. appends a read-only leftovers report at a non-compaction session start:
+    the local-only commits of repositories this agent touched, plus stale
+    immediate children of the scratch root.
 
 The runtime hook creates no documents. The installer manages only the two root
 `RULES.md` and `STRUCTURE.md` copies described above; it does not add another
@@ -314,6 +317,18 @@ The bridge maps Pi events onto the hook's event vocabulary:
   commits is allowed with a `push not fully linted` note instead. A push made
   inside a script the agent runs is not a `git push` tool call and is not
   detected.
+- At a session start whose source is not `compact` (on Pi that is the
+  first-turn `before_agent_start`), the hook appends a read-only leftovers
+  report. `rm_ledger.RepoLedger` remembers each repository top level an
+  allowed history-changing git command touched in a private `0700` state file
+  (`touched-repos.json`, at most 50 entries, expiring after 14 days), and
+  `rm_leftovers.LeftoverReport` lists each remembered repository's local-only
+  commits (`git rev-list --branches --not --remotes`, up to three
+  `sha12 subject` samples) and the immediate children of `AMS_SCRATCH_ROOT`
+  (default `~/tmp`) older than 24 hours, pruning clean or missing
+  repositories. It is report only, bounded to two seconds, and writes nothing
+  except pruning its own ledger; an unfinished scan adds a
+  `leftover check incomplete` line.
 - `session_before_compact` drives `PreCompact` with the session entries passed
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an
