@@ -69,6 +69,19 @@ SHELL_READ_ONLY_RE = re.compile(
     r"(?!-)\S+(?:\s+(?!-)\S+)*\s*$)",
     re.IGNORECASE,
 )
+# The git subcommands that rewrite this worktree's own history; running one
+# records the repository in the agent's private ledger.
+GIT_HISTORY_SUBCOMMANDS = (
+    "commit", "cherry-pick", "rebase", "am", "merge", "reset", "tag", "push",
+)
+GIT_GLOBAL_VALUE_FLAGS = (
+    "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--exec-path",
+)
+PUSH_VALUE_FLAGS = ("-o", "--push-option", "--receive-pack", "--exec", "--repo")
+# Bare tokens that end one shell command: a git call chained after another has
+# to be found on its own segment, and a redirect may not leak into its args.
+SHELL_OPERATOR_TOKENS = ("&&", "||", ";", "|", "&")
+REDIRECT_TOKEN_RE = re.compile(r"^\d*(?:>>?|<<?|>&|<&)")
 # The protocol's own lister is invoked as `INTERPRETER SCRIPT [--list] [--] ROOT`.
 INTERPRETER_NAME_RE = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$", re.IGNORECASE)
 INTERPRETER_FLAGS = frozenset({"-I", "-B", "-E", "-S", "-u"})
@@ -256,10 +269,162 @@ class MutationScanner:
             return not bool(SHELL_READ_ONLY_RE.match(command))
         return not any(token in name for token in READ_ONLY_TOOL_TOKENS)
 
+    # -- git invocations -----------------------------------------------------
+
+    @staticmethod
+    def git_calls(command: str, cwd: Path) -> list[tuple[Path, str, list[str]]]:
+        """Every plain git call in one command line, in order.
+
+        A `cd DIR` segment moves the base directory for the calls after it, so
+        `cd repo && git commit` and `git -C repo push` both resolve to the
+        right worktree. Quoted text stays one token, so an operator inside a
+        commit message is not a new command.
+        """
+        calls: list[tuple[Path, str, list[str]]] = []
+        base = cwd
+        for segment in MutationScanner._segments(command):
+            if Path(segment[0]).name.lower() == "cd" and len(segment) == 2:
+                directory = MutationScanner.path_from_string(segment[1], base)
+                if directory is not None:
+                    base = directory
+                continue
+            call = MutationScanner._git_call(segment, base)
+            if call is not None:
+                calls.append(call)
+        return calls
+
+    @staticmethod
+    def _segments(command: str) -> list[list[str]]:
+        """The tokenized shell segments of one command line."""
+        segments: list[list[str]] = [[]]
+        for token in _tokens(command):
+            if token in SHELL_OPERATOR_TOKENS or REDIRECT_TOKEN_RE.match(token):
+                segments.append([])
+                continue
+            segments[-1].append(token)
+        return [segment for segment in segments if segment]
+
+    @staticmethod
+    def _git_call(tokens: list[str], base: Path) -> tuple[Path, str, list[str]] | None:
+        """One git invocation from its own tokenized segment, or None."""
+        if not tokens or Path(tokens[0]).name.lower() not in ("git", "git.exe"):
+            return None
+        index = 1
+        repo = base
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "-C":
+                if index + 1 >= len(tokens):
+                    return None
+                directory = MutationScanner.path_from_string(tokens[index + 1], base)
+                if directory is None:
+                    return None
+                repo = directory
+                index += 2
+                continue
+            if token in GIT_GLOBAL_VALUE_FLAGS:
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            break
+        if index >= len(tokens):
+            return None
+        return repo, tokens[index].lower(), tokens[index + 1:]
+
+    @staticmethod
+    def git_invocation(command: str, cwd: Path) -> tuple[Path, str, list[str]] | None:
+        """The first plain git call in one command line, or None."""
+        calls = MutationScanner.git_calls(command, cwd)
+        return calls[0] if calls else None
+
+    @staticmethod
+    def git_repo_invocation(command: str, cwd: Path) -> Path | None:
+        """The repo path of the first history-changing git call, or None."""
+        repos = MutationScanner.git_repo_invocations(command, cwd)
+        return repos[0] if repos else None
+
+    @staticmethod
+    def git_repo_invocations(command: str, cwd: Path) -> list[Path]:
+        """The repo paths of every history-changing git call in this line."""
+        return [
+            repo
+            for repo, subcommand, _arguments in MutationScanner.git_calls(command, cwd)
+            if subcommand in GIT_HISTORY_SUBCOMMANDS
+        ]
+
+    @staticmethod
+    def git_push_invocation(
+        command: str, cwd: Path
+    ) -> tuple[Path, str, list[str]] | None:
+        """The repo, remote, and sources of one `git push`, or None.
+
+        The remote is empty when the call uses the branch's upstream, and each
+        refspec is reduced to the revision it pushes from, so the result feeds
+        `git log` directly. A refspec-only delete publishes no commit and
+        yields None, and a push with no source lints HEAD, the branch git
+        pushes by default.
+        """
+        for repo, subcommand, arguments in MutationScanner.git_calls(command, cwd):
+            if subcommand != "push":
+                continue
+            parsed = MutationScanner._push_spec(repo, arguments)
+            if parsed is not None:
+                return parsed
+        return None
+
+    @staticmethod
+    def _push_spec(
+        repo: Path, arguments: list[str]
+    ) -> tuple[Path, str, list[str]] | None:
+        deleting = every_ref = every_tag = False
+        operands: list[str] = []
+        index = 0
+        while index < len(arguments):
+            token = arguments[index]
+            if token == "--":
+                operands.extend(arguments[index + 1:])
+                break
+            if token in ("-d", "--delete"):
+                deleting = True
+            elif token == "--all":
+                every_ref = True
+            elif token == "--tags":
+                every_tag = True
+            elif token not in PUSH_VALUE_FLAGS and not token.startswith("-"):
+                operands.append(token)
+            index += 2 if token in PUSH_VALUE_FLAGS else 1
+        if deleting:
+            return None
+        remote, refspecs = MutationScanner._push_target(operands)
+        sources: list[str] = []
+        for spec in refspecs:
+            source = spec.lstrip("+").split(":", 1)[0]
+            if source:
+                sources.append(source)
+        if every_ref:
+            sources.append("--all")
+        if every_tag:
+            sources.append("--tags")
+        if operands and refspecs and not sources and not every_ref and not every_tag:
+            return None
+        if not sources:
+            sources.append("HEAD")
+        return repo, remote, sources
+
+    @staticmethod
+    def _push_target(operands: list[str]) -> tuple[str, list[str]]:
+        if not operands:
+            return "", []
+        if len(operands) == 1 and ":" in operands[0]:
+            return "", operands
+        return operands[0], operands[1:]
+
     # -- acquisition (reads) -------------------------------------------------
 
     @staticmethod
-    def _shell_commands(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+    def shell_commands(tool_name: str, tool_input: dict[str, Any]) -> list[str]:
         """The shell command lines a tool call carries, if it is a shell tool."""
         name = str(tool_name).lower()
         if name not in SHELL_TOOL_NAMES and "shell" not in name and "exec" not in name:
@@ -367,7 +532,7 @@ class MutationScanner:
                 ):
                     targets.append(candidate)
             return MutationScanner._unique(targets)
-        for command in MutationScanner._shell_commands(tool_name, tool_input):
+        for command in MutationScanner.shell_commands(tool_name, tool_input):
             processed = MutationScanner._acquisition_in_command(command, cwd)
             targets.extend(processed)
         return MutationScanner._unique(targets)
@@ -418,7 +583,7 @@ class MutationScanner:
         """
         name = str(tool_name).lower()
         powershell = "powershell" in name or "pwsh" in name
-        for command in MutationScanner._shell_commands(tool_name, tool_input):
+        for command in MutationScanner.shell_commands(tool_name, tool_input):
             found = MutationScanner._structure_in_command(command, cwd, powershell)
             if found is not None:
                 recognized, target = found
@@ -438,7 +603,7 @@ class MutationScanner:
         directory, so an accidental call cannot credit the wrong tree.
         """
         script = Path(script_path).resolve(strict=False)
-        for command in MutationScanner._shell_commands(tool_name, tool_input):
+        for command in MutationScanner.shell_commands(tool_name, tool_input):
             if _hides_output(command):
                 continue
             if re.search(r"(?<!&)&(?!&)", command):

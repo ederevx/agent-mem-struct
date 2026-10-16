@@ -2,9 +2,10 @@
 
 One owner for turning written shared files into shared history:
 `CommitPublisher` stages exactly the paths the mutation reported (never the
-rest of the index), commits them under the message the caller wrote and
+rest of the index), checks the caller's message against the mechanical
+convention in `rm_lint.MessageLint`, commits it under that message and
 nothing else, and pushes the shared branch. It never composes, rewrites, or
-annotates that message, and assumes no convention about its content. When
+annotates that message. When
 another agent pushed first, the local commit is replayed with `git pull
 --rebase --autostash` and the push retried inside a fixed budget; a failed
 replay is aborted and reported rather than forced. A worktree with no remote
@@ -12,10 +13,12 @@ or no upstream branch is detected and committed locally instead.
 """
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
 from rm_git import GitWorktree
+from rm_lint import MessageLint
 from rm_support import under
 
 PUBLISH_SECONDS = 15.0
@@ -44,8 +47,9 @@ class CommitOutcome:
 class CommitPublisher:
     """One owner for committing and pushing the shared paths a mutation wrote."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, agent: str = "") -> None:
         self.root = root
+        self.agent = agent
         self.stop: float | None = None
         self.worktree = GitWorktree(root, window=self.remaining)
 
@@ -60,6 +64,18 @@ class CommitPublisher:
             return CommitOutcome(
                 note="no `commit_message` was given, so the written shared paths were "
                 "left uncommitted.",
+            )
+        violations = MessageLint(self.worktree).violations(
+            message, agent=self.agent, model=os.environ.get("PI_MODEL", "")
+        )
+        if violations:
+            return CommitOutcome(
+                conflict=self.conflict(
+                    "message-lint",
+                    "the commit message breaks the mechanical convention: "
+                    + "; ".join(violations),
+                    "rewrite commit_message and re-call",
+                )
             )
         staged = self.stage(staged)
         if isinstance(staged, CommitOutcome):

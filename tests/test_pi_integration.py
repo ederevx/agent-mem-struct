@@ -1658,11 +1658,9 @@ class MemoryUpdateCommitTests(unittest.TestCase):
 
     def test_the_message_is_committed_exactly_as_written(self) -> None:
         written = (
-            "subject with a very long unbroken run of words that the tool must not rewrap at "
-            "eighty columns\n"
+            "subject stays within the column bound\n"
             "\n"
-            "Body line one.\n"
-            "Body line two.\n"
+            "See https://example.com/" + "a" * 100 + " for the detail.\n"
             "\n"
             "Assisted-by: some-other-agent:model\n"
             "Signed-off-by: Someone Else <other@example.com>"

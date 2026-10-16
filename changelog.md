@@ -4,6 +4,20 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-15T23:20:00-04:00 - lint commit messages mechanically
+
+The commit-message convention lived only in prose, so nothing prevented a
+pushed message with a broken trailer block, a broken column limit, or an
+`Assisted-by:` model that did not match the running session. `rm_lint` now
+owns those mechanical checks: `rm_commit.CommitPublisher` refuses a memory
+commit that breaks them before creating it, and the PreToolUse gate refuses a
+shell `git push` whose commits would break them. A push that cannot be
+resolved, times out, or exceeds the commit cap is allowed with a
+`push not fully linted` note instead of denied. The `rm_verify` re-check stays
+advisory. This changes only the hook layer. It does not change the memory tree
+or canonical operational rules, so no `Structure-Version` migration is
+required.
+
 ## 2026-10-07T19:32:00-04:00 - remind Pi of memory and conventions after compaction
 
 The Pi bridge left the post-compaction pointer to the next

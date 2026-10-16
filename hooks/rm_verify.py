@@ -10,7 +10,8 @@ the report lines and conflicts for the caller to surface. Its git reads share
 one fixed budget, and a worktree git cannot answer for is reported as an
 incomplete check rather than a clean one. A durability failure is a conflict
 the agent must fix; a message-shape deviation is only an advisory line,
-because the tool assumes no convention about the message.
+because `rm_lint.MessageLint` already enforced the mechanical convention
+before the commit and this re-check never blocks a publish.
 """
 from __future__ import annotations
 
@@ -18,18 +19,9 @@ import time
 from pathlib import Path
 
 from rm_git import GitWorktree
+from rm_lint import MessageLint
 
 ATTEST_SECONDS = 8.0
-MAX_COLS = 80
-TRAILER_PREFIXES = (
-    "Source:",
-    "Change-Id:",
-    "Assisted-by:",
-    "Signed-off-by:",
-    "Co-authored-by:",
-    "Generated-by:",
-    "Reviewed-by:",
-)
 
 
 class Attestation:
@@ -127,60 +119,29 @@ class PublishAttestation:
 
     def _check_message(self, report: Attestation, sha: str) -> None:
         message = self._message_body(sha)
-        lines = message.split("\n")
-        while lines and not lines[-1].strip():
-            lines.pop()
+        lines = MessageLint.message_lines(message)
         subject = lines[0] if lines else ""
+        lint = MessageLint(self.worktree)
         attention: list[str] = []
         if not subject.strip():
             attention.append("attention: message has no subject")
         if not any(line.strip() for line in lines[1:]):
             attention.append("attention: message has no body (subject only)")
-        attention.extend(self._lint_columns(lines))
-        attention.extend(self._lint_trailers(message))
+        attention.extend(
+            f"attention: {finding}"
+            for finding in lint.violations(message, agent="", model="")
+        )
         if attention:
             report.lines.extend(attention)
             return
-        body = [
-            line
-            for line in lines[1:self._trailer_block_start(lines)]
-            if line.strip()
-        ]
-        trailers = self._parsed_trailers(message)
+        block_start = lint.trailer_block_start(lines)
+        body = [line for line in lines[1:block_start] if line.strip()]
+        trailers = lint.parsed_trailers(message)
         report.lines.append(
             f"verified: message conforms (subject: {len(subject)} cols, "
             f"body: {len(body)} line{'s' if len(body) != 1 else ''}, "
             f"trailers: {len(trailers)})"
         )
-
-    def _lint_columns(self, lines: list[str]) -> list[str]:
-        flagged: list[str] = []
-        for number, line in enumerate(lines, start=1):
-            if len(line) <= MAX_COLS:
-                continue
-            if any(len(token) > MAX_COLS for token in line.split()):
-                continue
-            flagged.append(
-                f"attention: line {number} is {len(line)} cols with no unbreakable token"
-            )
-        return flagged
-
-    def _lint_trailers(self, message: str) -> list[str]:
-        lines = message.split("\n")
-        while lines and not lines[-1].strip():
-            lines.pop()
-        start = self._trailer_block_start(lines)
-        parsed = set(self._parsed_trailers(message))
-        flagged: list[str] = []
-        for index, line in enumerate(lines):
-            if not self._trailer_like(line):
-                continue
-            if index < start or line not in parsed:
-                flagged.append(
-                    f"attention: trailer-like line {index + 1} is "
-                    "outside the final trailer block"
-                )
-        return flagged
 
     # -- read-only git views -------------------------------------------------
 
@@ -215,27 +176,6 @@ class PublishAttestation:
     def _message_body(self, sha: str) -> str:
         result = self.worktree.run("show", "-s", "--format=%B", sha)
         return result.stdout if result.returncode == 0 else ""
-
-    def _parsed_trailers(self, message: str) -> list[str]:
-        result = self.worktree.run(
-            "interpret-trailers", "--parse", input_text=message.rstrip("\n") + "\n"
-        )
-        if result.returncode != 0:
-            return []
-        return [line for line in result.stdout.splitlines() if line.strip()]
-
-    def _trailer_block_start(self, lines: list[str]) -> int:
-        """The first line of the final contiguous trailer-like block."""
-        end = len(lines)
-        while end > 0 and not lines[end - 1].strip():
-            end -= 1
-        start = end
-        while start > 0 and self._trailer_like(lines[start - 1]):
-            start -= 1
-        return start if start < end else end
-
-    def _trailer_like(self, line: str) -> bool:
-        return any(line.startswith(prefix) for prefix in TRAILER_PREFIXES)
 
     def _relative(self, path: Path) -> str | None:
         try:
