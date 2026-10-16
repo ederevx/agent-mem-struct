@@ -260,7 +260,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
   mechanical, and supports create, set, log, rename, retire, requires,
-  attach, detach, and commit. `commit` pairs with the built-in `edit` tool for
+  attach, detach, and commit. `log` accepts ASCII history only: a non-ASCII
+  character returns a `non-ascii` conflict naming up to five offending
+  characters by line, column, and code point, and writes nothing. `commit`
+  pairs with the built-in `edit` tool for
   content while the tool keeps commit ownership: it publishes edits you made
   to memory files and requires `commit_message` (a missing one gives
   `bad-request`). Its `path` is optional and names the edited active `.md`
@@ -283,7 +286,7 @@ The bridge maps Pi events onto the hook's event vocabulary:
   resolves a conflict itself: `control-invalid`, `stale-protocol`,
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
-  `exists`, `message-lint`, and `bad-request`
+  `exists`, `message-lint`, `non-ascii`, and `bad-request`
   come back as a conflict report for the agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`

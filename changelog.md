@@ -4,6 +4,17 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-15T23:22:00-04:00 - keep memory_update log history ASCII
+
+`memory_update log` appended whatever text it was given, so a Unicode dash
+could enter a history file that the convention requires to stay ASCII.
+`MemoryUpdater.non_ascii_conflict` now refuses a `log` whose text or summary
+carries a non-ASCII character, naming the first five by line, column, and code
+point, and writes nothing. A `set` body still keeps its UTF-8, because the Pi
+bridge carries it intact. This changes only the hook layer. It does not change
+the memory tree or canonical operational rules, so no `Structure-Version`
+migration is required.
+
 ## 2026-10-15T23:20:00-04:00 - lint commit messages mechanically
 
 The commit-message convention lived only in prose, so nothing prevented a
