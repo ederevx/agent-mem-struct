@@ -6,7 +6,8 @@ materializes every required counterpart (active leaf, paired log, nodes
 index, group scaffolding), and returns the exact conflicts the agent must
 fix before re-calling. A mutation that lands under the declared shared root
 is then committed and pushed by `rm_commit.CommitPublisher` under the
-`commit_message` the agent wrote, which the tool never composes or edits; a
+`commit_message` the agent wrote, which the tool never composes or edits but
+checks against the mechanical convention before committing; a
 mutation in the agent's own tree is only written. A publish then attests the
 shared worktree it committed through `rm_verify.PublishAttestation` and puts
 its report lines in the same result, so the agent need not re-verify the
@@ -163,7 +164,7 @@ class MemoryUpdater:
                     ) if part
                 ),
             )
-        publisher = CommitPublisher(shared)
+        publisher = CommitPublisher(shared, agent=self.state.agent)
         outcome = publisher.publish(written, self.commit_message(request))
         if outcome.conflict is not None:
             conflict = outcome.conflict
@@ -282,11 +283,45 @@ class MemoryUpdater:
         text = str(request.get("text") or "")
         if not text.strip():
             return self.conflict("log", "bad-request", "`text` is required.")
+        summary = str(request.get("summary") or "").strip()
+        for field, value in (("text", text), ("summary", summary)):
+            conflict = self.non_ascii_conflict("log", field, value)
+            if conflict is not None:
+                return conflict
         log = leaf.parent / "log" / leaf.name
         if not log.exists():
             return self.log_conflict("log", leaf)
-        self.append_log(log, text.rstrip() + "\n", str(request.get("summary") or "").strip())
+        self.append_log(log, text.rstrip() + "\n", summary)
         return self.ok("log", changed=[str(log)])
+
+    def non_ascii_conflict(
+        self, operation: str, field: str, text: str
+    ) -> UpdateResult | None:
+        """A conflict for non-ASCII text, or None when it is all ASCII.
+
+        `log` history must stay ASCII. The conflict names the first five
+        offending characters by line, column, and code point, so the agent can
+        replace them and re-call; nothing is written on failure.
+        """
+        offenders: list[tuple[int, int, str]] = []
+        for number, line in enumerate(text.split("\n"), start=1):
+            for column, char in enumerate(line, start=1):
+                if ord(char) > 127:
+                    offenders.append((number, column, char))
+        if not offenders:
+            return None
+        limit = 5
+        described = ", ".join(
+            f"line {number} col {column} U+{ord(char):04X} ({char!r})"
+            for number, column, char in offenders[:limit]
+        )
+        extra = f" (+{len(offenders) - limit} more)" if len(offenders) > limit else ""
+        return self.conflict(
+            operation,
+            "non-ascii",
+            f"`{field}` must be ASCII: {described}{extra}.",
+            fix="replace each with ASCII (`-`, `->`, `...`) and re-call",
+        )
 
     def op_commit(self, request: dict[str, Any]) -> UpdateResult:
         """Publish leaves the agent edited by hand, logging what they displaced.
@@ -377,7 +412,9 @@ class MemoryUpdater:
         notes: list[str] = []
         verified: list[str] = []
         for root, group in groups.items():
-            outcome = CommitPublisher(Path(root)).publish(group, message)
+            outcome = CommitPublisher(
+                Path(root), agent=self.state.agent
+            ).publish(group, message)
             if outcome.conflict is not None:
                 conflict = outcome.conflict
                 return self.conflict(

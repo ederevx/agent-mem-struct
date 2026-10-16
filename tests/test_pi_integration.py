@@ -32,6 +32,13 @@ SCRATCH_ROOT = Path(
         str(Path.home() / "tmp" / "agent-mem-struct-tests"),
     )
 )
+# The session-start leftovers report scans the scratch root, so keep the suite
+# off the shared ~/tmp: an empty owned root keeps the pointer tests exact and
+# lets an individual test point AMS_SCRATCH_ROOT at its own tree.
+SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+os.environ["AMS_SCRATCH_ROOT"] = tempfile.mkdtemp(
+    prefix="ams-hook-scratch-", dir=SCRATCH_ROOT
+)
 
 
 def make_shared(path: Path) -> Path:
@@ -1658,11 +1665,9 @@ class MemoryUpdateCommitTests(unittest.TestCase):
 
     def test_the_message_is_committed_exactly_as_written(self) -> None:
         written = (
-            "subject with a very long unbroken run of words that the tool must not rewrap at "
-            "eighty columns\n"
+            "subject stays within the column bound\n"
             "\n"
-            "Body line one.\n"
-            "Body line two.\n"
+            "See https://example.com/" + "a" * 100 + " for the detail.\n"
             "\n"
             "Assisted-by: some-other-agent:model\n"
             "Signed-off-by: Someone Else <other@example.com>"
@@ -1738,6 +1743,91 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         })
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("not Git-backed", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
+
+
+class AsciiLogTests(unittest.TestCase):
+    """`memory_update log`: history text must stay ASCII."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-ascii-", dir=SCRATCH_ROOT))
+        self.origin = self.temp / "origin.git"
+        self.shared = make_git_shared(self.origin, self.temp / "git shared")
+        self.home, _ = make_home(self.temp / "git-home", self.shared)
+        self.leaf = self.shared / "nodes" / "note.md"
+        self.log = self.shared / "nodes" / "log" / "note.md"
+
+    def call(self, **fields: object) -> subprocess.CompletedProcess[str]:
+        event: dict[str, object] = {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        }
+        event.update(fields)
+        return invoke_pi(self.home, event)
+
+    def text(self, result: subprocess.CompletedProcess[str]) -> str:
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def create_note(self, body: str = "first") -> None:
+        result = self.call(
+            operation="create", path=str(self.shared), name="note", body=body,
+            summary="Note.", commit_message=NOTE_MESSAGE,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def head(self) -> str:
+        return git_run("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+
+    def test_an_em_dash_in_log_text_is_a_non_ascii_conflict(self) -> None:
+        self.create_note()
+        before_log = self.log.read_bytes()
+        before_head = self.head()
+        result = self.call(
+            operation="log", path=str(self.leaf), text="an earlier \u2014 attempt"
+        )
+        self.assertEqual(result.returncode, 3)
+        body = self.text(result)
+        self.assertIn("non-ascii", body)
+        self.assertIn("U+2014", body)
+        self.assertEqual(self.log.read_bytes(), before_log)
+        self.assertEqual(self.head(), before_head)
+
+    def test_a_non_ascii_summary_is_a_conflict(self) -> None:
+        self.create_note()
+        result = self.call(
+            operation="log", path=str(self.leaf), text="plain ascii",
+            summary="dash \u2014",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("non-ascii", self.text(result))
+
+    def test_a_pure_ascii_log_succeeds(self) -> None:
+        self.create_note()
+        result = self.call(
+            operation="log", path=str(self.leaf), text="plain ascii -> fine",
+            summary="attempt", commit_message="log: note\n\nAdds history.",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("plain ascii -> fine", self.log.read_text(encoding="utf-8"))
+
+    def test_a_non_ascii_set_body_keeps_utf8(self) -> None:
+        self.create_note()
+        result = self.call(
+            operation="set", path=str(self.leaf), body="dash \u2014 kept"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("\u2014", self.leaf.read_text(encoding="utf-8"))
+
+    def test_line_and_column_are_reported(self) -> None:
+        self.create_note()
+        result = self.call(
+            operation="log", path=str(self.leaf), text="first line\nabcd\u2014tail"
+        )
+        self.assertEqual(result.returncode, 3)
+        body = self.text(result)
+        self.assertIn("line 2 col 5", body)
+        self.assertIn("U+2014", body)
 
 
 class MemoryUpdateCommitOpTests(unittest.TestCase):

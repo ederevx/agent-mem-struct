@@ -4,6 +4,53 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-15T23:26:00-04:00 - make rule 9 consistent about who lands main
+
+Rule 9 ordered the agent to reconcile stale branches into `main` itself, then
+forbade it from pushing to or merging into `main` - a self-contradiction that
+also conflicted with the shared rule reserving this protocol repository's
+`main` for the user. Rule 9 now states plainly that the agent opens a pull
+request and the user lands it, and that a change is done only after the merge,
+the next `v1.x` tag on the merged `main` HEAD, and a reinstall from that tag.
+Rule-only change; no memory-tree migration (see MIGRATION.md).
+
+## 2026-10-15T23:24:00-04:00 - report leftovers at session start
+
+Work left behind by an earlier session - local-only commits no remote carries,
+and stale scratch directories - was invisible to the next one. The hook now
+appends a read-only leftovers report at a non-compaction session start, built
+from a private ledger of the repository top levels an agent's history-changing
+git commands touched and from the stale immediate children of the scratch
+root. It only reports: resolving an item stays with the agent and the user,
+and another agent's directory is never touched. This changes only the hook
+layer. It does not change the memory tree or canonical operational rules, so
+no `Structure-Version` migration is required.
+
+## 2026-10-15T23:22:00-04:00 - keep memory_update log history ASCII
+
+`memory_update log` appended whatever text it was given, so a Unicode dash
+could enter a history file that the convention requires to stay ASCII.
+`MemoryUpdater.non_ascii_conflict` now refuses a `log` whose text or summary
+carries a non-ASCII character, naming the first five by line, column, and code
+point, and writes nothing. A `set` body still keeps its UTF-8, because the Pi
+bridge carries it intact. This changes only the hook layer. It does not change
+the memory tree or canonical operational rules, so no `Structure-Version`
+migration is required.
+
+## 2026-10-15T23:20:00-04:00 - lint commit messages mechanically
+
+The commit-message convention lived only in prose, so nothing prevented a
+pushed message with a broken trailer block, a broken column limit, or an
+`Assisted-by:` model that did not match the running session. `rm_lint` now
+owns those mechanical checks: `rm_commit.CommitPublisher` refuses a memory
+commit that breaks them before creating it, and the PreToolUse gate refuses a
+shell `git push` whose commits would break them. A push that cannot be
+resolved, times out, or exceeds the commit cap is allowed with a
+`push not fully linted` note instead of denied. The `rm_verify` re-check stays
+advisory. This changes only the hook layer. It does not change the memory tree
+or canonical operational rules, so no `Structure-Version` migration is
+required.
+
 ## 2026-10-07T19:32:00-04:00 - remind Pi of memory and conventions after compaction
 
 The Pi bridge left the post-compaction pointer to the next

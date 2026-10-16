@@ -27,6 +27,21 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-10-15T23:26:00-04:00 — make rule 9 consistent about who lands main
+
+No memory-tree content migration is required: this entry changes only
+`RULES.md` rule 9. Rule 9 previously told the agent to reconcile stale branches
+into `main` itself and then told it never to push to or merge into `main`; it
+now says the user lands `main` and the agent opens a pull request.
+
+1. Read `RULES.md` rule 9 and confirm it matches the canonical text. No
+   memory file, log, node, attachment, or convention is rewritten.
+2. Confirm no stale branch still carries unmerged value. Carry anything worth
+   keeping into a pull request before dropping the branch; never push to or
+   merge into `main` yourself.
+3. Advance only this agent's root `Structure-Version:` marker to
+   `2026-10-15T23:26:00-04:00`.
+
 ## 2026-09-13T11:45:07-04:00 — manage root documents and declare shared memory
 
 This revision changes each agent's root control/index, but no scoped local or

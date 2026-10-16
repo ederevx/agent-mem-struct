@@ -66,15 +66,13 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
    or current memory.
 
 9. **Keep this checkout current.** This is convention, not a hook-enforced
-   gate. Confirm this checkout sits on the latest `v1.x` tag reachable
-   from `origin/main`, and check for stale branches against `origin/main`;
-   reconcile anything with unmerged value into `main` first, then drop the
-   stale branch. Never push to or merge directly into `main` yourself —
-   reconcile through a PR and let the user land it. Iterating may happen in
-   an isolated test checkout that isn't the one actually installed; that
-   never counts as done on its own — land it on `main`, cut the next
-   `v1.x` tag on the merged HEAD, and reinstall the actual host(s)
-   from that tag before relying on the change.
+   gate. Confirm this checkout sits on the latest `v1.x` tag reachable from
+   `origin/main`, and check for stale branches against `origin/main`; carry
+   anything with unmerged value into a PR, then drop the stale branch. Never
+   push to or merge into `main` yourself: open a PR and let the user land it.
+   A change is done only after the user merges it, the next `v1.x` tag is cut
+   on the merged `main` HEAD, and the actual host(s) are reinstalled from that
+   tag; an isolated test checkout never counts on its own.
 
 ---
 

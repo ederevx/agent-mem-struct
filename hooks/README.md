@@ -63,6 +63,12 @@ The shared hook `root-memory-context.py`:
     compaction at the compact-sourced session start; and
 16. deletes a checkpoint after successful restoration and scavenges
     crash-orphaned checkpoints after seven days.
+17. refuses a memory commit or a shell `git push` whose commit message breaks
+    the mechanical convention, and reports a message-shape deviation in the
+    publish attestation only as advice.
+18. appends a read-only leftovers report at a non-compaction session start:
+    the local-only commits of repositories this agent touched, plus stale
+    immediate children of the scratch root.
 
 The runtime hook creates no documents. The installer manages only the two root
 `RULES.md` and `STRUCTURE.md` copies described above; it does not add another
@@ -257,7 +263,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
   mechanical, and supports create, set, log, rename, retire, requires,
-  attach, detach, and commit. `commit` pairs with the built-in `edit` tool for
+  attach, detach, and commit. `log` accepts ASCII history only: a non-ASCII
+  character returns a `non-ascii` conflict naming up to five offending
+  characters by line, column, and code point, and writes nothing. `commit`
+  pairs with the built-in `edit` tool for
   content while the tool keeps commit ownership: it publishes edits you made
   to memory files and requires `commit_message` (a missing one gives
   `bad-request`). Its `path` is optional and names the edited active `.md`
@@ -269,8 +278,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   declared shared root is then committed and pushed by
   `rm_commit.CommitPublisher`, which stages only the
   paths the mutation wrote, commits the supplied `commit_message` exactly as
-  written (it never composes, wraps, or annotates one, and leaves the paths
-  uncommitted when none is given), replays its commit onto a racing shared
+  written (it never composes, wraps, or annotates one, but it checks it
+  against the mechanical convention and returns a `message-lint` conflict,
+  creating no commit, when it breaks it; it leaves the paths uncommitted when
+  none is given), replays its commit onto a racing shared
   tip, and never force-pushes; without a remote or an upstream it commits
   locally and says so. Every git invocation goes through `rm_git.GitWorktree`.
   A `commit` whose target set is already clean is a no-op, not a failure: it
@@ -278,7 +289,7 @@ The bridge maps Pi events onto the hook's event vocabulary:
   resolves a conflict itself: `control-invalid`, `stale-protocol`,
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
-  `exists`, and `bad-request`
+  `exists`, `message-lint`, `non-ascii`, and `bad-request`
   come back as a conflict report for the agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`
@@ -288,12 +299,36 @@ The bridge maps Pi events onto the hook's event vocabulary:
   the appended lines, and the message shape. A durability failure
   (`unverified-dirty`, `unverified-unpushed`, `unverified-log`) comes back as
   a conflict the agent must fix before the turn ends, because the memory is
-  then not durably published. Message-shape deviations are advisory
-  `attention:` lines rather than failures, since the tool assumes no
-  convention about the agent's own message. The check is read-only and goes
+  then not durably published. The mechanical convention is enforced before
+  the commit; this re-check stays advisory, reporting a deviation as
+  `attention:` lines rather than failing the publish. The check is read-only and goes
   through `rm_git.GitWorktree`; `rm_verify` never stages, commits, or writes.
   A subagent-attributed `MemoryUpdate` event is refused in the hook,
   independent of the PreToolUse gate.
+- A shell `git push` tool call in a recognized form is linted on every host
+  before it runs.
+  `MutationScanner.git_push_invocation` resolves the repository and refspecs
+  from a plain `git push`, `git -C DIR push`, or a leading `cd DIR &&`, and
+  `rm_lint.PushLint` reads the commits the push would publish with one
+  `git log <sources> --not --remotes=<remote>`, linting only commits whose
+  author email equals the local `user.email`. A violating commit denies the
+  call with `message-lint: push blocked: <sha12> <subject>: <violation>; ...`;
+  a push that cannot be resolved, times out, or would publish more than 200
+  commits is allowed with a `push not fully linted` note instead. A push made
+  inside a script the agent runs is not a `git push` tool call and is not
+  detected.
+- At a session start whose source is not `compact` (on Pi that is the
+  first-turn `before_agent_start`), the hook appends a read-only leftovers
+  report. `rm_ledger.RepoLedger` remembers each repository top level an
+  allowed history-changing git command touched in a private `0700` state file
+  (`touched-repos.json`, at most 50 entries, expiring after 14 days), and
+  `rm_leftovers.LeftoverReport` lists each remembered repository's local-only
+  commits (`git rev-list --branches --not --remotes`, up to three
+  `sha12 subject` samples) and the immediate children of `AMS_SCRATCH_ROOT`
+  (default `~/tmp`) older than 24 hours, pruning clean or missing
+  repositories. It is report only, bounded to two seconds, and writes nothing
+  except pruning its own ledger; an unfinished scan adds a
+  `leftover check incomplete` line.
 - `session_before_compact` drives `PreCompact` with the session entries passed
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an

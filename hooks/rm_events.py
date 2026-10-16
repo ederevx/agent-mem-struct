@@ -1,7 +1,9 @@
 """Lifecycle event handling for the root-memory hook.
 
-One owner for the per-event behaviors: context emission, compaction gating,
-the PreToolUse memory-mutation gate, and turn-completion enforcement. The
+One owner for the per-event behaviors: context emission, the session-start
+leftovers report, compaction gating, the PreToolUse memory-mutation and push
+gates, the private touched-repository ledger, and turn-completion
+enforcement. The
 dispatcher composes the root control snapshot, the convention gate, and the
 checkpoint store; it owns no persistent state of its own.
 """
@@ -16,6 +18,9 @@ from typing import Any
 from rm_checkpoints import CheckpointStore
 from rm_control import RootState, RootControl
 from rm_git import GitWorktree
+from rm_ledger import RepoLedger
+from rm_leftovers import LeftoverReport
+from rm_lint import PushLint
 from rm_receipts import ConventionGate
 from rm_scan import PATCH_HEADER_RE, MutationScanner
 from rm_support import under
@@ -92,6 +97,15 @@ class EventDispatcher:
         else:
             context = self.control.catalog_text(state)
         context = self.continuity_context(state, checkpoint, base=context)
+        if event_name == "SessionStart" and event.get("source") != "compact":
+            # Read-only advice: a failure to read or prune the ledger must never
+            # cost the session its pointer context.
+            try:
+                leftovers = LeftoverReport().text(RepoLedger(state))
+            except OSError:
+                leftovers = ""
+            if leftovers:
+                context += "\n\n" + leftovers
         if after_compaction and checkpoint is None:
             context += (
                 "\n\nCONTINUITY WARNING: no pre-compaction checkpoint was available for this session. "
@@ -308,21 +322,73 @@ class EventDispatcher:
             self.deny_pretool(reason, context=True)
             return
 
-        if state.stale:
-            json.dump(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "additionalContext": (
-                            f"Memory protocol is stale ({state.applied} -> {state.canonical}). "
-                            f"The authoritative RULES.md requires applying {state.migration} before ordinary memory work. "
-                            "If this tool call is part of that migration, continue according to MIGRATION.md; otherwise migrate first."
-                        ),
-                    }
-                },
-                sys.stdout,
-                separators=(",", ":"),
-            )
+        denied, push_note = self.lint_push(event, tool_input)
+        if denied:
+            return
+        self.record_repos(state, event, tool_input)
+        notices: list[str] = []
+        if push_note:
+            notices.append(f"push not fully linted: {push_note}")
+        stale = self.stale_notice(state)
+        if stale:
+            notices.append(stale)
+        if notices:
+            self.emit_hook_context("PreToolUse", "\n\n".join(notices))
+
+    def stale_notice(self, state: RootState) -> str:
+        """The migrate-first warning for a stale structure, or an empty string."""
+        if not state.stale:
+            return ""
+        return (
+            f"Memory protocol is stale ({state.applied} -> {state.canonical}). "
+            f"The authoritative RULES.md requires applying {state.migration} before ordinary memory work. "
+            "If this tool call is part of that migration, continue according to MIGRATION.md; otherwise migrate first."
+        )
+
+    def lint_push(
+        self, event: dict[str, Any], tool_input: dict[str, Any]
+    ) -> tuple[bool, str]:
+        """Run the push gate: whether the call must stop, and any lint gap.
+
+        A commit the push would publish that breaks the mechanical message
+        convention denies the call; a push that cannot be fully linted is
+        allowed, with the reason returned for the caller to surface.
+        """
+        cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+        tool_name = str(event.get("tool_name") or "")
+        incomplete = ""
+        for command in MutationScanner.shell_commands(tool_name, tool_input):
+            invocation = MutationScanner.git_push_invocation(command, cwd)
+            if invocation is None:
+                continue
+            repo, remote, sources = invocation
+            report = PushLint(repo, agent=self.agent).check(remote, sources)
+            if report.blocked:
+                self.deny_pretool(
+                    "message-lint: push blocked: "
+                    + "; ".join(report.blocked)
+                    + " (fix: reword with one -F payload, re-lint, push again)"
+                )
+                return True, ""
+            incomplete = incomplete or report.incomplete
+        return False, incomplete
+
+    def record_repos(
+        self, state: RootState, event: dict[str, Any], tool_input: dict[str, Any]
+    ) -> None:
+        """Note the repository top level of each allowed history-changing call."""
+        cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+        tool_name = str(event.get("tool_name") or "")
+        ledger = RepoLedger(state)
+        for command in MutationScanner.shell_commands(tool_name, tool_input):
+            for repo in MutationScanner.git_repo_invocations(command, cwd):
+                top = GitWorktree(repo).toplevel()
+                if top is None:
+                    continue
+                try:
+                    ledger.record(top)
+                except OSError:
+                    return
 
     def handle_stop(self, event: dict[str, Any], state: RootState) -> None:
         # Both hosts set this flag when re-entering Stop/SubagentStop after a hook
