@@ -130,9 +130,17 @@ class EventDispatcher:
         return text
 
     def pull_shared(self, state: RootState) -> tuple[bool, str]:
-        """Fast-forward the declared shared worktree; report verified success."""
+        """Fast-forward the declared shared worktree; report verified success.
+
+        The upstream is named explicitly, so a `branch.<name>.merge` the
+        environment adds cannot turn the pull into a multi-head one and make
+        `--ff-only` refuse.
+        """
         worktree = GitWorktree(state.shared_resolved)
-        completed = worktree.run("pull", "--ff-only", budget=GIT_PULL_TIMEOUT)
+        target = worktree.upstream()
+        completed = worktree.run(
+            "pull", "--ff-only", *(target or ()), budget=GIT_PULL_TIMEOUT
+        )
         if completed.returncode == 0:
             return True, ""
         return False, worktree.detail(completed)
