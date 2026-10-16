@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-15T23:26:00-04:00 - make rule 9 consistent about who lands main
+
+Rule 9 ordered the agent to reconcile stale branches into `main` itself, then
+forbade it from pushing to or merging into `main` - a self-contradiction that
+also conflicted with the shared rule reserving this protocol repository's
+`main` for the user. Rule 9 now states plainly that the agent opens a pull
+request and the user lands it, and that a change is done only after the merge,
+the next `v1.x` tag on the merged `main` HEAD, and a reinstall from that tag.
+Rule-only change; no memory-tree migration (see MIGRATION.md).
+
 ## 2026-10-15T23:24:00-04:00 - report leftovers at session start
 
 Work left behind by an earlier session - local-only commits no remote carries,
