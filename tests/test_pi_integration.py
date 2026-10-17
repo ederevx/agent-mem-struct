@@ -911,6 +911,26 @@ class PiStructureListerTests(unittest.TestCase):
         self.assertEqual(allowed.stdout, "")
         self.assertEqual(self.write_output(session, turn), "")
 
+    def test_rm_tree_exec_credits_the_structure_read(self) -> None:
+        for index, command in enumerate((
+            self.lister("--list", str(self.shared)),
+            self.lister("--list", "--", str(self.shared)),
+        )):
+            with self.subTest(command=command):
+                session, turn = f"pi-lister-exec-{index}", f"turn-{index}"
+                self.acknowledge(session, turn)
+                allowed = record_tree_pi(
+                    self.home,
+                    self.shared,
+                    session=session,
+                    turn=turn,
+                    command=command,
+                    tool_name="rm_tree_exec",
+                )
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
+                self.assertEqual(allowed.stdout, "")
+                self.assertEqual(self.write_output(session, turn), "")
+
     def test_untrusted_lister_forms_are_gated_and_record_nothing(self) -> None:
         for index, command in enumerate(
             (
@@ -1047,6 +1067,7 @@ class PiInstallerTests(unittest.TestCase):
         content_bytes = extension.read_bytes()
         content = content_bytes.decode("utf-8")
         self.assertNotIn("__AMS_", content)
+        self.assertIn('name: "rm_tree_exec"', content)
         # The bridge bakes paths in a JS-safe (forward-slash) spelling on
         # every host; compare against that form, not the native one.
         self.assertIn(js_safe(str(HOOK)), content)
@@ -1206,7 +1227,9 @@ class PiPackageTests(unittest.TestCase):
         self.assertEqual(compiled.returncode, 0, compiled.stderr)
         return out
 
-    def run_driver(self, bundle: Path, mode: str, env: dict[str, str]) -> dict:
+    def run_driver(
+        self, bundle: Path, mode: str, env: dict[str, str], argv: list[str] | None = None
+    ) -> dict:
         stub = self.temp / "stub_hook.py"
         stub.write_text(
             "import json, sys\n"
@@ -1222,9 +1245,10 @@ class PiPackageTests(unittest.TestCase):
             "const mode = process.argv[3];\n"
             "const handlers = {};\n"
             "const tools = [];\n"
+            "const defs = {};\n"
             "const sent = [];\n"
             "const pi = { on: (n, f) => { handlers[n] = f; },\n"
-            "  registerTool: (t) => tools.push(t.name),\n"
+            "  registerTool: (t) => { tools.push(t.name); defs[t.name] = t; },\n"
             "  sendMessage: (message, options) => sent.push({ message, options }),\n"
             "  sessionManager: { getSessionId: () => 's1' } };\n"
             "if (mode === 'paths') {\n"
@@ -1241,6 +1265,13 @@ class PiPackageTests(unittest.TestCase):
             "    await handlers['session_compact']({});\n"
             "    process.stdout.write(JSON.stringify({\n"
             "      registered: Object.keys(handlers).sort(), tools: tools.sort(), sent }));\n"
+            "  } else if (mode === 'lister') {\n"
+            "    const results = [];\n"
+            "    for (const item of JSON.parse(process.argv[4])) {\n"
+            "      results.push(await defs.rm_tree_exec.execute('id',\n"
+            "        { command: item.command }, undefined, undefined, { cwd: item.cwd }));\n"
+            "    }\n"
+            "    process.stdout.write(JSON.stringify(results));\n"
             "  } else {\n"
             "    process.stdout.write(JSON.stringify({ registered: Object.keys(handlers), tools: tools.sort() }));\n"
             "  }\n"
@@ -1250,13 +1281,13 @@ class PiPackageTests(unittest.TestCase):
         full_env = dict(os.environ)
         full_env.update({
             "AMS_PYTHON": sys.executable,
-            "AMS_HOOK": str(stub),
+            "AMS_HOOK": env.get("hook", str(stub)),
             "AMS_MEMORY_HOME": env.get("memory_home", str(self.temp / "memory")),
             "AMS_CONFIG_HOME": env["config_home"],
             "AMS_CANONICAL_ROOT": str(REPO),
         })
         run = subprocess.run(
-            [shutil.which("node") or "node", str(driver), str(bundle), mode],
+            [shutil.which("node") or "node", str(driver), str(bundle), mode, *(argv or [])],
             capture_output=True, text=True, check=False, env=full_env,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -1297,6 +1328,7 @@ class PiPackageTests(unittest.TestCase):
         self.install_sync_stub(sentinel)
         result = self.run_driver(bundle, "guard", {"config_home": str(config_home)})
         self.assertEqual(result["registered"], [], "the package entry must not double-register")
+        self.assertEqual(result["tools"], [], "the managed copy owns the tool registration")
         self.assertFalse(sentinel.exists(), "a managed copy must keep the package from syncing")
 
     def install_sync_stub(self, sentinel: Path) -> None:
@@ -1330,6 +1362,7 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("session_compact", result["registered"])
         self.assertIn("pre_memory", result["tools"])
         self.assertIn("memory_update", result["tools"])
+        self.assertIn("rm_tree_exec", result["tools"])
         self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
 
     def test_session_compact_injects_the_memory_pointer_immediately(self) -> None:
@@ -1353,6 +1386,76 @@ class PiPackageTests(unittest.TestCase):
             "python": "P", "hook": "H", "memoryHome": "M",
             "configHome": "C", "canonicalRoot": "R",
         })
+
+    def lister_command(self, *operands: str) -> str:
+        """The lister line, quoting any operand a shell would split."""
+        parts = [f'"{sys.executable}"', f'"{REPO / "hooks" / "rm_tree.py"}"']
+        parts.extend(f'"{operand}"' if " " in operand else operand for operand in operands)
+        return " ".join(parts)
+
+    def run_lister(self, bundle: Path, commands: list[str], cwd: Path) -> list[dict]:
+        config_home = self.temp / "pi-home-lister"
+        config_home.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            [{"command": command, "cwd": str(cwd)} for command in commands]
+        )
+        return self.run_driver(
+            bundle,
+            "lister",
+            {
+                "config_home": str(config_home),
+                "hook": str(HOOK),
+                "memory_home": str(self.temp / "memory-lister"),
+            },
+            argv=[payload],
+        )
+
+    def test_lister_tool_runs_the_canonical_invocation(self) -> None:
+        bundle = self.bundle()
+        shared = make_shared(self.temp / "shared dir")
+        accepted = [
+            self.lister_command("--list", str(shared)),
+            self.lister_command("--list", "--", str(shared)),
+        ]
+        results = self.run_lister(bundle, accepted, cwd=self.temp)
+        for command, result in zip(accepted, results):
+            with self.subTest(command=command):
+                self.assertNotEqual(result.get("isError"), True, result)
+                self.assertIn("MEMORY.md", result["content"][0]["text"])
+
+    def test_lister_tool_resolves_a_relative_lister_against_cwd(self) -> None:
+        bundle = self.bundle()
+        shared = make_shared(self.temp / "shared")
+        command = f'"{sys.executable}" "hooks/rm_tree.py" --list "{shared}"'
+        result = self.run_lister(bundle, [command], cwd=REPO)[0]
+        self.assertNotEqual(result.get("isError"), True, result)
+        self.assertIn("MEMORY.md", result["content"][0]["text"])
+
+    def test_lister_tool_refuses_anything_else(self) -> None:
+        bundle = self.bundle()
+        shared = make_shared(self.temp / "shared")
+        lister = REPO / "hooks" / "rm_tree.py"
+        copy = self.temp / "rm_tree.py"
+        shutil.copyfile(lister, copy)
+        canonical = self.lister_command("--list", str(shared))
+        refused = [
+            canonical + " | head",
+            canonical + "; rm x",
+            canonical + " && x",
+            canonical + " $(x)",
+            canonical + " `x`",
+            canonical + " > f",
+            self.lister_command("--list"),
+            self.lister_command(str(shared), str(self.temp)),
+            self.lister_command("--depth", "2", str(shared)),
+            f'bash "{lister}" --list "{shared}"',
+            f'"{sys.executable}" "{copy}" --list "{shared}"',
+        ]
+        results = self.run_lister(bundle, refused, cwd=self.temp)
+        for command, result in zip(refused, results):
+            with self.subTest(command=command):
+                self.assertEqual(result.get("isError"), True, command)
+                self.assertIn("rm_tree_exec accepts exactly", result["content"][0]["text"])
 
     def output(self, result: subprocess.CompletedProcess[str]) -> dict:
         return json.loads(result.stdout)
