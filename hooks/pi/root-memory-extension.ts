@@ -26,8 +26,11 @@
 //      createRootMemoryBridge() and supplies paths resolved at load time. That
 //      entry stands down when the managed copy is present, so the bridge never
 //      registers twice (separate module roots defeat pi's own dedup).
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, delimiter, dirname, join, resolve as resolvePath } from "node:path";
 
 import { Type } from "typebox";
 
@@ -42,6 +45,9 @@ const PRECOMPACT_TIMEOUT_MS = 120000;
 const PREMEMORY_TIMEOUT_MS = 30000;
 const MEMORYUPDATE_TIMEOUT_MS = 30000;
 const MAX_INLINE_ENTRIES = 150;
+const LISTER_TIMEOUT_MS = 30000;
+const INTERPRETER_NAME_RE = /^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$/i;
+const INTERPRETER_FLAGS = new Set(["-I", "-B", "-E", "-S", "-u"]);
 
 /** Decodes collected output chunks in one pass; decoding per chunk would
  *  split a multi-byte UTF-8 sequence at a stream buffer boundary and corrupt
@@ -77,6 +83,122 @@ interface HookResult {
 	stderr: string;
 }
 
+/** The one `rm_tree.py` invocation form the PreToolUse gate credits
+ *  (`MutationScanner.lister_invocation` in hooks/rm_scan.py). The bridge runs
+ *  the shim's own interpreter, never the model's token, and refuses anything
+ *  else before it runs, so a successful `rm_tree_exec` always means the gate
+ *  recorded the shared-structure read. */
+export class ListerCommand {
+	constructor(readonly lister: string) {}
+
+	/** The gate's `QUOTED_TOKEN_RE` split, kept byte-for-byte. */
+	private static tokens(text: string): string[] {
+		const out: string[] = [];
+		const re = /'([^']*)'|"([^"]*)"|(\S+)/g;
+		for (let match = re.exec(text); match; match = re.exec(text)) {
+			out.push(match[1] ?? match[2] ?? match[3]);
+		}
+		return out;
+	}
+
+	private static same(left: string, right: string): boolean {
+		try {
+			const a = realpathSync.native(left);
+			const b = realpathSync.native(right);
+			return process.platform === "win32"
+				? a.toLowerCase() === b.toLowerCase()
+				: a === b;
+		} catch {
+			return false;
+		}
+	}
+
+	/** The gate's `_interpreter_available`: a path token must be an executable
+	 *  file, a bare name must resolve on PATH. */
+	private static interpreterAvailable(token: string, cwd: string): boolean {
+		const executable = (path: string): boolean => {
+			try {
+				return statSync(path).isFile();
+			} catch {
+				return false;
+			}
+		};
+		if (token.includes("/") || token.includes("\\") || /^[A-Za-z]:/.test(token)) {
+			const candidate = resolvePath(cwd, token);
+			try {
+				accessSync(candidate, constants.X_OK);
+				return executable(candidate);
+			} catch {
+				return false;
+			}
+		}
+		const extensions = process.platform === "win32"
+			? (process.env.PATHEXT ?? ".EXE").split(";")
+			: [""];
+		return (process.env.PATH ?? "").split(delimiter).some((directory) =>
+			extensions.some((extension) => {
+				const candidate = join(directory, token + extension);
+				try {
+					accessSync(candidate, constants.X_OK);
+					return executable(candidate);
+				} catch {
+					return false;
+				}
+			}));
+	}
+
+	/** The gate's `path_from_string` for the one root operand: strip quotes,
+	 *  reject a blank or multi-line value, expand `~` and environment
+	 *  variables, then resolve against the call's working directory. */
+	private static rootPath(value: string, cwd: string): string | null {
+		let text = value.trim().replace(/^['"]+|['"]+$/g, "");
+		if (!text || text.includes("\n") || text.length > 4096) return null;
+		text = text.replace(/^~(?=$|[\\/])/, homedir());
+		text = text.replace(/\$\{(\w+)\}|\$(\w+)/g, (whole, braced, bare) =>
+			process.env[braced ?? bare] ?? whole);
+		return resolvePath(cwd, text);
+	}
+
+	/** The accepted form, shown when a call is refused. */
+	usage(): string {
+		return `rm_tree_exec accepts exactly: python3 "${this.lister}" --list <shared-root>`;
+	}
+
+	/** The resolved shared root, or null when the line is not one plain call. */
+	parse(command: string, cwd: string): string | null {
+		if (/[|<>`]|\$\(|\n|\r|&/.test(command)) return null;
+		const words = ListerCommand.tokens(command);
+		const interpreter = basename(words[0] ?? "");
+		if (!INTERPRETER_NAME_RE.test(interpreter)) return null;
+		if (!ListerCommand.interpreterAvailable(words[0] ?? "", cwd)) return null;
+		let index = 1;
+		while (index < words.length && INTERPRETER_FLAGS.has(words[index])) index += 1;
+		if (/^py(?:\.exe)?$/i.test(interpreter) && /^-\d(?:\.\d+)?$/.test(words[index] ?? "")) {
+			index += 1;
+		}
+		const script = words[index];
+		index += 1;
+		if (!script || !ListerCommand.same(resolvePath(cwd, script), this.lister)) return null;
+		let root: string | null = null;
+		while (index < words.length) {
+			const word = words[index];
+			index += 1;
+			if (word === "--list") continue;
+			if (word === "--") {
+				if (index < words.length && root === null) {
+					root = words[index];
+					index += 1;
+				}
+				continue;
+			}
+			if (word.startsWith("-") || root !== null) return null;
+			root = word;
+		}
+		if (root === null) return null;
+		return ListerCommand.rootPath(root, cwd);
+	}
+}
+
 /**
  * One agent session's Pi bridge. All mutable state is instance state owned by
  * this object; the event handlers are single-responsibility methods and no
@@ -96,6 +218,7 @@ export class RootMemoryBridge {
 	register(pi: any): void {
 		this.registerPreMemoryTool(pi);
 		this.registerMemoryUpdateTool(pi);
+		this.registerListerTool(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
 			this.sessionLabel = this.sessionId(ctx);
 			// A reload reruns discovery; the next turn re-delivers the pre_memory
@@ -255,6 +378,73 @@ export class RootMemoryBridge {
 			content: [{ type: "text", text: context ?? "memory_update completed." }],
 			details: {},
 		};
+	}
+
+	/** Registers `rm_tree_exec`: the shared-structure read the convention gate
+	 *  requires, run without a shell. Its name carries "exec" and its input a
+	 *  `command` key, the two things `MutationScanner.shell_commands` needs to
+	 *  credit it, so it is the only structure read reachable before
+	 *  `pre_daemon` unlocks `bash`. */
+	private registerListerTool(pi: any): void {
+		const parser = new ListerCommand(join(dirname(this.config.hook), "rm_tree.py"));
+		pi.registerTool({
+			name: "rm_tree_exec",
+			label: "rm_tree_exec",
+			description:
+				"Run the agent-mem-struct shared-structure lister when the convention " +
+				"gate asks for `rm_tree.py --list <shared>`. `command` must be exactly " +
+				`one plain invocation: python3 "${parser.lister}" --list <shared-root>. ` +
+				"Anything else is refused before it runs.",
+			parameters: Type.Object({ command: Type.String() }),
+			annotations: { readOnlyHint: true },
+			execute: (
+				_id: string,
+				params: unknown,
+				signal?: AbortSignal,
+				_onUpdate?: unknown,
+				ctx?: any,
+			) => this.runLister(
+				parser,
+				String((params as { command?: unknown } | null)?.command ?? ""),
+				ctx?.cwd ?? process.cwd(),
+				signal,
+			),
+		});
+	}
+
+	/** Runs the lister for a validated call, or reports the accepted form. */
+	private runLister(
+		parser: ListerCommand,
+		command: string,
+		cwd: string,
+		signal?: AbortSignal,
+	): Promise<unknown> {
+		const root = parser.parse(command, cwd);
+		if (root === null) {
+			return Promise.resolve({
+				isError: true,
+				content: [{ type: "text", text: parser.usage() }],
+				details: {},
+			});
+		}
+		return new Promise((resolve) => {
+			execFile(
+				this.config.python,
+				[parser.lister, "--list", "--", root],
+				{
+					cwd,
+					timeout: LISTER_TIMEOUT_MS,
+					maxBuffer: 16 << 20,
+					windowsHide: true,
+					signal,
+				},
+				(error, stdout, stderr) => resolve({
+					isError: Boolean(error),
+					content: [{ type: "text", text: error ? `${stderr || error}` : stdout }],
+					details: {},
+				}),
+			);
+		});
 	}
 
 	private sessionId(pi: any): string {

@@ -244,7 +244,10 @@ class RootControl:
 
         lister_command = ""
         if shared_resolved is not None:
-            lister_script = self.canonical_root / "hooks" / "rm_tree.py"
+            # The PreToolUse gate credits exactly `dirname(hook)/rm_tree.py`;
+            # render the command from the same location so a model that runs
+            # the advertised line is the one the gate records.
+            lister_script = Path(__file__).resolve().parent / "rm_tree.py"
             lister_command = (
                 f'"{sys.executable}" "{lister_script}" --list "{shared_resolved}"'
             )

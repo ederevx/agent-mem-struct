@@ -4,6 +4,29 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-16T21:22:00-04:00 - ship the structure lister as the bridge's own tool
+
+A pi host with pi-daemon and agent-mem-struct installed could deadlock: the
+convention gate required a shared-structure read through a shell-named tool,
+`bash` was blocked until `pre_daemon` ran, and `pre_daemon` was itself refused
+by the gate. The workaround was a hand-installed local extension, which is not
+part of the protocol and conflicts with the bridge once both register the same
+tool name.
+
+`RootMemoryBridge` now registers `rm_tree_exec`, which runs the canonical
+`hooks/rm_tree.py --list <shared>` through the bridge's own interpreter. The
+lister path is `dirname(config.hook)/rm_tree.py` in both deployment modes, so
+the package entry and the installer-rendered copy both carry it and no local
+file is needed. The tool accepts exactly the invocation form the PreToolUse
+gate credits and refuses everything else before running, so a successful call
+always means the shared-structure read was recorded. `rm_control` now renders
+the same `dirname(hook)/rm_tree.py` path it credits, so the advertised command
+and the credited one cannot drift under a hook-root override. A host upgrading
+from an earlier version must remove the hand-installed
+`extensions/rm-tree-exec.ts` before reloading, since two extensions cannot
+register one tool name. This changes the Pi bridge and the hook layer only; no
+memory-tree migration (see MIGRATION.md).
+
 ## 2026-10-16T16:21:24-04:00 - name the shared upstream explicitly when syncing
 
 On a host whose environment injected a second `branch.<name>.merge`

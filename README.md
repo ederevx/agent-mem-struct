@@ -29,6 +29,13 @@ refresh and conflict protection, so a package-only host keeps `RULES.md` and
 `memory_update` tool, whose `commit` operation publishes edits made with the
 built-in `edit` tool and captures the displaced current state into the paired
 log.
+
+Every deployment also registers the `rm_tree_exec` tool, which runs the shipped
+`hooks/rm_tree.py` lister without a shell, so the convention gate's
+shared-structure read is reachable even when another extension gates `bash`.
+A host upgrading from an earlier version must remove a hand-installed
+`extensions/rm-tree-exec.ts` before reloading: two extensions cannot register
+the same tool name.
 On every platform, the installer deploys protected managed copies of the two
 root structural documents:
 
