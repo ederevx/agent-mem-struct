@@ -15,20 +15,29 @@ The protocol documents have distinct roles:
 The specification is designed for multiple AI coding agents that keep separate
 private memory while sharing one common-memory subtree.
 
-## Using this
+## Install
 
-Clone the repository, then run the appropriate hook installer for each agent
-(`hooks/codex/manage.py`, `hooks/claude/manage.py`, or `hooks/pi/manage.py`).
-The Pi bridge may instead be installed as a pi package
-(`pi install git:github.com/ederevx/agent-mem-struct@v1.x`); the package entry
+Clone the repository, then install the hook for each agent you run:
+
+```bash
+python3 hooks/codex/manage.py install    # Codex
+python3 hooks/claude/manage.py install   # Claude Code
+python3 hooks/pi/manage.py install       # Pi
+```
+
+The Pi bridge may instead be installed as a pi package,
+`pi install git:github.com/ederevx/agent-mem-struct@v1.35`; the package entry
 stands down while the installer-managed bridge is present. When it is the sole
 registrant it also deploys the protected root documents itself, running the
 installer's `sync-documents` action under a package-owned marker and the same
 refresh and conflict protection, so a package-only host keeps `RULES.md` and
-`STRUCTURE.md` current without the installer. That bridge registers the
-`memory_update` tool, whose `commit` operation publishes edits made with the
-built-in `edit` tool and captures the displaced current state into the paired
-log.
+`STRUCTURE.md` current without the installer.
+
+The bridge registers the `memory_update` tool, whose `commit` operation
+publishes edits made with the built-in `edit` tool and captures the displaced
+current state into the paired log. Call `pre_memory` to obtain the required
+convention sources and read them before any memory mutation; use
+`memory_update` for structural writes and publishing.
 
 Every deployment also registers the `rm_tree_exec` tool, which runs the shipped
 `hooks/rm_tree.py` lister without a shell, so the convention gate's
@@ -49,6 +58,8 @@ legacy root symlink that still points to the corresponding canonical document.
 It does not overwrite a foreign or user-edited document; resolve that conflict
 explicitly and rerun the installer.
 
+## Configure
+
 The agent's root `memory/MEMORY.md` points to `../STRUCTURE.md`, records the
 applied `Structure-Version`, and declares the real shared directory as a
 literal, unquoted `Shared: <absolute native path>`. The agent and hook validate
@@ -62,6 +73,8 @@ then read root `RULES.md` before scoped memory work.
 `RULES.md` is intentionally compact mandatory context. New rules should be
 consolidated where possible; rationale and examples belong outside the routine
 checklist.
+
+## Safety
 
 Do not create a `memory/shared` alias or copy. The `Shared:` declaration is the
 only shared-root locator. When it is missing or invalid, diagnostics may name
