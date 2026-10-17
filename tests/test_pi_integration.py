@@ -222,6 +222,114 @@ class PiHookTests(unittest.TestCase):
             "tool_input": {"path": str(target), "content": "x"},
         }
 
+    def pre_memory(self) -> None:
+        loaded = invoke_pi(self.home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
+
+    def read(self, path: Path) -> None:
+        invoke_pi(self.home, {
+            "hook_event_name": "PreToolUse",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+            "tool_name": "read",
+            "tool_input": {"path": str(path)},
+            "cwd": str(self.home),
+        })
+
+    def requires_read_leaf(self, *requires: str) -> tuple[Path, Path, Path]:
+        """A shared group leaf whose frontmatter requires a sibling guide."""
+        group = self.shared / "submemory" / "grp"
+        nodes = group / "nodes" / "port"
+        nodes.mkdir(parents=True)
+        manifest = group / "MEMORY.md"
+        manifest.write_text(
+            "# Group\n\n**Scope:** grp\n\n## Mandatory conventions\n\n(none)\n",
+            encoding="utf-8",
+        )
+        guide = nodes / "guide.md"
+        guide.write_text("# Guide\n\nPort carefully.\n", encoding="utf-8")
+        listed = "".join(f"  - {name}\n" for name in (requires or ("guide.md",)))
+        leaf = nodes / "fix.md"
+        leaf.write_text(f"---\nrequires_read:\n{listed}---\n# Fix\n", encoding="utf-8")
+        return manifest, guide, leaf
+
+    def decision(self, target: Path) -> tuple[str, str]:
+        result = invoke_pi(self.home, self.write(target))
+        if not result.stdout.strip():
+            return "allow", ""
+        body = self.output(result)["hookSpecificOutput"]
+        return body["permissionDecision"], body["permissionDecisionReason"]
+
+    def test_requires_read_leaf_is_writable_once_its_prerequisite_is_read(self) -> None:
+        manifest, guide, leaf = self.requires_read_leaf()
+        self.pre_memory()
+        read_conventions(self.home, self.shared)
+        self.read(manifest)
+        decision, reason = self.decision(leaf)
+        self.assertEqual(decision, "deny")
+        # Before the fix this was PREMEMORY_DENIAL no matter what was read.
+        self.assertNotIn("call pre_memory first", reason)
+        self.assertIn(f"- read: {guide}", reason)
+        self.read(guide)
+        self.assertEqual(self.decision(leaf), ("allow", ""))
+
+    def test_changed_prerequisite_re_requires_its_read(self) -> None:
+        manifest, guide, leaf = self.requires_read_leaf()
+        self.pre_memory()
+        read_conventions(self.home, self.shared)
+        self.read(manifest)
+        self.read(guide)
+        self.assertEqual(self.decision(leaf), ("allow", ""))
+        guide.write_text(guide.read_text(encoding="utf-8") + "Changed.\n", encoding="utf-8")
+        decision, reason = self.decision(leaf)
+        self.assertEqual(decision, "deny")
+        self.assertIn(f"- read: {guide}", reason)
+        self.read(guide)
+        self.assertEqual(self.decision(leaf), ("allow", ""))
+
+    def test_transitive_prerequisite_must_also_be_read(self) -> None:
+        manifest, guide, leaf = self.requires_read_leaf()
+        deeper = guide.parent / "deeper.md"
+        deeper.write_text("# Deeper\n", encoding="utf-8")
+        guide.write_text("---\nrequires_read:\n  - deeper.md\n---\n# Guide\n", encoding="utf-8")
+        self.pre_memory()
+        read_conventions(self.home, self.shared)
+        self.read(manifest)
+        self.read(guide)
+        decision, reason = self.decision(leaf)
+        self.assertEqual(decision, "deny")
+        self.assertIn(f"- read: {deeper}", reason)
+        self.read(deeper)
+        self.assertEqual(self.decision(leaf), ("allow", ""))
+
+    def test_reading_everything_without_pre_memory_still_denies(self) -> None:
+        manifest, guide, leaf = self.requires_read_leaf()
+        read_conventions(self.home, self.shared)
+        self.read(manifest)
+        self.read(guide)
+        decision, reason = self.decision(leaf)
+        self.assertEqual(decision, "deny")
+        self.assertIn("call pre_memory first", reason)
+
+    def test_changed_manifest_prerequisite_still_re_requires_pre_memory(self) -> None:
+        # The leaf lists its own group manifest; it must never be deferred.
+        manifest, guide, leaf = self.requires_read_leaf("guide.md", "../../MEMORY.md")
+        self.pre_memory()
+        read_conventions(self.home, self.shared)
+        self.read(manifest)
+        self.read(guide)
+        self.assertEqual(self.decision(leaf), ("allow", ""))
+        manifest.write_text(manifest.read_text(encoding="utf-8") + "- New rule.\n",
+                            encoding="utf-8")
+        self.read(manifest)
+        decision, reason = self.decision(leaf)
+        self.assertEqual(decision, "deny")
+        self.assertIn("call pre_memory first", reason)
+
     def test_convention_gate_denies_without_pre_memory_then_allows(self) -> None:
         target = self.home / "memory" / "local" / "note.md"
         first = invoke_pi(self.home, self.write(target))
