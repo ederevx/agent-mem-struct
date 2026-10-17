@@ -4,6 +4,28 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-16T22:08:44-04:00 - let a pi session write a requires_read leaf
+
+A memory leaf that declares `requires_read` could never be written from a pi
+session: every write was refused with the pre_memory denial, however often
+pre_memory ran and however often the prerequisite was read, while a leaf without
+frontmatter beside it stayed writable in the same session.
+
+`bundle(scoped=True)` puts the leaf's manifest chain and its `requires_read`
+closure into the bundle, and `receipt_is_current` needs a matching digest for
+every bundle path in the receipt's `sources`. For pi that map is only seeded by
+`pre_memory`'s `acknowledge_union`, whose manifest union can never contain a leaf
+prerequisite; `record_read` records a prerequisite in `reads`, and
+`receipt_covers` returned the pre_memory denial for pi before `missing_reads`
+ran, so the prerequisite digest had no route into `sources` at all.
+
+For pi only, those prerequisites are now deferred out of the `sources` check and
+left to `missing_reads`, which already requires each of them at its current
+bytes. Manifests and `RULES.md` are never deferred, so a changed convention
+source still re-requires `pre_memory`. Codex and Claude are unchanged - their
+scoped bundle already seeded `sources`. This changes the hook layer only; no
+memory-tree migration (see MIGRATION.md).
+
 ## 2026-10-16T21:22:00-04:00 - ship the structure lister as the bridge's own tool
 
 A pi host with pi-daemon and agent-mem-struct installed could deadlock: the
