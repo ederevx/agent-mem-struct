@@ -243,6 +243,8 @@ class ConventionGate:
         digest, body, _paths, source_digests = self.bundle(event, scoped=scoped)
         if digest is None or body is None:
             return False, body or "required convention bundle could not be built"
+        if self.state.agent == "pi":
+            source_digests = self._pre_memory_scope(event, source_digests, scoped=scoped)
         if not self.receipt_is_current(event, source_digests):
             if self.state.agent == "pi":
                 return False, PREMEMORY_DENIAL
@@ -255,6 +257,31 @@ class ConventionGate:
         if missing or tree is not None:
             return False, self.read_denial(missing, tree)
         return True, ""
+
+    def _pre_memory_scope(
+        self, event: dict[str, Any], source_digests: dict[str, str], *, scoped: bool
+    ) -> dict[str, str]:
+        """The bundle sources a Pi receipt must hold from pre_memory.
+
+        pre_memory acknowledges the manifest union, which can never contain a
+        leaf's `requires_read` prerequisite. Such a prerequisite is left to
+        missing_reads, which requires it read at its current bytes. Manifests
+        and the rules are never deferred, so a changed convention source still
+        re-requires pre_memory.
+        """
+        tool_input = event.get("tool_input")
+        if not scoped or not isinstance(tool_input, dict):
+            return source_digests
+        cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
+        rules = os.path.normcase(str(self.state.root_rules.resolve(strict=False)))
+        deferred: set[str] = set()
+        for raw in MutationScanner.target_strings(tool_input):
+            for candidate in MutationScanner.candidate_paths(raw, cwd):
+                for path in self._prerequisite_closure(candidate):
+                    key = os.path.normcase(str(path.resolve(strict=False)))
+                    if path.name != "MEMORY.md" and key != rules:
+                        deferred.add(key)
+        return {key: value for key, value in source_digests.items() if key not in deferred}
 
     def read_denial(self, missing: list[Path], tree: Path | None) -> str:
         """A short denial naming the sources still to read, never the bodies."""
