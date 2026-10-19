@@ -134,9 +134,10 @@ class PublishAttestation:
         if attention:
             report.lines.extend(attention)
             return
-        block_start = lint.trailer_block_start(lines)
-        body = [line for line in lines[1:block_start] if line.strip()]
-        trailers = lint.parsed_trailers(message)
+        block_start, _ = lint.resolve_block(lines, message)
+        body_end = len(lines) if block_start is None else block_start
+        body = [line for line in lines[1:body_end] if line.strip()]
+        trailers = lint.parsed_trailers(message) or []
         report.lines.append(
             f"verified: message conforms (subject: {len(subject)} cols, "
             f"body: {len(body)} line{'s' if len(body) != 1 else ''}, "

@@ -2332,6 +2332,17 @@ class MemoryUpdateAttestationTests(unittest.TestCase):
         self.assertEqual([item["code"] for item in report.conflicts], ["unverified-unpushed"])
         self.assertIn("origin/main", report.conflicts[0]["message"])
 
+    def test_unit_a_repository_trailer_alias_cannot_change_the_attestation(self) -> None:
+        self.create_note()
+        git_run("config", "trailer.probe.key", "Signed-off-by", cwd=self.shared)
+        report = load_hook_module("rm_verify").PublishAttestation(self.shared).attest(
+            sha=self.head(), changed=[self.leaf], appended=[]
+        )
+        self.assertEqual(report.conflicts, [])
+        self.assertTrue(
+            any("verified: message conforms" in line for line in report.lines)
+        )
+
     def test_unit_a_missing_appended_line_is_an_unverified_log_conflict(self) -> None:
         self.create_note()
         report = load_hook_module("rm_verify").PublishAttestation(self.shared).attest(

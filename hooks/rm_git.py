@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 DEFAULT_BUDGET = 20.0
 QUERY_BUDGET = 5.0
@@ -46,18 +46,30 @@ class GitWorktree:
         return self.budget if default is None else default
 
     def run(
-        self, *args: str, input_text: str | None = None, budget: float | None = None
+        self,
+        *args: str,
+        input_text: str | None = None,
+        budget: float | None = None,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one git subcommand, or return its failure as a result."""
+        """Run one git subcommand, or return its failure as a result.
+
+        `cwd` replaces the worktree this object was built for and `env`
+        replaces the inherited environment, so a caller that must not be
+        affected by a repository or a host configuration can leave both.
+        """
         limit = self.limit(budget)
+        environment = dict(os.environ if env is None else env)
+        environment.setdefault("GIT_TERMINAL_PROMPT", "0")
         try:
             return subprocess.run(
-                ["git", "-C", str(self.root), *args],
+                ["git", "-C", str(cwd or self.root), *args],
                 input=input_text,
                 capture_output=True,
                 text=True,
                 check=False,
-                env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+                env=environment,
                 timeout=limit,
             )
         except subprocess.TimeoutExpired:

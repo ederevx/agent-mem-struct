@@ -4,6 +4,33 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-19T13:55:00-04:00 - let git decide what a trailer is
+
+The entry below fixed one symptom of a structural mistake: `rm_lint` decided
+what counted as a trailer from a hardcoded prefix tuple, so every new trailer
+was a code change and a release, and the omission of `Reference:` produced
+three findings against a well-formed message.
+
+Recognition now comes from `git interpret-trailers`, run in a fresh temporary
+directory whose ancestors cannot be searched, with `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_COMMON_DIR`, injected configuration, and system and global configuration
+all removed from its environment, and its parser settings pinned on the
+command line. A `trailer.<name>.key` alias in a repository, above the parser's
+directory, or in the host's configuration therefore cannot rename a token, and
+regressions prove the verdict identical in each of those cases, through the
+lint and through the publish attestation. The block is the run of
+trailer-shaped lines ending the message, accepted only when that run parses to
+exactly what the whole message parses to; a run git did not accept, or reads differently, is reported instead
+of being used as a boundary nobody established. Two invocations can no longer
+disagree silently: an unanswered git is an explicit "trailer validation is
+unavailable" finding, never an empty result that reads as clean.
+
+What the conventions allow moved out of the code into `hooks/trailer-policy.json`,
+so allowing a token is a data edit. Policy stays separate from recognition: an
+allowed trailer outside the block is still flagged, and a token the policy does
+not name inside the block is now flagged as well. Formatting rules - `Token: value`,
+the single blank line, indentation - apply only inside a block git established.
+
 ## 2026-10-19T12:40:00-04:00 - accept Reference: as a trailer line
 
 A commit carrying the mandated `Source:` + `Reference:` pair could not be
@@ -16,7 +43,8 @@ throughout, so the allowlist was wrong rather than the commit.
 `Reference:` joins the allowlist. The rule the check exists for is unchanged:
 the positive fixture is a real message with both pairs in its final block, and a
 second fixture moves `Reference:` into the body above that block and still
-expects the outside-the-block finding.
+expects the outside-the-block finding. The allowlist itself was removed later
+the same day; see the entry above.
 
 ## 2026-10-16T22:08:44-04:00 - let a pi session write a requires_read leaf
 

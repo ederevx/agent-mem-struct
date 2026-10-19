@@ -3,10 +3,11 @@
 One owner for the message convention the protocol states: `MessageLint`
 reports the mechanical violations of one commit message - column width, the
 single blank line before the final trailer block, that block's agreement with
-`git interpret-trailers`, trailer-like lines outside it, indented lines in it
-or the paragraph above it, `\\xNN` escapes of printable ASCII, and the running
-agent's own model on its `Assisted-by:` line - and `PushLint` applies it to
-the commits a `git push` would publish. Both are read-only: nothing here
+`git interpret-trailers`, a trailer outside that block, a token outside the
+allowed set of `trailer-policy.json`, indented lines in it or the paragraph
+above it, `\\xNN` escapes of printable ASCII, and the running agent's own
+model on its `Assisted-by:` line - and `PushLint` applies it to the commits a
+`git push` would publish. Both are read-only: nothing here
 stages, commits, or writes, git stays behind `rm_git.GitWorktree`, and the
 push scan is one `git log` inside a fixed window.
 
@@ -17,24 +18,21 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
 from rm_git import GitWorktree
+from rm_trailer_policy import TrailerPolicy
 
 MAX_COLS = 80
 PUSH_MAX_COMMITS = 200
 PUSH_SECONDS = 3.0
-TRAILER_PREFIXES = (
-    "Source:",
-    "Reference:",
-    "Change-Id:",
-    "Assisted-by:",
-    "Signed-off-by:",
-    "Co-authored-by:",
-    "Generated-by:",
-    "Reviewed-by:",
+TRAILER_HEADER_RE = re.compile(r"^(?P<token>[A-Za-z0-9][A-Za-z0-9-]*):(?!/)")
+TRAILER_UNAVAILABLE = (
+    "trailer validation is unavailable: git interpret-trailers did not answer"
 )
+TRAILER_MALFORMED = "the final trailer block is not what git interpret-trailers parsed"
 PRINTABLE_ESCAPE_RE = re.compile(r"(?i)\\x(2[0-9a-f]|[3-6][0-9a-f]|7[0-9a-e])")
 ATTRIBUTION_RE = re.compile(r"^Assisted-by:[ \t]*(?P<value>.*)$")
 MODEL_FREE_ATTRIBUTION = "LLM"
@@ -43,19 +41,25 @@ MODEL_FREE_ATTRIBUTION = "LLM"
 class MessageLint:
     """The mechanical violations of one commit message, as report lines."""
 
-    def __init__(self, worktree: GitWorktree | None = None) -> None:
+    def __init__(
+        self,
+        worktree: GitWorktree | None = None,
+        policy: TrailerPolicy | None = None,
+        scratch_root: Path | None = None,
+    ) -> None:
         self.worktree = worktree
+        self.policy = policy if policy is not None else TrailerPolicy.load()
+        self.scratch_root = scratch_root
 
     def violations(self, message: str, *, agent: str, model: str) -> list[str]:
         """Every mechanical violation of this message, in reading order."""
         lines = self.message_lines(message)
-        block_start = self.trailer_block_start(lines)
-        parsed = self.parsed_trailers(message)
-        findings: list[str] = []
+        block_start, findings = self.resolve_block(lines, message)
         findings.extend(self._columns(lines, block_start))
         findings.extend(self._trailer_spacing(lines, block_start))
-        findings.extend(self._trailer_agreement(lines, block_start, parsed))
         findings.extend(self._trailer_outside(lines, block_start))
+        findings.extend(self._trailer_formatting(lines, block_start))
+        findings.extend(self._unknown_trailers(lines, block_start))
         findings.extend(self._indented(lines, block_start))
         findings.extend(self._escapes(lines))
         findings.extend(self._attribution(lines, agent, model))
@@ -70,37 +74,103 @@ class MessageLint:
         return lines
 
     @staticmethod
-    def trailer_like(line: str) -> bool:
-        return any(line.startswith(prefix) for prefix in TRAILER_PREFIXES)
+    def header_token(line: str) -> str:
+        """The token of a trailer-shaped line, or an empty string."""
+        match = TRAILER_HEADER_RE.match(line)
+        return match.group("token") if match else ""
 
-    @classmethod
-    def trailer_block_start(cls, lines: list[str]) -> int:
-        """The first line of the final contiguous trailer-like block."""
-        end = len(lines)
-        while end > 0 and not lines[end - 1].strip():
-            end -= 1
-        start = end
-        while start > 0 and cls.trailer_like(lines[start - 1]):
+    def trailer_like(self, line: str) -> bool:
+        """Whether this line carries a trailer the conventions allow."""
+        return self.policy.allows(self.header_token(line))
+
+    def resolve_block(
+        self, lines: list[str], message: str
+    ) -> tuple[int | None, list[str]]:
+        """The first line of the trailer block, and why one was not established.
+
+        The block is the run of trailer-shaped lines ending the message, and
+        only git decides that run is a trailer block: it has to parse to
+        exactly what the whole message parses to. A run git did not accept, or
+        reads differently, is reported instead of being handed to the checks as
+        a boundary nobody established.
+        """
+        start = len(lines)
+        while start > 0 and (
+            self.header_token(lines[start - 1]) or lines[start - 1][:1] in (" ", "\t")
+        ):
             start -= 1
-        return start if start < end else end
+        if start >= len(lines) or start == 0:
+            return len(lines), []
+        parsed = self.parsed_trailers(message)
+        if parsed is None:
+            return None, [TRAILER_UNAVAILABLE]
+        block = lines[start:]
+        if parsed == block:
+            return start, []
+        alone = self.parsed_trailers("subject\n\n" + "\n".join(block) + "\n")
+        if alone != parsed:
+            return None, [TRAILER_MALFORMED]
+        return (start, []) if parsed else (len(lines), [])
 
-    def parsed_trailers(self, message: str) -> list[str]:
-        """What `git interpret-trailers --parse` returns, or an empty list."""
+    def parsed_trailers(self, message: str) -> list[str] | None:
+        """What `git interpret-trailers --parse` returns, or None if it did not.
+
+        No repository or host configuration reaches this call: it runs in a
+        directory that is no worktree, outside system and global configuration,
+        with only the parser settings below, so a `trailer.<name>.key` alias
+        cannot rename a token behind the lint's back.
+        """
         if self.worktree is None:
-            return []
-        result = self.worktree.run(
-            "interpret-trailers", "--parse", input_text=message.rstrip("\n") + "\n"
-        )
+            return None
+        with tempfile.TemporaryDirectory(
+            prefix="rm-trailer-", dir=self.scratch_root
+        ) as scratch:
+            result = self.worktree.run(
+                "-c",
+                "trailer.where=end",
+                "-c",
+                "trailer.separators=:",
+                "-c",
+                "trailer.ifexists=addIfDifferent",
+                "interpret-trailers",
+                "--parse",
+                input_text=message.rstrip("\n") + "\n",
+                cwd=Path(scratch),
+                env=self.parser_env(Path(scratch).parent),
+            )
         if result.returncode != 0:
-            return []
+            return None
         return [line for line in result.stdout.splitlines() if line.strip()]
+
+    @staticmethod
+    def parser_env(ceiling: Path) -> dict[str, str]:
+        """The parser's environment: no repository or git configuration."""
+        env = {
+            name: value
+            for name, value in os.environ.items()
+            if not name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+            and name
+            not in (
+                "GIT_CONFIG_COUNT",
+                "GIT_CONFIG_PARAMETERS",
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+            )
+        }
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_SYSTEM"] = os.devnull
+        env["GIT_CEILING_DIRECTORIES"] = str(ceiling)
+        return env
 
     # -- checks --------------------------------------------------------------
 
     @staticmethod
-    def _columns(lines: list[str], block_start: int) -> list[str]:
+    def _columns(lines: list[str], block_start: int | None) -> list[str]:
         findings: list[str] = []
-        for number, line in enumerate(lines[:block_start], start=1):
+        end = len(lines) if block_start is None else block_start
+        for number, line in enumerate(lines[:end], start=1):
             if len(line) <= MAX_COLS:
                 continue
             if any(len(token) > MAX_COLS for token in line.split()):
@@ -108,9 +178,9 @@ class MessageLint:
             findings.append(f"line {number} is {len(line)} cols with no unbreakable token")
         return findings
 
-    def _trailer_spacing(self, lines: list[str], block_start: int) -> list[str]:
+    def _trailer_spacing(self, lines: list[str], block_start: int | None) -> list[str]:
         findings: list[str] = []
-        if block_start < len(lines):
+        if block_start is not None and block_start < len(lines):
             preceding = lines[block_start - 1] if block_start else ""
             if (
                 not block_start
@@ -127,29 +197,48 @@ class MessageLint:
                 findings.append(f"blank line {index + 1} sits between two trailer-like lines")
         return findings
 
-    def _trailer_agreement(
-        self, lines: list[str], block_start: int, parsed: list[str]
-    ) -> list[str]:
-        if self.worktree is None:
-            return []
-        block = lines[block_start:] if block_start < len(lines) else []
-        if not block:
-            return []
-        if parsed == block:
-            return []
-        return ["the final trailer block is not what git interpret-trailers parsed"]
-
-    def _trailer_outside(self, lines: list[str], block_start: int) -> list[str]:
+    def _trailer_outside(self, lines: list[str], block_start: int | None) -> list[str]:
         findings: list[str] = []
-        for index, line in enumerate(lines):
-            if index < block_start and self.trailer_like(line):
+        end = len(lines) if block_start is None else block_start
+        for index, line in enumerate(lines[:end]):
+            if self.trailer_like(line):
                 findings.append(
                     f"trailer-like line {index + 1} is outside the final trailer block"
                 )
         return findings
 
-    def _indented(self, lines: list[str], block_start: int) -> list[str]:
-        if block_start >= len(lines):
+    def _trailer_formatting(
+        self, lines: list[str], block_start: int | None
+    ) -> list[str]:
+        """Inside an established block, each header is written `Token: value`."""
+        if block_start is None or block_start >= len(lines):
+            return []
+        findings: list[str] = []
+        for index in range(block_start, len(lines)):
+            token = self.header_token(lines[index])
+            if not token:
+                continue
+            rest = lines[index][len(token) + 1:]
+            if rest and rest[:1] not in (" ", "\t"):
+                findings.append(f"line {index + 1} is not written as '{token}: value'")
+        return findings
+
+    def _unknown_trailers(
+        self, lines: list[str], block_start: int | None
+    ) -> list[str]:
+        if block_start is None or block_start >= len(lines):
+            return []
+        findings: list[str] = []
+        for index in range(block_start, len(lines)):
+            token = self.header_token(lines[index])
+            if token and not self.policy.allows(token):
+                findings.append(
+                    f"line {index + 1} carries {token}:, a trailer the policy does not allow"
+                )
+        return findings
+
+    def _indented(self, lines: list[str], block_start: int | None) -> list[str]:
+        if block_start is None or block_start >= len(lines):
             return []
         paragraph: list[int] = []
         index = block_start - 1
