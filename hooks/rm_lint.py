@@ -27,6 +27,7 @@ PUSH_MAX_COMMITS = 200
 PUSH_SECONDS = 3.0
 TRAILER_PREFIXES = (
     "Source:",
+    "Reference:",
     "Change-Id:",
     "Assisted-by:",
     "Signed-off-by:",
