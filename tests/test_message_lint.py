@@ -214,6 +214,23 @@ class MessageLintUnitTests(unittest.TestCase):
         findings = self.check(f"subject\n\n{TRAILER}\n\nmore text")
         self.assertTrue(any("outside the final trailer block" in item for item in findings))
 
+    def test_source_and_reference_trailers_in_the_final_block_pass(self) -> None:
+        message = (
+            "subject\n\nA body paragraph.\n\n"
+            "Source: https://github.com/example/project/commit/abc123\n"
+            "Reference: https://github.com/example/project/tree/abc123\n"
+            "Reference: https://github.com/other/project/tree/def456\n"
+            f"{TRAILER}"
+        )
+        self.assertEqual(self.check(message), [])
+
+    def test_a_reference_trailer_outside_the_final_block_is_flagged(self) -> None:
+        findings = self.check(
+            "subject\n\nReference: https://github.com/example/project/tree/abc123\n\n"
+            + TRAILER
+        )
+        self.assertTrue(any("outside the final trailer block" in item for item in findings))
+
     def test_an_indented_line_above_the_trailer_block_is_flagged(self) -> None:
         findings = self.check("subject\n\n  indented body\n\nSigned-off-by: y")
         self.assertTrue(any("starts with whitespace" in item for item in findings))
