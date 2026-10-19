@@ -4,6 +4,20 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-19T12:40:00-04:00 - accept Reference: as a trailer line
+
+A commit carrying the mandated `Source:` + `Reference:` pair could not be
+pushed: `Reference:` was absent from `TRAILER_PREFIXES`, so the line was not
+classified as a trailer and three findings followed - a trailer-like line
+outside the final block, a block that disagreed with `git interpret-trailers`,
+and a block without exactly one blank line above it. The message was well formed
+throughout, so the allowlist was wrong rather than the commit.
+
+`Reference:` joins the allowlist. The rule the check exists for is unchanged:
+the positive fixture is a real message with both pairs in its final block, and a
+second fixture moves `Reference:` into the body above that block and still
+expects the outside-the-block finding.
+
 ## 2026-10-16T22:08:44-04:00 - let a pi session write a requires_read leaf
 
 A memory leaf that declares `requires_read` could never be written from a pi
