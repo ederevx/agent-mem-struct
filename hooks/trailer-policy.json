@@ -1,0 +1,12 @@
+{
+  "trailers": [
+    "Assisted-by",
+    "Change-Id",
+    "Co-authored-by",
+    "Generated-by",
+    "Reference",
+    "Reviewed-by",
+    "Signed-off-by",
+    "Source"
+  ]
+}

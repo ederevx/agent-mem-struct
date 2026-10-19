@@ -208,7 +208,90 @@ class MessageLintUnitTests(unittest.TestCase):
 
     def test_trailers_must_match_interpret_trailers(self) -> None:
         findings = self.check("subject\n\nAssisted-by:pi:m\nSigned-off-by: y")
-        self.assertTrue(any("git interpret-trailers" in item for item in findings))
+        self.assertTrue(any("is not written as" in item for item in findings))
+
+    def test_a_token_the_policy_does_not_allow_is_flagged(self) -> None:
+        findings = self.check(f"subject\n\nLooks-good: yes\n{TRAILER}")
+        self.assertTrue(any("policy does not allow" in item for item in findings))
+        self.assertTrue(any("Looks-good" in item for item in findings))
+
+    def test_prose_that_looks_like_a_trailer_is_not_one(self) -> None:
+        self.assertEqual(
+            self.check(
+                "subject\n\nNote: this is body prose, not a trailer.\n\n" + TRAILER
+            ),
+            [],
+        )
+
+    def test_a_repeated_trailer_resolves_to_the_final_block(self) -> None:
+        findings = self.check(
+            "subject\n\ntext\n\nReference: identical\n\nReference: identical\n"
+            + TRAILER
+        )
+        self.assertEqual(
+            findings,
+            [
+                "blank line 6 sits between two trailer-like lines",
+                "trailer-like line 5 is outside the final trailer block",
+            ],
+        )
+
+    def test_a_repository_trailer_alias_cannot_change_the_verdict(self) -> None:
+        from rm_git import GitWorktree
+        from rm_lint import MessageLint
+
+        repo = Path(tempfile.mkdtemp(prefix="ams-alias-", dir=SCRATCH_ROOT))
+        git("init", "-b", "main", cwd=repo)
+        git("config", "trailer.probe.key", "Signed-off-by", cwd=repo)
+        message = f"subject\n\nprobe: Example\n{TRAILER}"
+        aliased = MessageLint(GitWorktree(repo)).violations(
+            message, agent="pi", model=self.model
+        )
+        self.assertEqual(aliased, self.check(message))
+        self.assertTrue(any("probe:" in item for item in aliased))
+
+    def test_a_global_trailer_alias_cannot_change_the_verdict(self) -> None:
+        config = SCRATCH_ROOT / "global-trailer-config"
+        config.write_text("[trailer \"probe\"]\n\tkey = Signed-off-by\n", encoding="utf-8")
+        message = f"subject\n\nprobe: Example\n{TRAILER}"
+        baseline = self.check(message)
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config)}):
+            self.assertEqual(self.check(message), baseline)
+        self.assertTrue(any("probe:" in item for item in baseline))
+
+    def test_an_inherited_git_dir_cannot_change_the_verdict(self) -> None:
+        repo = Path(tempfile.mkdtemp(prefix="ams-gitdir-", dir=SCRATCH_ROOT))
+        git("init", "-b", "main", cwd=repo)
+        git("config", "trailer.probe.key", "Signed-off-by", cwd=repo)
+        message = f"subject\n\nprobe: Example\n{TRAILER}"
+        baseline = self.check(message)
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(repo / ".git")}):
+            self.assertEqual(self.check(message), baseline)
+        self.assertTrue(any("probe:" in item for item in baseline))
+
+    def test_a_repository_above_the_parser_cannot_change_the_verdict(self) -> None:
+        from rm_git import GitWorktree
+        from rm_lint import MessageLint
+
+        repo = Path(tempfile.mkdtemp(prefix="ams-above-", dir=SCRATCH_ROOT))
+        git("init", "-b", "main", cwd=repo)
+        git("config", "trailer.probe.key", "Signed-off-by", cwd=repo)
+        scratch = repo / "scratch"
+        scratch.mkdir()
+        message = f"subject\n\nprobe: Example\n{TRAILER}"
+        aliased = MessageLint(
+            GitWorktree(REPO), scratch_root=scratch
+        ).violations(message, agent="pi", model=self.model)
+        self.assertEqual(aliased, self.check(message))
+        self.assertTrue(any("probe:" in item for item in aliased))
+
+    def test_trailer_validation_is_unavailable_without_git(self) -> None:
+        from rm_lint import MessageLint
+
+        findings = MessageLint().violations(
+            f"subject\n\n{TRAILER}", agent="pi", model=self.model
+        )
+        self.assertTrue(any("trailer validation is unavailable" in item for item in findings))
 
     def test_a_trailer_line_outside_the_final_block_is_flagged(self) -> None:
         findings = self.check(f"subject\n\n{TRAILER}\n\nmore text")
