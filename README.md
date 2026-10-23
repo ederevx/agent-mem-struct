@@ -39,6 +39,13 @@ current state into the paired log. Call `pre_memory` to obtain the required
 convention sources and read them before any memory mutation; use
 `memory_update` for structural writes and publishing.
 
+The gate requires acknowledgment of the listed conventions and shared
+structure. If synchronization fails, complete those reads, reconcile and push
+the shared history, then rerun `pre_memory` before ordinary memory work.
+`memory_update` still refuses unreconciled divergence. An instruction to modify
+memory does not waive acknowledgment or another agent's private memory
+boundary.
+
 Every deployment also registers the `rm_tree_exec` tool, which runs the shipped
 `hooks/rm_tree.py` lister without a shell, so the convention gate's
 shared-structure read is reachable even when another extension gates `bash`.
