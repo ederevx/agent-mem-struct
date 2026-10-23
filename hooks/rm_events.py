@@ -155,17 +155,9 @@ class EventDispatcher:
                 + " Repair the root control files before memory work.",
             )
             return 1
+        warning = ""
         if state.shared_git_backed and GitWorktree(state.shared_resolved).has_sync_target():
             pulled, detail = self.pull_shared(state)
-            if not pulled:
-                self.emit_hook_context(
-                    "PreMemory",
-                    "CONTROL ERROR: the declared shared worktree could not be "
-                    f"fast-forwarded ({detail}). Reconcile the shared history before "
-                    "continuing; the shared conventions are unverified and no "
-                    "acknowledgment was recorded.",
-                )
-                return 1
             # The pull may have advanced the shared conventions; reload so the
             # catalog the model reads matches what the receipt acknowledges.
             state = self.control.load(self.agent)
@@ -176,15 +168,24 @@ class EventDispatcher:
                     "pull. " + " | ".join(state.errors),
                 )
                 return 1
+            if not pulled:
+                warning = (
+                    "WARNING: shared synchronization failed - the declared shared "
+                    f"worktree could not be fast-forwarded ({detail}). This catalog "
+                    "covers the current local convention sources only. Read the "
+                    "required sources and the shared structure, reconcile and push "
+                    "the shared history, then run pre_memory again before ordinary "
+                    "memory work."
+                )
         _digest, _body, _paths, error = self.gate.acknowledge_union(event)
         if error is not None:
             self.emit_hook_context("PreMemory", "CONTROL ERROR: " + error)
             return 1
-        context = (
-            self.control.catalog_text(state)
-            + "\n\n"
-            + self.control.pre_memory_feature_text()
-        )
+        parts = [self.control.catalog_text(state)]
+        if warning:
+            parts.append(warning)
+        parts.append(self.control.pre_memory_feature_text())
+        context = "\n\n".join(parts)
         self.emit_hook_context("PreMemory", context)
         return 0
 
