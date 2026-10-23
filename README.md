@@ -26,7 +26,7 @@ python3 hooks/pi/manage.py install       # Pi
 ```
 
 The Pi bridge may instead be installed as a pi package,
-`pi install git:github.com/ederevx/agent-mem-struct@v1.36`; the package entry
+`pi install git:github.com/ederevx/agent-mem-struct@v1.38`; the package entry
 stands down while the installer-managed bridge is present. When it is the sole
 registrant it also deploys the protected root documents itself, running the
 installer's `sync-documents` action under a package-owned marker and the same
