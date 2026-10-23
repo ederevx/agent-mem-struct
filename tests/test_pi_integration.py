@@ -832,7 +832,7 @@ class PiHookTests(unittest.TestCase):
             1,
         )
 
-    def test_pre_memory_pull_failure_blocks_and_records_no_receipt(self) -> None:
+    def test_pre_memory_pull_failure_still_acknowledges_local_sources(self) -> None:
         origin = self.temp / "origin.git"
         shared = make_git_shared(origin, self.temp / "git shared")
         writer = self.temp / "writer"
@@ -852,9 +852,73 @@ class PiHookTests(unittest.TestCase):
             "session_id": "pi-session",
             "turn_id": "turn-1",
         })
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("shared worktree could not be", result.stdout)
-        self.assertFalse((home / ".agent-mem-struct" / "convention-receipts").exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("shared synchronization failed", result.stdout)
+        # The acknowledgment hashes the local bytes, so the reconciliation can
+        # read them and then repair the history.
+        receipts = list((home / ".agent-mem-struct" / "convention-receipts").glob("*.json"))
+        self.assertEqual(len(receipts), 1)
+        recorded = json.loads(receipts[0].read_text(encoding="utf-8"))["sources"]
+        local = hashlib.sha256((shared / "MEMORY.md").read_bytes()).hexdigest()
+        self.assertEqual(recorded[os.path.normcase(str(shared / "MEMORY.md"))], local)
+        # A divergent shared history still blocks the mutation itself.
+        update = invoke_pi(home, {
+            "hook_event_name": "MemoryUpdate",
+            "operation": "set",
+            "path": str(shared / "MEMORY.md"),
+            "body": "x\n",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertNotEqual(update.returncode, 0)
+        self.assertIn("shared-diverged", update.stdout)
+
+    def test_pre_memory_pull_failure_opens_the_repair_operations(self) -> None:
+        origin = self.temp / "origin.git"
+        shared = make_git_shared(origin, self.temp / "git shared")
+        writer = self.temp / "writer"
+        self.assertEqual(
+            subprocess.run(["git", "clone", str(origin), str(writer)],
+                           text=True, capture_output=True, check=False).returncode, 0)
+        with open(writer / "MEMORY.md", "a", encoding="utf-8") as handle:
+            handle.write("- Raced rule.\n")
+        git_run("add", "MEMORY.md", cwd=writer)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "raced", cwd=writer)
+        self.assertEqual(git_run("push", "origin", "main", cwd=writer).returncode, 0)
+        (shared / "local.md").write_text("local\n", encoding="utf-8")
+        git_run("add", "local.md", cwd=shared)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "local", cwd=shared)
+        home, _ = make_home(self.temp / "repair-home", shared)
+        result = invoke_pi(home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        divergence = git_run(
+            "rev-list", "--left-right", "--count", "HEAD...origin/main", cwd=shared,
+        )
+        self.assertEqual(divergence.returncode, 0, divergence.stderr)
+        self.assertEqual(divergence.stdout.split(), ["1", "1"])
+
+        repair = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+            "tool_name": "bash",
+            "tool_input": {"command": f'git -C "{shared}" rebase origin/main'},
+        }
+        denied = invoke_pi(home, repair)
+        self.assertEqual(denied.returncode, 0, denied.stderr)
+        self.assertEqual(
+            json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
+        read_conventions(home, shared)
+        allowed = invoke_pi(home, repair)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertEqual(allowed.stdout.strip(), "")
 
     def test_pre_memory_pull_ignores_an_environment_merge_ref(self) -> None:
         origin = self.temp / "origin.git"

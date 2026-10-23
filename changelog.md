@@ -4,6 +4,18 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-23T03:40:00-04:00 - acknowledge local conventions when the pull fails
+
+`pre_memory` returned a control error whenever the shared worktree could not be
+fast-forwarded, and recorded no acknowledgment. A session without a current
+receipt was then denied the repair operations its own instruction required, so
+the reconciliation could not be reached through the gate that asked for it.
+
+A failed fast-forward now reloads the local control, acknowledges the local
+sources with an explicit synchronization warning, and leaves the mutation
+gated: `memory_update` still refuses a divergent worktree, so reconciliation
+comes before ordinary memory work rather than being skipped.
+
 ## 2026-10-19T13:55:00-04:00 - let git decide what a trailer is
 
 The entry below fixed one symptom of a structural mistake: `rm_lint` decided
