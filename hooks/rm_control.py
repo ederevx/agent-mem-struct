@@ -32,7 +32,7 @@ SUBAGENT_READ_BOUNDARY_TEXT = (
 
 PRE_MEMORY_FEATURE_TEXT = (
     "agent-mem-struct `pre_memory`: call it once per session before any "
-    "memory write or agent-mem-struct action. It fast-forwards the declared "
+    "memory write or agent-mem-struct action. It attempts to fast-forward the declared "
     "shared worktree (`git pull --ff-only`), records the current convention "
     "sources, and returns the read list and navigation rules. The "
     "conventions are not inlined: the call counts as an acknowledgment only "
