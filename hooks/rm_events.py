@@ -26,6 +26,10 @@ from rm_scan import PATCH_HEADER_RE, MutationScanner
 from rm_support import under
 
 GIT_PULL_TIMEOUT = 15
+# Subcommands that put commits into the repository the same call would push.
+COMMIT_CREATING_SUBCOMMANDS = (
+    "am", "cherry-pick", "commit", "commit-tree", "merge", "rebase", "revert",
+)
 from rm_update import MemoryUpdater
 
 
@@ -370,6 +374,13 @@ class EventDispatcher:
             invocation = MutationScanner.git_push_invocation(command, cwd)
             if invocation is None:
                 continue
+            calls = MutationScanner.git_calls(command, cwd)
+            if any(subcommand in COMMIT_CREATING_SUBCOMMANDS for _, subcommand, _ in calls):
+                self.deny_pretool(
+                    "message-lint: a push cannot be linted in the call that "
+                    "creates its commits; commit first, then push in its own call"
+                )
+                return True, ""
             repo, remote, sources = invocation
             report = PushLint(repo, agent=self.agent).check(remote, sources)
             if report.blocked:
