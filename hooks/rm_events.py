@@ -24,13 +24,13 @@ from rm_lint import PushLint
 from rm_receipts import ConventionGate
 from rm_scan import PATCH_HEADER_RE, MutationScanner
 from rm_support import under
+from rm_update import MemoryUpdater
 
 GIT_PULL_TIMEOUT = 15
 # Subcommands that put commits into the repository the same call would push.
 COMMIT_CREATING_SUBCOMMANDS = (
     "am", "cherry-pick", "commit", "commit-tree", "merge", "rebase", "revert",
 )
-from rm_update import MemoryUpdater
 
 
 def is_subagent_event(event: dict[str, Any]) -> bool:
@@ -364,8 +364,10 @@ class EventDispatcher:
         """Run the push gate: whether the call must stop, and any lint gap.
 
         A commit the push would publish that breaks the mechanical message
-        convention denies the call; a push that cannot be fully linted is
-        allowed, with the reason returned for the caller to surface.
+        convention denies the call, and so does a push in the call that creates
+        those commits, whose messages cannot be read yet; a push that cannot be
+        fully linted is allowed, with the reason returned for the caller to
+        surface.
         """
         cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
         tool_name = str(event.get("tool_name") or "")
