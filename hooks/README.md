@@ -314,8 +314,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   author email equals the local `user.email`. A violating commit denies the
   call with `message-lint: push blocked: <sha12> <subject>: <violation>; ...`;
   a push that cannot be resolved, times out, or would publish more than 200
-  commits is allowed with a `push not fully linted` note instead. A push made
-  inside a script the agent runs is not a `git push` tool call and is not
+  commits is allowed with a `push not fully linted` note instead. A push in the
+  same call as `am`, `cherry-pick`, `commit`, `commit-tree`, `merge`, `rebase`
+  or `revert` is denied with `message-lint: a push cannot be linted in the call
+  that creates its commits`; a push made from a script file is still not
   detected.
 - At a session start whose source is not `compact` (on Pi that is the
   first-turn `before_agent_start`), the hook appends a read-only leftovers

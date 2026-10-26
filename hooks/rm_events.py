@@ -24,9 +24,13 @@ from rm_lint import PushLint
 from rm_receipts import ConventionGate
 from rm_scan import PATCH_HEADER_RE, MutationScanner
 from rm_support import under
+from rm_update import MemoryUpdater
 
 GIT_PULL_TIMEOUT = 15
-from rm_update import MemoryUpdater
+# Subcommands that put commits into the repository the same call would push.
+COMMIT_CREATING_SUBCOMMANDS = (
+    "am", "cherry-pick", "commit", "commit-tree", "merge", "rebase", "revert",
+)
 
 
 def is_subagent_event(event: dict[str, Any]) -> bool:
@@ -360,8 +364,10 @@ class EventDispatcher:
         """Run the push gate: whether the call must stop, and any lint gap.
 
         A commit the push would publish that breaks the mechanical message
-        convention denies the call; a push that cannot be fully linted is
-        allowed, with the reason returned for the caller to surface.
+        convention denies the call, and so does a push in the call that creates
+        those commits, whose messages cannot be read yet; a push that cannot be
+        fully linted is allowed, with the reason returned for the caller to
+        surface.
         """
         cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
         tool_name = str(event.get("tool_name") or "")
@@ -370,6 +376,13 @@ class EventDispatcher:
             invocation = MutationScanner.git_push_invocation(command, cwd)
             if invocation is None:
                 continue
+            calls = MutationScanner.git_calls(command, cwd)
+            if any(subcommand in COMMIT_CREATING_SUBCOMMANDS for _, subcommand, _ in calls):
+                self.deny_pretool(
+                    "message-lint: a push cannot be linted in the call that "
+                    "creates its commits; commit first, then push in its own call"
+                )
+                return True, ""
             repo, remote, sources = invocation
             report = PushLint(repo, agent=self.agent).check(remote, sources)
             if report.blocked:

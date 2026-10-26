@@ -445,6 +445,23 @@ class PushGateTests(unittest.TestCase):
         self.assertIn("message-lint: push blocked:", reason)
         self.assertIn(sha[:12], reason)
 
+    def test_a_push_in_the_call_that_creates_its_commits_is_denied(self) -> None:
+        commit_message(self.clone, "subject\n\nA clean body.")
+        result = self.push(
+            "git commit -q --allow-empty -m 'another: change' && git push origin main"
+        )
+        body = self.decision(result)
+        self.assertEqual(body.get("permissionDecision"), "deny")
+        self.assertIn("creates its commits", body["permissionDecisionReason"])
+
+    def test_a_push_of_commits_made_earlier_is_judged_on_them(self) -> None:
+        sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
+        reason = self.decision(self.push("git push origin main"))[
+            "permissionDecisionReason"
+        ]
+        self.assertIn("message-lint: push blocked:", reason)
+        self.assertIn(sha[:12], reason)
+
     def test_a_bad_commit_blocks_a_cd_then_push(self) -> None:
         sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
         result = self.push(
