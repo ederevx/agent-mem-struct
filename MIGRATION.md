@@ -27,6 +27,23 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-10-29T01:53:03-04:00 — sign memory entries with an available session id
+
+No bulk memory-tree migration is required: signatures apply to entries written
+or semantically changed from now on, and older entries are never backfilled
+with a later session's id.
+
+1. Read rule 7 in `RULES.md` and "Session signatures" in `STRUCTURE.md`.
+2. Reinstall the applicable integration from the merged release, then confirm
+   the managed root `RULES.md` and `STRUCTURE.md` match canonical.
+3. Keep existing attribution as it stands. Do not stamp old entries, and add no
+   signature metadata in frontmatter or filenames.
+4. Remove any scoped convention that only repeats this rule, preserving its
+   displaced meaning in the paired log, and reconcile stricter local wording
+   with the rule rather than keeping a conflict.
+5. After these checks, advance only this agent's root `Structure-Version:`
+   marker to `2026-10-29T01:53:03-04:00`.
+
 ## 2026-10-15T23:26:00-04:00 — make rule 9 consistent about who lands main
 
 No memory-tree content migration is required: this entry changes only

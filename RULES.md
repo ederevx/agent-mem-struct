@@ -54,6 +54,10 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
    Required behavior must never be hidden in a rationale node.
 
 7. **Respect write boundaries.** Other agents' `local/` trees are read-only.
+   Sign each new or semantically changed memory entry with your live session
+   id when you have one, as an adjacent `Session:` label. Preserve attribution
+   on unchanged or copied entries. Never invent an id, and never reuse another
+   entry's id as your own; with no id available, leave the entry unsigned.
    Shared edits use exactly the root `Shared:` target, are narrowly staged, and
    are committed and pushed to its private remote before the turn ends. A
    subagent reads the same root memory and rules as the parent that spawned it
