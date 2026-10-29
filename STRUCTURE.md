@@ -1,4 +1,4 @@
-Structure-Version: 2026-10-15T23:26:00-04:00
+Structure-Version: 2026-10-29T01:53:03-04:00
 
 # Memory structure
 
@@ -192,6 +192,36 @@ memory explicitly makes that history relevant.
 Git remains mechanical text/edit history. The paired log is semantic history.
 Typos, formatting, equivalent rewrites, and metadata cleanup do not require a
 semantic log entry.
+
+### Session signatures
+
+Every newly written or semantically changed fact, decision, convention, or
+state change carries the writing agent's live session id when that agent has
+one, so a reader can tell which session to resume or question for that entry.
+A signature identifies the writer; it is not authentication.
+
+Attach `Session:` and the id to the paragraph or list item it signs, quoting
+the id as Markdown so its exact bytes survive. No identifier format is
+assumed:
+
+```markdown
+- <current fact>. Session: `<live session id>`
+```
+
+Take the id from the writing agent's own live session context. Never invent
+one, copy another entry's id as your own, or substitute a receipt id or a
+process identity. An agent with no session id writes the entry unsigned: no
+placeholder, no marker, no generated id, and no refusal.
+
+A node edited over time keeps each entry's own signature. Replacing an entry
+signs the replacement and leaves the displaced entry, with its original
+signature, in the paired log; a new account of that supersession carries the
+current writer's signature. Mechanical edits and renames preserve signatures.
+Before retirement, keep the meaningful final state and sign the retirement
+account in the paired log. Routing indexes, structural scaffolding, and
+empty-log placeholders need none. Existing entries are never backfilled, and
+hooks neither stamp nor validate a signature: the writing agent applies this
+rule to tool input and hand edits alike.
 
 ## Leaf memory files
 

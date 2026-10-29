@@ -4,6 +4,19 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-10-29T01:53:03-04:00 - sign memory entries with an available session id
+
+A memory entry now carries the id of the session that wrote it, when that
+session has one. Attribution sits on each entry rather than on the file, so a
+node can hold facts written by several sessions without crediting them all to
+its latest editor, and a displaced entry keeps its own attribution in the
+paired log.
+
+The agent supplies the signature, in tool input and in hand edits alike. A hook
+cannot tell newly authored prose from quoted or unchanged text, so it neither
+stamps nor validates one. An agent with no session id writes the entry
+unsigned, and no existing entry is backfilled.
+
 ## 2026-10-23T03:40:00-04:00 - acknowledge local conventions when the pull fails
 
 `pre_memory` returned a control error whenever the shared worktree could not be
