@@ -243,8 +243,8 @@ export class RootMemoryBridge {
 				"Call once per session before any memory write or agent-mem-struct " +
 				"action. Fast-forwards the declared shared worktree, records the " +
 				"current convention sources, and returns the read list and navigation " +
-				"rules. The conventions are not inlined: read the listed sources with " +
-				"the read tool to acknowledge them.",
+				"rules. The conventions are not inlined: read the listed sources ENTIRELY " +
+				"with the read tool (the whole file, not a segment) to acknowledge them.",
 			parameters: Type.Object({}),
 			annotations: { readOnlyHint: false },
 			execute: () => this.loadPreMemory(),

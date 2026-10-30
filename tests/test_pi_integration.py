@@ -360,8 +360,11 @@ class PiHookTests(unittest.TestCase):
         # Acknowledgment is not complete until the sources are read.
         unread = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
         self.assertEqual(unread["permissionDecision"], "deny")
-        self.assertIn("Read these sources with the `read` tool",
-                      unread["permissionDecisionReason"])
+        self.assertIn(
+            "Read these sources ENTIRELY with the `read` tool "
+            "(the whole file, not a segment or preview)",
+            unread["permissionDecisionReason"],
+        )
         self.assertIn(str(self.home / "memory" / "MEMORY.md"),
                       unread["permissionDecisionReason"])
 
@@ -428,8 +431,11 @@ class PiHookTests(unittest.TestCase):
         rules.write_text(rules.read_text(encoding="utf-8") + "# Rewritten.\n", encoding="utf-8")
         denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
         self.assertEqual(denied["permissionDecision"], "deny")
-        self.assertIn("Read these sources with the `read` tool",
-                      denied["permissionDecisionReason"])
+        self.assertIn(
+            "Read these sources ENTIRELY with the `read` tool "
+            "(the whole file, not a segment or preview)",
+            denied["permissionDecisionReason"],
+        )
         self.assertIn(str(rules), denied["permissionDecisionReason"])
 
         # Re-reading the changed source restores the hash-bound evidence.

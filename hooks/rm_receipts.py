@@ -28,7 +28,8 @@ PREMEMORY_DENIAL = (
 )
 READ_DENIAL = (
     "Convention acknowledgment incomplete: the conventions are not inlined. "
-    "Read these sources with the `read` tool, then retry: "
+    "Read these sources ENTIRELY with the `read` tool (the whole file, not "
+    "a segment or preview), then retry: "
 )
 
 
