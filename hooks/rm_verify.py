@@ -6,7 +6,8 @@ reports whether the worktree is clean, the commit sits on the
 upstream it was pushed to, the committed paired logs carry the lines the
 mutation appended, and the agent's own message shape is conventional. A
 dirty path the publish did not commit is reported for attention and keeps the
-clean claim off, because the claim is about the whole worktree. It is
+clean claim off, because the claim is about the whole worktree, and a status
+query git does not answer reads as unverified rather than clean. It is
 strictly read-only: it never stages, commits, pushes, or writes, and returns
 the report lines and conflicts for the caller to surface. Its git reads share
 one fixed budget, and a worktree git cannot answer for is reported as an
@@ -69,7 +70,8 @@ class PublishAttestation:
 
     def _check_clean(self, report: Attestation, sha: str, changed: list[Path],
                     sync: tuple[bool, str, str]) -> None:
-        dirty = set(self.worktree.dirty_paths())
+        answered, dirty_paths = self.worktree.status_paths()
+        dirty = set(dirty_paths)
         committed, other = self._split_dirty(dirty, changed)
         if committed:
             report.conflicts.append({
@@ -82,7 +84,12 @@ class PublishAttestation:
                 f"attention: {self.root} has dirty paths outside this commit: "
                 + ", ".join(other)
             )
-        state = "clean, " if not dirty else ""
+        if not answered:
+            report.lines.append(
+                f"attention: {self.root} dirty paths were not verified: git did not "
+                "answer the status query"
+            )
+        state = "clean, " if answered and not dirty else ""
         has_target, upstream, tip = sync
         if has_target and tip == sha:
             report.lines.append(
