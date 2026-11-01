@@ -2473,6 +2473,21 @@ class MemoryUpdateAttestationTests(unittest.TestCase):
         )
         self.assertEqual(other.read_text(encoding="utf-8"), "dirty too\n")
 
+    def test_unit_an_unanswered_status_query_is_unverified_not_clean(self) -> None:
+        self.create_note()
+        verify = load_hook_module("rm_verify")
+        with mock.patch.object(
+            verify.GitWorktree, "status_paths", return_value=(False, [])
+        ):
+            report = verify.PublishAttestation(self.shared).attest(
+                sha=self.head(), changed=[self.leaf], appended=[]
+            )
+        self.assertEqual(report.conflicts, [])
+        self.assertFalse(any("clean" in line for line in report.lines))
+        self.assertTrue(
+            any("did not answer the status query" in line for line in report.lines)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
