@@ -2,9 +2,12 @@
 
 One owner for the self-check a publish runs after it commits:
 `PublishAttestation` reads the worktree through `rm_git.GitWorktree` and
-reports whether the changed paths are clean, the commit sits on the
+reports whether the worktree is clean, the commit sits on the
 upstream it was pushed to, the committed paired logs carry the lines the
-mutation appended, and the agent's own message shape is conventional. It is
+mutation appended, and the agent's own message shape is conventional. A
+dirty path the publish did not commit is reported for attention and keeps the
+clean claim off, because the claim is about the whole worktree, and a status
+query git does not answer reads as unverified rather than clean. It is
 strictly read-only: it never stages, commits, pushes, or writes, and returns
 the report lines and conflicts for the caller to surface. Its git reads share
 one fixed budget, and a worktree git cannot answer for is reported as an
@@ -67,22 +70,34 @@ class PublishAttestation:
 
     def _check_clean(self, report: Attestation, sha: str, changed: list[Path],
                     sync: tuple[bool, str, str]) -> None:
-        leftover = self._dirty_leftovers(changed)
-        if leftover:
+        answered, dirty_paths = self.worktree.status_paths()
+        dirty = set(dirty_paths)
+        committed, other = self._split_dirty(dirty, changed)
+        if committed:
             report.conflicts.append({
                 "code": "unverified-dirty",
-                "message": "still dirty after the publish: " + ", ".join(leftover),
+                "message": "still dirty after the publish: " + ", ".join(committed),
                 "fix": "commit or revert them before the turn ends",
             })
-            return
+        if other:
+            report.lines.append(
+                f"attention: {self.root} has dirty paths outside this commit: "
+                + ", ".join(other)
+            )
+        if not answered:
+            report.lines.append(
+                f"attention: {self.root} dirty paths were not verified: git did not "
+                "answer the status query"
+            )
+        state = "clean, " if answered and not dirty else ""
         has_target, upstream, tip = sync
         if has_target and tip == sha:
             report.lines.append(
-                f"verified: {self.root} clean, HEAD {sha[:12]} == {upstream}"
+                f"verified: {self.root} {state}HEAD {sha[:12]} == {upstream}"
             )
         elif not has_target:
             report.lines.append(
-                f"verified: {self.root} clean, HEAD {sha[:12]}; no upstream to compare"
+                f"verified: {self.root} {state}HEAD {sha[:12]}; no upstream to compare"
             )
 
     def _check_sync(self, report: Attestation, sha: str,
@@ -161,18 +176,23 @@ class PublishAttestation:
         tip = self.worktree.run("rev-parse", "@{u}").stdout.strip()
         return (True, upstream, tip)
 
-    def _dirty_leftovers(self, changed: list[Path]) -> list[str]:
-        dirty = set(self.worktree.dirty_paths())
-        if not dirty:
-            return []
-        leftover: list[str] = []
+    def _split_dirty(self, dirty: set[str], changed: list[Path]) -> tuple[list[str], list[str]]:
+        """The published paths still dirty, and every other dirty path, sorted."""
+        committed: list[str] = []
         for path in changed:
             relative = self._relative(path)
             if relative and any(
                 name == relative or name.startswith(relative + "/") for name in dirty
             ):
-                leftover.append(relative)
-        return leftover
+                committed.append(relative)
+        other = [
+            name for name in dirty
+            if not any(
+                name == relative or name.startswith(relative + "/")
+                for relative in committed
+            )
+        ]
+        return committed, sorted(other)
 
     def _message_body(self, sha: str) -> str:
         result = self.worktree.run("show", "-s", "--format=%B", sha)
