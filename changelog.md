@@ -4,6 +4,21 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-01T15:58:23-05:00 - decide the clean claim from the whole worktree
+
+The attestation a publish prints about itself called the worktree clean from the
+dirty paths that publish had committed, so dirt elsewhere - modified, staged or
+untracked - never entered the decision while `verified: ... clean` appeared
+beside it. The clean claim is what an agent reads to conclude its memory is
+durably published, so it must not be narrower than its subject: it now covers
+every dirty path, a path the publish committed stays the `unverified-dirty`
+conflict, and any other becomes one `attention:` line that keeps the clean
+wording off. The head and upstream comparison is reported separately, so the
+earlier unverified readings are unchanged.
+
+A dirty-path read that git does not answer is now reported as unverified
+instead of as no dirty path, which is the sibling hole the wider claim exposed.
+
 ## 2026-10-29T01:53:03-04:00 - sign memory entries with an available session id
 
 A memory entry now carries the id of the session that wrote it, when that
