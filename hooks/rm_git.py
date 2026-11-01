@@ -100,6 +100,15 @@ class GitWorktree:
     def dirty_paths(self) -> list[str]:
         """Repo-relative paths whose worktree or index differs from HEAD.
 
+        A query git does not answer reads as no dirty path here, so a caller
+        that must not confuse dirt with a failed read asks `status_paths`
+        instead.
+        """
+        return self.status_paths()[1]
+
+    def status_paths(self) -> tuple[bool, list[str]]:
+        """Whether git answered the status query, and the paths it named.
+
         Porcelain v1 with NUL separators so a path can hold any byte; a
         rename or copy entry carries the original path in the following
         field, which is consumed rather than parsed as another path.
@@ -109,7 +118,7 @@ class GitWorktree:
             budget=self.limit(default=QUERY_BUDGET),
         )
         if result.returncode != 0:
-            return []
+            return (False, [])
         fields = result.stdout.split("\0")
         paths: list[str] = []
         index = 0
@@ -122,7 +131,7 @@ class GitWorktree:
             paths.append(entry[3:])
             if "R" in status or "C" in status:
                 index += 1
-        return paths
+        return (True, paths)
 
     def head_blob(self, relative: str) -> str | None:
         """The committed content of one repo-relative path at HEAD, or None."""
