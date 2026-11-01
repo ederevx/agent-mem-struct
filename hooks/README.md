@@ -296,7 +296,11 @@ The bridge maps Pi events onto the hook's event vocabulary:
   inspects the worktree the publish committed into and the report gains
   `verified:` lines for the worktree being clean, HEAD versus its upstream
   (`; no upstream to compare` when there is none), the paired log carrying
-  the appended lines, and the message shape. A durability failure
+  the appended lines, and the message shape. The clean wording is about the
+  whole worktree, so a path the publish did not commit keeps it off: it is
+  reported as one `attention:` line naming those paths, while a dirty path the
+  publish did commit stays the `unverified-dirty` conflict. A status query git
+  does not answer is reported as unverified instead of clean. A durability failure
   (`unverified-dirty`, `unverified-unpushed`, `unverified-log`) comes back as
   a conflict the agent must fix before the turn ends, because the memory is
   then not durably published. The mechanical convention is enforced before
