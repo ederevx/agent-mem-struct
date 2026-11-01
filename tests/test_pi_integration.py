@@ -2387,6 +2387,7 @@ class MemoryUpdateAttestationTests(unittest.TestCase):
         )
         self.assertEqual([item["code"] for item in report.conflicts], ["unverified-dirty"])
         self.assertIn("nodes/note.md", report.conflicts[0]["message"])
+        self.assertFalse(any("clean" in line for line in report.lines))
 
     def test_unit_an_unpushed_target_is_an_unverified_unpushed_conflict(self) -> None:
         self.create_note()
@@ -2422,6 +2423,55 @@ class MemoryUpdateAttestationTests(unittest.TestCase):
         )
         self.assertEqual([item["code"] for item in report.conflicts], ["unverified-log"])
         self.assertIn("nodes/log/note.md", report.conflicts[0]["message"])
+
+    def commit_other(self, name: str) -> Path:
+        """One committed, pushed sibling file this publish will not touch."""
+        other = self.shared / "nodes" / name
+        other.write_text("base\n", encoding="utf-8")
+        git_run("add", f"nodes/{name}", cwd=self.shared)
+        git_run(
+            "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m",
+            f"memory_update create: {name}\n\nAdds a sibling node.",
+            cwd=self.shared,
+        )
+        git_run("push", "origin", "main", cwd=self.shared)
+        return other
+
+    def test_unit_dirt_outside_the_commit_is_advised_and_keeps_clean_off(self) -> None:
+        self.create_note()
+        tracked = self.commit_other("tracked.md")
+        staged = self.commit_other("staged.md")
+        tracked.write_text("edited\n", encoding="utf-8")
+        staged.write_text("edited\n", encoding="utf-8")
+        git_run("add", "nodes/staged.md", cwd=self.shared)
+        (self.shared / "nodes" / "untracked.md").write_text("scratch\n", encoding="utf-8")
+        report = load_hook_module("rm_verify").PublishAttestation(self.shared).attest(
+            sha=self.head(), changed=[self.leaf], appended=[]
+        )
+        self.assertEqual(report.conflicts, [])
+        self.assertFalse(any("clean" in line for line in report.lines))
+        advice = [line for line in report.lines if line.startswith("attention:")]
+        self.assertEqual(len(advice), 1)
+        for name in ("nodes/tracked.md", "nodes/staged.md", "nodes/untracked.md"):
+            self.assertIn(name, advice[0])
+
+    def test_unit_committed_dirt_does_not_hide_dirt_outside_the_commit(self) -> None:
+        self.create_note()
+        other = self.commit_other("other.md")
+        self.leaf.write_text("dirty\n", encoding="utf-8")
+        other.write_text("dirty too\n", encoding="utf-8")
+        report = load_hook_module("rm_verify").PublishAttestation(self.shared).attest(
+            sha=self.head(), changed=[self.leaf], appended=[]
+        )
+        self.assertEqual([item["code"] for item in report.conflicts], ["unverified-dirty"])
+        self.assertFalse(any("clean" in line for line in report.lines))
+        self.assertTrue(
+            any(
+                line.startswith("attention:") and "nodes/other.md" in line
+                for line in report.lines
+            )
+        )
+        self.assertEqual(other.read_text(encoding="utf-8"), "dirty too\n")
 
 
 if __name__ == "__main__":
