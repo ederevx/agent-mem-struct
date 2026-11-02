@@ -5,11 +5,11 @@ reports the mechanical violations of one commit message - column width, the
 single blank line before the final trailer block, that block's agreement with
 `git interpret-trailers`, a trailer outside that block, a token outside the
 allowed set of `trailer-policy.json`, indented lines in it or the paragraph
-above it, `\\xNN` escapes of printable ASCII, and the running agent's own
-model on its `Assisted-by:` line - and `PushLint` applies it to the commits a
-`git push` would publish. Both are read-only: nothing here
-stages, commits, or writes, git stays behind `rm_git.GitWorktree`, and the
-push scan is one `git log` inside a fixed window.
+above it, `\\xNN` escapes of printable ASCII, and an `Assisted-by:` value
+that is not exactly the literal `LLM` - and `PushLint` applies it to the
+commits a `git push` would publish. Both are read-only: nothing here stages,
+commits, or writes, git stays behind `rm_git.GitWorktree`, and the push scan
+is one `git log` inside a fixed window.
 
 A push made inside a script the agent runs is not a `git push` tool call, so
 it is never detected here and never linted.
@@ -35,7 +35,10 @@ TRAILER_UNAVAILABLE = (
 TRAILER_MALFORMED = "the final trailer block is not what git interpret-trailers parsed"
 PRINTABLE_ESCAPE_RE = re.compile(r"(?i)\\x(2[0-9a-f]|[3-6][0-9a-f]|7[0-9a-e])")
 ATTRIBUTION_RE = re.compile(r"^Assisted-by:[ \t]*(?P<value>.*)$")
-MODEL_FREE_ATTRIBUTION = "LLM"
+# The one attribution this project accepts. A model id is not part of the
+# trailer: a session may be answered by a virtual routing model or by any tier
+# of a failover chain, so naming one would state something unverifiable.
+ATTRIBUTION_VALUE = "LLM"
 
 
 class MessageLint:
@@ -51,7 +54,7 @@ class MessageLint:
         self.policy = policy if policy is not None else TrailerPolicy.load()
         self.scratch_root = scratch_root
 
-    def violations(self, message: str, *, agent: str, model: str) -> list[str]:
+    def violations(self, message: str) -> list[str]:
         """Every mechanical violation of this message, in reading order."""
         lines = self.message_lines(message)
         block_start, findings = self.resolve_block(lines, message)
@@ -62,7 +65,7 @@ class MessageLint:
         findings.extend(self._unknown_trailers(lines, block_start))
         findings.extend(self._indented(lines, block_start))
         findings.extend(self._escapes(lines))
-        findings.extend(self._attribution(lines, agent, model))
+        findings.extend(self._attribution(lines))
         return findings
 
     @staticmethod
@@ -268,22 +271,17 @@ class MessageLint:
         return findings
 
     @staticmethod
-    def _attribution(lines: list[str], agent: str, model: str) -> list[str]:
-        if not agent or not model:
-            return []
+    def _attribution(lines: list[str]) -> list[str]:
         findings: list[str] = []
-        prefix = f"{agent}:"
         for number, line in enumerate(lines, start=1):
             match = ATTRIBUTION_RE.match(line)
             if not match:
                 continue
             value = match.group("value").strip()
-            if value == MODEL_FREE_ATTRIBUTION or not value.startswith(prefix):
-                continue
-            actual = value[len(prefix):].strip()
-            if actual != model:
+            if value != ATTRIBUTION_VALUE:
                 findings.append(
-                    f"line {number} names model {actual!r}, not PI_MODEL {model!r}"
+                    f"line {number} is Assisted-by: {value!r}, "
+                    f"expected {ATTRIBUTION_VALUE!r}"
                 )
         return findings
 
@@ -313,10 +311,8 @@ class PushLintReport:
 class PushLint:
     """Lints the commits one `git push` would publish, read-only."""
 
-    def __init__(self, root: Path, agent: str = "", model: str | None = None) -> None:
+    def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self.agent = agent
-        self.model = os.environ.get("PI_MODEL", "") if model is None else model
         self.stop: float | None = None
         self.worktree = GitWorktree(self.root, window=self.remaining)
         self.lint = MessageLint(self.worktree)
@@ -357,9 +353,7 @@ class PushLint:
             if author.strip() != email:
                 continue
             subject = self.subject(message)
-            for violation in self.lint.violations(
-                message, agent=self.agent, model=self.model
-            ):
+            for violation in self.lint.violations(message):
                 report.blocked.append(f"{sha.strip()[:12]} {subject}: {violation}")
         return report
 
