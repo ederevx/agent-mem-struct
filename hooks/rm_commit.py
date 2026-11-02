@@ -13,7 +13,6 @@ or no upstream branch is detected and committed locally instead.
 """
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 
@@ -47,9 +46,8 @@ class CommitOutcome:
 class CommitPublisher:
     """One owner for committing and pushing the shared paths a mutation wrote."""
 
-    def __init__(self, root: Path, agent: str = "") -> None:
+    def __init__(self, root: Path) -> None:
         self.root = root
-        self.agent = agent
         self.stop: float | None = None
         self.worktree = GitWorktree(root, window=self.remaining)
 
@@ -65,9 +63,7 @@ class CommitPublisher:
                 note="no `commit_message` was given, so the written shared paths were "
                 "left uncommitted.",
             )
-        violations = MessageLint(self.worktree).violations(
-            message, agent=self.agent, model=os.environ.get("PI_MODEL", "")
-        )
+        violations = MessageLint(self.worktree).violations(message)
         if violations:
             return CommitOutcome(
                 conflict=self.conflict(

@@ -384,7 +384,7 @@ class EventDispatcher:
                 )
                 return True, ""
             repo, remote, sources = invocation
-            report = PushLint(repo, agent=self.agent).check(remote, sources)
+            report = PushLint(repo).check(remote, sources)
             if report.blocked:
                 self.deny_pretool(
                     "message-lint: push blocked: "

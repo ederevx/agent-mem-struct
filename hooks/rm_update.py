@@ -164,7 +164,7 @@ class MemoryUpdater:
                     ) if part
                 ),
             )
-        publisher = CommitPublisher(shared, agent=self.state.agent)
+        publisher = CommitPublisher(shared)
         outcome = publisher.publish(written, self.commit_message(request))
         if outcome.conflict is not None:
             conflict = outcome.conflict
@@ -412,9 +412,7 @@ class MemoryUpdater:
         notes: list[str] = []
         verified: list[str] = []
         for root, group in groups.items():
-            outcome = CommitPublisher(
-                Path(root), agent=self.state.agent
-            ).publish(group, message)
+            outcome = CommitPublisher(Path(root)).publish(group, message)
             if outcome.conflict is not None:
                 conflict = outcome.conflict
                 return self.conflict(
