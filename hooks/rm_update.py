@@ -689,7 +689,8 @@ class MemoryUpdater:
                 operation,
                 "log-target",
                 f"{log} is the paired log of the active leaf {leaf}.",
-                fix="pass the active leaf as `path`; a log path is accepted only once its leaf is retired",
+                fix="pass the active leaf as `path`; a log path is accepted "
+                "only once its leaf is retired",
             )
         if not log.exists():
             return leaf, self.conflict(operation, "not-found", f"{log} does not exist.")
