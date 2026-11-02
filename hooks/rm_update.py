@@ -19,7 +19,8 @@ Operations: create (node or group), set (current state, moving only the
 lines it displaces into the log unless `mechanical`), log (append
 history), commit (publish hand-edited leaves the agent made with its own
 editor), rename (leaf + log + attachment directory + inbound links),
-retire (remove active, keep log), requires (frontmatter prerequisites),
+retire (move the final state and the retirement account into the log,
+remove active), requires (frontmatter prerequisites),
 attach and detach (the leaf's significant-file directory).
 """
 from __future__ import annotations
@@ -520,7 +521,30 @@ class MemoryUpdater:
         leaf, error = self.resolve_leaf(request, "retire")
         if error is not None:
             return error
+        text = str(request.get("text") or "")
+        if not text.strip():
+            return self.conflict(
+                "retire", "bad-request", "`text` is required; supply the retirement account."
+            )
+        conflict = self.non_ascii_conflict("retire", "text", text)
+        if conflict is not None:
+            return conflict
+        log = leaf.parent / "log" / leaf.name
+        if not log.exists():
+            return self.log_conflict("retire", leaf)
+        previous, read_error = self.read(leaf)
+        if read_error is not None:
+            return self.conflict("retire", "not-found", read_error)
+        appended: list[tuple[str, str]] = []
+        final = self.superseded_text(previous, "")
+        if final:
+            self.append_log(log, final, "final state before retirement")
+            appended.append((str(log), final))
+        account = text.rstrip() + "\n"
+        self.append_log(log, account, "retirement")
+        appended.append((str(log), account))
         changed = self.index_remove(leaf.parent, leaf.stem)
+        changed.append(str(log))
         if leaf.exists():
             leaf.unlink()
             changed.append(str(leaf))
@@ -532,6 +556,7 @@ class MemoryUpdater:
             "retire",
             changed=changed,
             note="the paired log is kept as history.",
+            appended=appended,
         )
 
     def op_requires(self, request: dict[str, Any]) -> UpdateResult:
