@@ -1850,6 +1850,40 @@ class MemoryUpdateTests(unittest.TestCase):
         self.assertIn("missing-counterpart", self.text(result))
         self.assertTrue(leaf.exists())
 
+    def test_log_appends_to_a_retired_nodes_log(self) -> None:
+        self.create("gone", body="body")
+        leaf = self.local / "nodes" / "gone.md"
+        log = self.local / "nodes" / "log" / "gone.md"
+        self.call(operation="retire", path=str(leaf), text="retired: reason.")
+        result = self.call(operation="log", path=str(log), text="after the retirement")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("after the retirement", log.read_text(encoding="utf-8"))
+
+    def test_log_refuses_the_log_of_an_active_leaf(self) -> None:
+        self.create("note", body="body")
+        log = self.local / "nodes" / "log" / "note.md"
+        before = log.read_text(encoding="utf-8")
+        result = self.call(operation="log", path=str(log), text="history")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("log-target", self.text(result))
+        self.assertIn("paired log of the active leaf", self.text(result))
+        self.assertEqual(log.read_text(encoding="utf-8"), before)
+
+    def test_log_on_a_missing_log_is_not_found(self) -> None:
+        result = self.call(
+            operation="log", path=str(self.local / "nodes" / "log" / "absent.md"),
+            text="history",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("not-found", self.text(result))
+
+    def test_set_on_a_log_path_is_still_a_log_target(self) -> None:
+        self.create("note", body="body")
+        log = self.local / "nodes" / "log" / "note.md"
+        result = self.call(operation="set", path=str(log), body="body")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("logs are history; use the log operation", self.text(result))
+
     def test_requires_sets_then_clears_frontmatter(self) -> None:
         self.create("alpha", body="alpha")
         self.create("beta", body="beta")
@@ -2394,6 +2428,39 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         published = git_run("show", "HEAD:nodes/log/note.md", cwd=self.origin).stdout
         self.assertIn("kept body", published)
         self.assertIn("retired: the node is done", published)
+
+    def test_commit_publishes_a_hand_edited_log_of_a_retired_node(self) -> None:
+        self.create_note(body="kept body")
+        self.call(
+            operation="retire",
+            path=str(self.leaf),
+            text="retired: reason.",
+            commit_message="memory_update retire: note\n\nDrops the note node.",
+        )
+        logged = self.log.read_text(encoding="utf-8")
+        self.log.write_text(logged + "\nby hand after\n", encoding="utf-8")
+        result = self.call(
+            operation="commit", path=str(self.log), commit_message="commit: retired log"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.origin)
+        self.assertEqual(sorted(files.stdout.split()), ["nodes/log/note.md"])
+        published = git_run("show", "HEAD:nodes/log/note.md", cwd=self.origin).stdout
+        self.assertIn("by hand after", published)
+        self.assertNotIn("superseded current state", published)
+
+    def test_commit_refuses_the_log_of_an_active_leaf(self) -> None:
+        self.create_note()
+        head = git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip()
+        self.log.write_text(
+            self.log.read_text(encoding="utf-8") + "\nby hand\n", encoding="utf-8"
+        )
+        result = self.call(
+            operation="commit", path=str(self.log), commit_message="commit: the log"
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("log-target", self.text(result))
+        self.assertEqual(git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip(), head)
 
     def test_an_unbreakable_long_line_is_stored_byte_for_byte(self) -> None:
         self.create_note()
