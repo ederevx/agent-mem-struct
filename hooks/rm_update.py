@@ -19,7 +19,8 @@ Operations: create (node or group), set (current state, moving only the
 lines it displaces into the log unless `mechanical`), log (append
 history), commit (publish hand-edited leaves the agent made with its own
 editor), rename (leaf + log + attachment directory + inbound links),
-retire (remove active, keep log), requires (frontmatter prerequisites),
+retire (move the final state and the retirement account into the log,
+remove active), requires (frontmatter prerequisites),
 attach and detach (the leaf's significant-file directory).
 """
 from __future__ import annotations
@@ -277,7 +278,7 @@ class MemoryUpdater:
         )
 
     def op_log(self, request: dict[str, Any]) -> UpdateResult:
-        leaf, error = self.resolve_leaf(request, "log")
+        leaf, error = self.resolve_history(request, "log")
         if error is not None:
             return error
         text = str(request.get("text") or "")
@@ -342,13 +343,13 @@ class MemoryUpdater:
         dirty = {str(path) for path in edits.dirty_paths()}
         raw = self.required(request, "path")
         if raw:
-            leaf, error = self.resolve_leaf(request, "commit")
+            leaf, error = self.resolve_history(request, "commit")
             if error is not None:
                 return error
             if not edits.is_repo(leaf):
                 return self.unbacked_commit(leaf)
             log = leaf.parent / "log" / leaf.name
-            targets = [leaf]
+            targets = [leaf] if leaf.exists() else []
             if log.exists() and self.dirty(log, dirty):
                 targets.append(log)
         else:
@@ -520,7 +521,30 @@ class MemoryUpdater:
         leaf, error = self.resolve_leaf(request, "retire")
         if error is not None:
             return error
+        text = str(request.get("text") or "")
+        if not text.strip():
+            return self.conflict(
+                "retire", "bad-request", "`text` is required; supply the retirement account."
+            )
+        conflict = self.non_ascii_conflict("retire", "text", text)
+        if conflict is not None:
+            return conflict
+        log = leaf.parent / "log" / leaf.name
+        if not log.exists():
+            return self.log_conflict("retire", leaf)
+        previous, read_error = self.read(leaf)
+        if read_error is not None:
+            return self.conflict("retire", "not-found", read_error)
+        appended: list[tuple[str, str]] = []
+        final = self.superseded_text(previous, "")
+        if final:
+            self.append_log(log, final, "final state before retirement")
+            appended.append((str(log), final))
+        account = text.rstrip() + "\n"
+        self.append_log(log, account, "retirement")
+        appended.append((str(log), account))
         changed = self.index_remove(leaf.parent, leaf.stem)
+        changed.append(str(log))
         if leaf.exists():
             leaf.unlink()
             changed.append(str(leaf))
@@ -532,6 +556,7 @@ class MemoryUpdater:
             "retire",
             changed=changed,
             note="the paired log is kept as history.",
+            appended=appended,
         )
 
     def op_requires(self, request: dict[str, Any]) -> UpdateResult:
@@ -646,6 +671,31 @@ class MemoryUpdater:
             )
         return leaf, None
 
+    def resolve_history(
+        self, request: dict[str, Any], operation: str
+    ) -> tuple[Path, UpdateResult | None]:
+        """The leaf whose paired log `log` and `commit` address.
+
+        A log outlives its leaf when the identity is retired, so a `log/` path
+        is accepted once its active leaf is gone; a live leaf's history is
+        still reached through the leaf itself.
+        """
+        log, error = self.resolve(self.required(request, "path"))
+        if error is not None or log.parent.name != "log" or log.suffix != ".md":
+            return self.resolve_leaf(request, operation)
+        leaf = log.parent.parent / log.name
+        if leaf.exists():
+            return leaf, self.conflict(
+                operation,
+                "log-target",
+                f"{log} is the paired log of the active leaf {leaf}.",
+                fix="pass the active leaf as `path`; a log path is accepted "
+                "only once its leaf is retired",
+            )
+        if not log.exists():
+            return leaf, self.conflict(operation, "not-found", f"{log} does not exist.")
+        return leaf, None
+
     def conflict(
         self, operation: str, code: str, message: str, fix: str = ""
     ) -> UpdateResult:
@@ -714,11 +764,20 @@ class MemoryUpdater:
         if not index.exists():
             return []
         text, _ = self.read(index)
-        kept = [
-            line for line in text.splitlines()
-            if not re.search(r"\[\[" + re.escape(name) + r"\]\]", line)
-        ]
-        if len(kept) == len(text.splitlines()):
+        lines = text.splitlines()
+        kept: list[str] = []
+        bullet: int | None = None
+        for line in lines:
+            indent = len(line) - len(line.lstrip())
+            if bullet is not None and line.strip() and indent > bullet:
+                continue
+            bullet = None
+            if re.search(r"\[\[" + re.escape(name) + r"\]\]", line):
+                if re.match(r"\s*[-*+] ", line):
+                    bullet = indent
+                continue
+            kept.append(line)
+        if len(kept) == len(lines):
             return []
         self.write(index, "\n".join(kept).rstrip("\n") + "\n")
         return [str(index)]
