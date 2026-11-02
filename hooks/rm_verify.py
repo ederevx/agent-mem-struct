@@ -144,7 +144,7 @@ class PublishAttestation:
             attention.append("attention: message has no body (subject only)")
         attention.extend(
             f"attention: {finding}"
-            for finding in lint.violations(message, agent="", model="")
+            for finding in lint.violations(message)
         )
         if attention:
             report.lines.extend(attention)
