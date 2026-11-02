@@ -714,11 +714,20 @@ class MemoryUpdater:
         if not index.exists():
             return []
         text, _ = self.read(index)
-        kept = [
-            line for line in text.splitlines()
-            if not re.search(r"\[\[" + re.escape(name) + r"\]\]", line)
-        ]
-        if len(kept) == len(text.splitlines()):
+        lines = text.splitlines()
+        kept: list[str] = []
+        bullet: int | None = None
+        for line in lines:
+            indent = len(line) - len(line.lstrip())
+            if bullet is not None and line.strip() and indent > bullet:
+                continue
+            bullet = None
+            if re.search(r"\[\[" + re.escape(name) + r"\]\]", line):
+                if re.match(r"\s*[-*+] ", line):
+                    bullet = indent
+                continue
+            kept.append(line)
+        if len(kept) == len(lines):
             return []
         self.write(index, "\n".join(kept).rstrip("\n") + "\n")
         return [str(index)]
