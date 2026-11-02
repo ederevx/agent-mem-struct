@@ -1986,7 +1986,7 @@ class MemoryUpdateCommitTests(unittest.TestCase):
             "\n"
             "See https://example.com/" + "a" * 100 + " for the detail.\n"
             "\n"
-            "Assisted-by: some-other-agent:model\n"
+            "Assisted-by: LLM\n"
             "Signed-off-by: Someone Else <other@example.com>"
         )
         result = self.create_note(commit_message=written)

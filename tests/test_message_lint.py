@@ -23,7 +23,7 @@ SCRATCH_ROOT = Path(
     )
 )
 TRAILER = (
-    "Assisted-by: pi:deepseek/deepseek-v4.1-flash\n"
+    "Assisted-by: LLM\n"
     "Signed-off-by: Edrick Sinsuan <evcsinsuan@gmail.com>"
 )
 BAD_LINE = "word " * 30
@@ -173,12 +173,9 @@ class MessageLintUnitTests(unittest.TestCase):
         from rm_lint import MessageLint
 
         self.lint = MessageLint(GitWorktree(REPO))
-        self.model = "deepseek/deepseek-v4.1-flash"
 
-    def check(self, message: str, *, agent: str = "pi", model: str | None = None) -> list[str]:
-        return self.lint.violations(
-            message, agent=agent, model=self.model if model is None else model
-        )
+    def check(self, message: str) -> list[str]:
+        return self.lint.violations(message)
 
     def test_clean_message_has_no_violations(self) -> None:
         self.assertEqual(
@@ -244,9 +241,7 @@ class MessageLintUnitTests(unittest.TestCase):
         git("init", "-b", "main", cwd=repo)
         git("config", "trailer.probe.key", "Signed-off-by", cwd=repo)
         message = f"subject\n\nprobe: Example\n{TRAILER}"
-        aliased = MessageLint(GitWorktree(repo)).violations(
-            message, agent="pi", model=self.model
-        )
+        aliased = MessageLint(GitWorktree(repo)).violations(message)
         self.assertEqual(aliased, self.check(message))
         self.assertTrue(any("probe:" in item for item in aliased))
 
@@ -281,16 +276,14 @@ class MessageLintUnitTests(unittest.TestCase):
         message = f"subject\n\nprobe: Example\n{TRAILER}"
         aliased = MessageLint(
             GitWorktree(REPO), scratch_root=scratch
-        ).violations(message, agent="pi", model=self.model)
+        ).violations(message)
         self.assertEqual(aliased, self.check(message))
         self.assertTrue(any("probe:" in item for item in aliased))
 
     def test_trailer_validation_is_unavailable_without_git(self) -> None:
         from rm_lint import MessageLint
 
-        findings = MessageLint().violations(
-            f"subject\n\n{TRAILER}", agent="pi", model=self.model
-        )
+        findings = MessageLint().violations(f"subject\n\n{TRAILER}")
         self.assertTrue(any("trailer validation is unavailable" in item for item in findings))
 
     def test_a_trailer_line_outside_the_final_block_is_flagged(self) -> None:
@@ -324,22 +317,18 @@ class MessageLintUnitTests(unittest.TestCase):
         )
         self.assertEqual(self.check(r"subject \xff"), [])
 
-    def test_a_foreign_or_llm_attribution_passes(self) -> None:
-        self.assertEqual(self.check(f"subject\n\nAssisted-by: LLM"), [])
-        self.assertEqual(self.check(f"subject\n\nAssisted-by: codex:{self.model}"), [])
+    def test_the_literal_llm_attribution_passes(self) -> None:
+        self.assertEqual(self.check("subject\n\nAssisted-by: LLM"), [])
 
-    def test_the_agents_own_model_must_match(self) -> None:
-        self.assertEqual(
-            self.check(f"subject\n\nAssisted-by: pi:{self.model}"), []
-        )
-        findings = self.check("subject\n\nAssisted-by: pi:another-model")
-        self.assertTrue(any("not PI_MODEL" in item for item in findings))
-
-    def test_the_model_check_is_skipped_when_unset(self) -> None:
-        self.assertEqual(
-            self.check("subject\n\nAssisted-by: pi:another-model", model=""), []
-        )
-
+    def test_an_attribution_naming_a_model_is_flagged(self) -> None:
+        # A session may be served by a virtual routing model or by any tier of a
+        # failover chain, so a model id states something no trailer can verify.
+        for value in ("pi:glm-5.3-flash", "codex:gpt-5.4", "LLM:extra", "llm"):
+            findings = self.check(f"subject\n\nAssisted-by: {value}")
+            self.assertTrue(
+                any("expected 'LLM'" in item for item in findings),
+                f"{value!r} must be flagged",
+            )
 
 class PushLintUnitTests(unittest.TestCase):
     """`rm_lint.PushLint`: the bounded read-only scan."""
@@ -355,7 +344,7 @@ class PushLintUnitTests(unittest.TestCase):
         bare = self.temp / "no-remote"
         bare.mkdir()
         git("init", "-b", "main", cwd=bare)
-        report = PushLint(bare, agent="pi", model="").check("", [])
+        report = PushLint(bare).check("", [])
         self.assertEqual(report.blocked, [])
         self.assertIn("remote could not be resolved", report.incomplete)
 
@@ -365,7 +354,7 @@ class PushLintUnitTests(unittest.TestCase):
         commit_message(self.clone, "first\n\nbody")
         commit_message(self.clone, "second\n\nbody")
         with mock.patch.object(rm_lint, "PUSH_MAX_COMMITS", 1):
-            report = rm_lint.PushLint(self.clone, agent="pi", model="").check(
+            report = rm_lint.PushLint(self.clone).check(
                 "origin", ["main"]
             )
         self.assertEqual(report.blocked, [])
@@ -376,7 +365,7 @@ class PushLintUnitTests(unittest.TestCase):
 
         commit_message(self.clone, f"subject\n\n{BAD_LINE}", email="other@example.com")
         commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        report = PushLint(self.clone, agent="pi", model="").check("origin", ["main"])
+        report = PushLint(self.clone).check("origin", ["main"])
         self.assertEqual(len(report.blocked), 1)
         self.assertIn("cols with no unbreakable token", report.blocked[0])
 
@@ -389,7 +378,7 @@ class PushGateTests(unittest.TestCase):
         self.temp = Path(tempfile.mkdtemp(prefix="ams-pushgate-", dir=SCRATCH_ROOT))
         self.home, self.shared = make_home(self.temp / "home")
         self.clone = make_clone(self.temp)
-        self.env = dict(os.environ, PI_MODEL="")
+        self.env = dict(os.environ)
         open_gate("pi", self.home, self.shared, environment=self.env)
 
     def push(
@@ -494,10 +483,10 @@ class PushGateTests(unittest.TestCase):
         self.assertNotIn("permissionDecision", body)
         self.assertIn("push not fully linted:", body.get("additionalContext", ""))
 
-    def test_wrong_model_passes_when_pi_model_is_unset(self) -> None:
+    def test_a_model_naming_attribution_is_denied(self) -> None:
         commit_message(self.clone, "subject\n\nAssisted-by: pi:some-other-model")
         result = self.push("git push origin main")
-        self.assertEqual(result.stdout.strip(), "")
+        self.assertIn("expected 'LLM'", self.decision(result)["permissionDecisionReason"])
 
 
 class MemoryCommitLintTests(unittest.TestCase):
