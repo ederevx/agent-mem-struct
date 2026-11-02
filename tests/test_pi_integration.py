@@ -1766,6 +1766,36 @@ class MemoryUpdateTests(unittest.TestCase):
         self.assertTrue((self.local / "nodes" / "log" / "gone.md").is_file())
         self.assertNotIn("[[gone]]", (self.local / "nodes" / "MEMORY.md").read_text(encoding="utf-8"))
 
+    def test_retire_drops_a_wrapped_index_bullet_whole(self) -> None:
+        self.create("gone", body="body")
+        self.create("keep", body="body")
+        index = self.local / "nodes" / "MEMORY.md"
+        index.write_text(
+            "- [[gone]] - first line\n  orphan one\n  orphan two\n"
+            "- [[keep]] - stays\n  keeps its second line\n",
+            encoding="utf-8",
+        )
+        leaf = self.local / "nodes" / "gone.md"
+        result = self.call(operation="retire", path=str(leaf), text="retired: reason.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rewritten = index.read_text(encoding="utf-8")
+        self.assertNotIn("[[gone]]", rewritten)
+        self.assertNotIn("orphan one", rewritten)
+        self.assertNotIn("orphan two", rewritten)
+        self.assertIn("[[keep]]", rewritten)
+        self.assertIn("keeps its second line", rewritten)
+
+    def test_retire_keeps_the_line_after_a_matching_prose_line(self) -> None:
+        self.create("gone", body="body")
+        index = self.local / "nodes" / "MEMORY.md"
+        index.write_text("See [[gone]].\n  indented note\n", encoding="utf-8")
+        leaf = self.local / "nodes" / "gone.md"
+        result = self.call(operation="retire", path=str(leaf), text="retired: reason.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rewritten = index.read_text(encoding="utf-8")
+        self.assertNotIn("[[gone]]", rewritten)
+        self.assertIn("indented note", rewritten)
+
     def test_requires_sets_then_clears_frontmatter(self) -> None:
         self.create("alpha", body="alpha")
         self.create("beta", body="beta")
