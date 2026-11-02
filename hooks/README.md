@@ -263,7 +263,11 @@ The bridge maps Pi events onto the hook's event vocabulary:
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
   mechanical, and supports create, set, log, rename, retire, requires,
-  attach, detach, and commit. `log` accepts ASCII history only: a non-ASCII
+  attach, detach, and commit. `retire` requires the retirement account as
+  `text` and moves the leaf's final state into the paired log before removing
+  it. `log` and `commit` also take a retired leaf's paired `log/<stem>.md`;
+  for a live leaf that path is a `log-target` conflict.
+  `log` accepts ASCII history only: a non-ASCII
   character returns a `non-ascii` conflict naming up to five offending
   characters by line, column, and code point, and writes nothing. `commit`
   pairs with the built-in `edit` tool for

@@ -17,6 +17,23 @@ The lint and the commit hook therefore no longer take an agent or a model at
 all: the rules that resolved one are deleted, not left unused, so the trailer
 cannot drift back to naming a model.
 
+## 2026-11-02T01:20:42-05:00 - keep a retired node's final state and its history writable
+
+`retire` removed only the first line of a wrapped index bullet, so its
+continuation lines stayed behind as orphans; it dropped the caller's `text`
+without a word; and it unlinked the leaf without moving its current body into
+the paired log, so a node's final state survived only in Git history. It now
+requires the retirement account as `text` and appends the node's final state
+under the grouping a `set` uses, then the account, before removing the leaf
+together with its whole index bullet. A `retire` without `text` is now a
+`bad-request`, and one whose paired log is missing is a `missing-counterpart`;
+both went ahead before.
+
+A log outlives its leaf, yet `log` and `commit` could not reach one once the
+node was retired: both resolved through the active leaf. They now accept the
+paired `log/<stem>.md` path while the active leaf is gone, and still refuse it
+for a live leaf.
+
 ## 2026-11-01T15:58:23-05:00 - decide the clean claim from the whole worktree
 
 The attestation a publish prints about itself called the worktree clean from the
