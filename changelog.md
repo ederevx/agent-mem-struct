@@ -4,6 +4,19 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-03T00:00:00-05:00 - require the literal `Assisted-by: LLM` trailer
+
+The trailer recorded which model answered, in a project where one session's work
+is answered by a virtual routing model or by several tiers of a failover chain:
+the selected id names a model no request necessarily reached. The value is now
+the literal `LLM`, which states only that an LLM assisted - the fact the trailer
+exists to record. Any other value, model-named `Co-authored-by` or
+`Assisted-by` included, is flagged and converted.
+
+The lint and the commit hook therefore no longer take an agent or a model at
+all: the rules that resolved one are deleted, not left unused, so the trailer
+cannot drift back to naming a model.
+
 ## 2026-11-01T15:58:23-05:00 - decide the clean claim from the whole worktree
 
 The attestation a publish prints about itself called the worktree clean from the
