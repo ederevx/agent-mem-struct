@@ -23,9 +23,11 @@ cannot drift back to naming a model.
 continuation lines stayed behind as orphans; it dropped the caller's `text`
 without a word; and it unlinked the leaf without moving its current body into
 the paired log, so a node's final state survived only in Git history. It now
-requires the signed retirement account, appends the node's final state under
-the grouping a `set` uses and then the account, and removes the leaf together
-with its whole index bullet.
+requires the retirement account as `text` and appends the node's final state
+under the grouping a `set` uses, then the account, before removing the leaf
+together with its whole index bullet. A `retire` without `text` is now a
+`bad-request`, and one whose paired log is missing is a `missing-counterpart`;
+both went ahead before.
 
 A log outlives its leaf, yet `log` and `commit` could not reach one once the
 node was retired: both resolved through the active leaf. They now accept the
