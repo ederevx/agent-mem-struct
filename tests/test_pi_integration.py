@@ -1760,7 +1760,7 @@ class MemoryUpdateTests(unittest.TestCase):
     def test_retire_removes_active_and_keeps_the_log(self) -> None:
         self.create("gone", body="body")
         leaf = self.local / "nodes" / "gone.md"
-        result = self.call(operation="retire", path=str(leaf))
+        result = self.call(operation="retire", path=str(leaf), text="retired: reason.")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(leaf.exists())
         self.assertTrue((self.local / "nodes" / "log" / "gone.md").is_file())
@@ -1795,6 +1795,60 @@ class MemoryUpdateTests(unittest.TestCase):
         rewritten = index.read_text(encoding="utf-8")
         self.assertNotIn("[[gone]]", rewritten)
         self.assertIn("indented note", rewritten)
+
+    def test_retire_moves_the_final_state_and_the_account_into_the_log(self) -> None:
+        self.create("gone", body="## Status\n\nshipped")
+        leaf = self.local / "nodes" / "gone.md"
+        result = self.call(
+            operation="retire", path=str(leaf), text="retired: reason. Session: `s`"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = (self.local / "nodes" / "log" / "gone.md").read_text(encoding="utf-8")
+        self.assertIn("- final state before retirement", logged)
+        self.assertIn("### Status", logged)
+        self.assertIn("shipped", logged)
+        self.assertIn("- retirement", logged)
+        self.assertIn("retired: reason.", logged)
+        self.assertLess(logged.index("shipped"), logged.index("retired: reason."))
+        self.assertFalse(leaf.exists())
+        self.assertNotIn(
+            "[[gone]]", (self.local / "nodes" / "MEMORY.md").read_text(encoding="utf-8")
+        )
+
+    def test_retire_without_text_is_a_bad_request(self) -> None:
+        self.create("gone", body="body")
+        leaf = self.local / "nodes" / "gone.md"
+        log = self.local / "nodes" / "log" / "gone.md"
+        before = log.read_text(encoding="utf-8")
+        result = self.call(operation="retire", path=str(leaf))
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("bad-request", self.text(result))
+        self.assertIn("supply the retirement account", self.text(result))
+        self.assertTrue(leaf.exists())
+        self.assertIn(
+            "[[gone]]", (self.local / "nodes" / "MEMORY.md").read_text(encoding="utf-8")
+        )
+        self.assertEqual(log.read_text(encoding="utf-8"), before)
+
+    def test_retire_with_non_ascii_text_writes_nothing(self) -> None:
+        self.create("gone", body="body")
+        leaf = self.local / "nodes" / "gone.md"
+        log = self.local / "nodes" / "log" / "gone.md"
+        before = log.read_text(encoding="utf-8")
+        result = self.call(operation="retire", path=str(leaf), text="retired \u2014 reason")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("non-ascii", self.text(result))
+        self.assertTrue(leaf.exists())
+        self.assertEqual(log.read_text(encoding="utf-8"), before)
+
+    def test_retire_without_a_paired_log_is_a_missing_counterpart(self) -> None:
+        self.create("gone", body="body")
+        leaf = self.local / "nodes" / "gone.md"
+        (self.local / "nodes" / "log" / "gone.md").unlink()
+        result = self.call(operation="retire", path=str(leaf), text="retired: reason.")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("missing-counterpart", self.text(result))
+        self.assertTrue(leaf.exists())
 
     def test_requires_sets_then_clears_frontmatter(self) -> None:
         self.create("alpha", body="alpha")
@@ -2322,6 +2376,24 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         logged = self.log.read_text(encoding="utf-8")
         self.assertIn("by hand", logged)
         self.assertNotIn("superseded current state", logged)
+
+    def test_retire_publishes_the_log_with_the_final_state(self) -> None:
+        self.create_note(body="kept body")
+        result = self.call(
+            operation="retire",
+            path=str(self.leaf),
+            text="retired: the node is done. Session: `pi-session`",
+            commit_message="memory_update retire: note\n\nDrops the note node.",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.origin)
+        self.assertEqual(
+            sorted(files.stdout.split()),
+            ["nodes/MEMORY.md", "nodes/log/note.md", "nodes/note.md"],
+        )
+        published = git_run("show", "HEAD:nodes/log/note.md", cwd=self.origin).stdout
+        self.assertIn("kept body", published)
+        self.assertIn("retired: the node is done", published)
 
     def test_an_unbreakable_long_line_is_stored_byte_for_byte(self) -> None:
         self.create_note()

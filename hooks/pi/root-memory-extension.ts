@@ -316,7 +316,8 @@ export class RootMemoryBridge {
 					description: "create/set: the active current-state body.",
 				})),
 				text: Type.Optional(Type.String({
-					description: "log: the history or displaced-state text to append.",
+					description: "log: the history to append. retire: the retirement "
+						+ "account, which is required.",
 				})),
 				requires: Type.Optional(Type.Array(Type.String(), {
 					description: "requires: active memory files to read first.",
