@@ -278,7 +278,7 @@ class MemoryUpdater:
         )
 
     def op_log(self, request: dict[str, Any]) -> UpdateResult:
-        leaf, error = self.resolve_leaf(request, "log")
+        leaf, error = self.resolve_history(request, "log")
         if error is not None:
             return error
         text = str(request.get("text") or "")
@@ -343,13 +343,13 @@ class MemoryUpdater:
         dirty = {str(path) for path in edits.dirty_paths()}
         raw = self.required(request, "path")
         if raw:
-            leaf, error = self.resolve_leaf(request, "commit")
+            leaf, error = self.resolve_history(request, "commit")
             if error is not None:
                 return error
             if not edits.is_repo(leaf):
                 return self.unbacked_commit(leaf)
             log = leaf.parent / "log" / leaf.name
-            targets = [leaf]
+            targets = [leaf] if leaf.exists() else []
             if log.exists() and self.dirty(log, dirty):
                 targets.append(log)
         else:
@@ -669,6 +669,30 @@ class MemoryUpdater:
             return leaf, self.conflict(
                 operation, "not-found", f"{leaf} does not exist.", fix="create it first"
             )
+        return leaf, None
+
+    def resolve_history(
+        self, request: dict[str, Any], operation: str
+    ) -> tuple[Path, UpdateResult | None]:
+        """The leaf whose paired log `log` and `commit` address.
+
+        A log outlives its leaf when the identity is retired, so a `log/` path
+        is accepted once its active leaf is gone; a live leaf's history is
+        still reached through the leaf itself.
+        """
+        log, error = self.resolve(self.required(request, "path"))
+        if error is not None or log.parent.name != "log" or log.suffix != ".md":
+            return self.resolve_leaf(request, operation)
+        leaf = log.parent.parent / log.name
+        if leaf.exists():
+            return leaf, self.conflict(
+                operation,
+                "log-target",
+                f"{log} is the paired log of the active leaf {leaf}.",
+                fix="pass the active leaf as `path`; a log path is accepted only once its leaf is retired",
+            )
+        if not log.exists():
+            return leaf, self.conflict(operation, "not-found", f"{log} does not exist.")
         return leaf, None
 
     def conflict(

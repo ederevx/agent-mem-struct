@@ -304,7 +304,8 @@ export class RootMemoryBridge {
 				path: Type.String({
 					description:
 						"create: the group directory (node) or parent of the new " +
-						"group (kind=group). All others: the active .md leaf. " +
+						"group (kind=group). All others: the active .md leaf; " +
+						"log/commit also take the paired log of a retired leaf. " +
 						"commit: optional, the edited active .md leaf; omitted " +
 						"publishes every dirty path inside the agent's memory tree " +
 						"and the declared shared root.",
