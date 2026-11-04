@@ -521,9 +521,10 @@ class ConventionJudge:
             start = text.find(quote)
             if start < 0 or start != text.rfind(quote):
                 raise JudgeError("invalid_response")
-            order = (rule_index, turn_index, start)
+            order = (rule_index, turn_index)
             if order <= previous:
-                # Strictly increasing order rejects replays and duplicates.
+                # Strictly increasing order rejects replays and duplicates: the
+                # protocol allows one finding per rule per turn.
                 raise JudgeError("invalid_response")
             previous = order
             resolved.append({
@@ -632,7 +633,10 @@ class ConventionJudge:
             if state["epoch"] is not None:
                 return self.result("noop", [])
             try:
-                window = build_window(self.state, event) if event.get("session_entries") else None
+                # Every host has a window source: inline entries from Pi, the
+                # transcript from Claude and Codex. Only a source that has
+                # nothing yet is the empty origin.
+                window = build_window(self.state, event)
             except JudgeError:
                 # At activation an unreadable or absent source is not a refusal:
                 # there is simply nothing yet to accept as pre-activation, which
