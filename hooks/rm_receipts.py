@@ -547,6 +547,37 @@ class ConventionGate:
             judge=self._judge(prior),
         )
 
+    def notification(self, event: dict[str, Any]) -> str:
+        """The judge notice waiting for this session's next prompt, or empty."""
+        judge = self.read_receipt(event).get("judge")
+        text = judge.get("notice") if isinstance(judge, dict) else None
+        return text if isinstance(text, str) else ""
+
+    def record_notice(self, event: dict[str, Any], text: str) -> None:
+        """Set or clear the judge notice the next prompt carries, keeping the rest."""
+        current = self.read_receipt(event)
+        judge = current.get("judge")
+        sources = current.get("sources")
+        reads = current.get("reads")
+        tree = current.get("tree")
+        if isinstance(judge, dict):
+            recorded = dict(judge)
+            if text:
+                recorded["notice"] = text
+            else:
+                recorded.pop("notice", None)
+        else:
+            if not text:
+                return
+            recorded = {"notice": text}
+        self._store_receipt(
+            event,
+            sources if isinstance(sources, dict) else {},
+            reads if isinstance(reads, dict) else {},
+            tree=tree if isinstance(tree, dict) else None,
+            judge=recorded,
+        )
+
     def record_judge(self, event: dict[str, Any], judge: dict[str, Any] | None) -> None:
         """Replace the judge state, preserving every other receipt field."""
         current = self.read_receipt(event)
