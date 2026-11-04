@@ -31,14 +31,18 @@ POLICY_KEYS = (
     "max_input_bytes", "max_output_bytes",
 )
 NUMERIC_KEYS = ("timeout_s", "max_turns", "max_input_bytes", "max_output_bytes")
+# The keys whose value is a duration: a deadline or a wait can hold a fraction,
+# while a count of turns, bytes, or entries cannot.
+FRACTIONAL_KEYS = frozenset({"timeout_s", "lock_timeout_s", "lock_poll_s",
+                             "review_teardown_s"})
 HOST_KEYS = ("command", "extra_env")
 # A pre-schema document: exactly these five, all numbers or an argv.
 LEGACY_KEYS = frozenset({"command", *NUMERIC_KEYS})
 # What `reset` may remove: the numeric overrides, never the authorization.
 RESET_KEEPS = frozenset({"schema", "enabled", "command", "protocol", "hosts"})
-# A settings edit waits this long for its lock, then reports `settings_busy`.
-LOCK_TIMEOUT_S = 2.0
-LOCK_POLL_S = 0.05
+# How long a settings edit waits for its lock, and how often it retries, are
+# policy values like every other bound here: `lock_timeout_s` and `lock_poll_s`
+# in the policy document, never literals beside the loop that uses them.
 # A review deadline has to fit inside the deadline the host installs for the
 # event that runs it, or the host kills the hook before its own timeout can
 # report anything. Neither number is restated here: the installed bound comes
@@ -90,8 +94,8 @@ def names(value: Any) -> list[str]:
 
 
 def number(key: str, value: Any, *, maximum: float | None = None) -> int | float:
-    """A positive finite representable number; `timeout_s` is the only fraction."""
-    integer = key != "timeout_s"
+    """A positive finite representable number, whole except for the timing keys."""
+    integer = key not in FRACTIONAL_KEYS
     if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
         raise JudgeError("invalid_config")
     try:
@@ -142,7 +146,7 @@ class JudgePolicy:
             raise JudgeError("invalid_config") from None
         if not isinstance(document, dict) or set(document) != {
             "schema", "settings", "adapter", "capture_bytes", "review_teardown_s",
-            "defaults", "hosts"
+            "lock_timeout_s", "lock_poll_s", "defaults", "hosts"
         }:
             raise JudgeError("invalid_config")
         return cls(document)
@@ -169,9 +173,21 @@ class JudgePolicy:
 
         It is derived, never restated: the host's own `Stop` budget less the
         margin this document sets, and never more than the platform timers hold.
+        A margin that leaves no room is a policy error, not a deadline of zero.
         """
-        return min(EVENT_TIMEOUTS["Stop"] - self.teardown_margin(),
-                   threading.TIMEOUT_MAX, (2 ** 31 - 1) / 1000)
+        allowance = EVENT_TIMEOUTS["Stop"] - self.teardown_margin()
+        if allowance <= 0:
+            raise JudgeError("invalid_config")
+        return min(allowance, threading.TIMEOUT_MAX, (2 ** 31 - 1) / 1000)
+
+    def lock_timeout(self) -> float:
+        """How long one settings edit may wait for its lock."""
+        return float(number("lock_timeout_s", self.document["lock_timeout_s"]))
+
+    def lock_poll(self) -> float:
+        """How often a waiting settings edit retries its lock."""
+        return float(number("lock_poll_s", self.document["lock_poll_s"],
+                            maximum=self.lock_timeout()))
 
     def capture_bytes(self) -> int:
         """How much of a CLI's own output the adapter may hold before parsing."""
@@ -558,7 +574,8 @@ class JudgeSettings:
             raise JudgeError("settings_write_failed") from None
 
     def _locked(self) -> "_Lock":
-        return _Lock(self.path().with_name(self.path().name + ".lock"))
+        return _Lock(self.path().with_name(self.path().name + ".lock"),
+                     self.policy.lock_timeout(), self.policy.lock_poll())
 
 
 class _Lock:
@@ -568,13 +585,15 @@ class _Lock:
     inode while the previous holder still holds the old one.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, timeout: float, poll: float) -> None:
         self.path = path
+        self.timeout = timeout
+        self.poll = poll
         self.handle: Any = None
         self.windows = False
 
     def __enter__(self) -> "_Lock":
-        deadline = time.monotonic() + LOCK_TIMEOUT_S
+        deadline = time.monotonic() + self.timeout
         try:
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             self.handle = open(self.path, "a+b")
@@ -584,7 +603,7 @@ class _Lock:
             if time.monotonic() >= deadline:
                 self.handle.close()
                 raise JudgeError("settings_busy")
-            time.sleep(LOCK_POLL_S)
+            time.sleep(self.poll)
         return self
 
     def _acquire(self) -> bool:

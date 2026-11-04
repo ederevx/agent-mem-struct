@@ -142,6 +142,17 @@ class JudgeReviewTests(JudgeCase):
         self.write([assistant("a1", None, "rewritten"), assistant("a2", "a1", "second")])
         self.assertEqual(self.review(self.event)["error"], "invalid_window")
 
+    def test_activation_refusal_reaches_the_next_prompt(self) -> None:
+        # Recording a refusal in the receipt is not delivering it: the notice the
+        # next prompt carries is the only channel the user ever sees.
+        path = self.root / "malformed.jsonl"
+        path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')
+        self.receipt(self.event)
+        dispatcher = EventDispatcher("claude", None, None, self.gate)
+        dispatcher.baseline_judge({**self.event, "transcript_path": str(path)},
+                                 self.state)
+        self.assertIn("invalid_window", self.gate.notification(self.event))
+
     def test_settings_report_the_last_review(self) -> None:
         self.write([assistant("a1", None, "first")])
         self.receipt(self.event)
@@ -588,6 +599,16 @@ class JudgeSettingsTests(unittest.TestCase):
         # deadline ceiling is derived from it rather than restated.
         self.assertGreater(JudgePolicy.load().teardown_margin(), 0)
         self.assertLess(JudgePolicy.load().deadline_ceiling(), EVENT_TIMEOUTS["Stop"])
+        # The lock's wait and retry interval are policy values as well.
+        self.assertGreater(JudgePolicy.load().lock_timeout(), 0)
+        self.assertLessEqual(JudgePolicy.load().lock_poll(),
+                             JudgePolicy.load().lock_timeout())
+
+    def test_a_margin_that_leaves_no_review_room_is_invalid(self) -> None:
+        document = dict(JudgePolicy.load().document)
+        document["review_teardown_s"] = EVENT_TIMEOUTS["Stop"]
+        with self.assertRaises(JudgeError):
+            JudgePolicy(document).deadline_ceiling()
 
     def test_edits_are_transactional(self) -> None:
         self.settings.apply("set", "", "timeout_s", "12")

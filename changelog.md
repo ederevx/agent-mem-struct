@@ -46,8 +46,10 @@ do. Pi's window is trimmed at its head by the transport bound, so it proves the
 anchor alone and is not refused after the first review. Activation reads the
 policy's `baseline_entries` of history instead of a constant in the bridge, and
 `/judge-settings` reports the last review the session holds - acceptance or
-refusal code, the boundary reached, and any uncollected notice - because a
-receipt on disk is not an inspectable surface.
+refusal code, the boundary reached, activation without a review, and any
+uncollected notice - because a receipt on disk is not an inspectable surface.
+The activation bound is Pi's, since only a bridge has to ship its branch inside
+the call; the lock's wait and poll interval are policy values too.
 
 Two integration points decide whether a default-on judge behaves: activation and
 the host's own deadline. The watermark is now established at session start, so
