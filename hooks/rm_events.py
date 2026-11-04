@@ -459,9 +459,6 @@ class EventDispatcher:
             body = judge.review(event)
         elif phase == "baseline":
             body = judge.baseline(event)
-            # The bridge reads only the receipt, so activation queues the notice
-            # it would otherwise carry away in a reply nobody keeps.
-            self.queue_notice(event, body)
         elif phase == "settings":
             body = self.judge_settings(event, state)
         else:
@@ -560,16 +557,6 @@ class EventDispatcher:
             self.deliver_notice(event, f"convention judge: the review did not run ({refusal}).")
             return
         self.deliver_notice(event, judge.review(prepared).get("notice"))
-
-    def queue_notice(self, event: dict[str, Any], body: Any) -> None:
-        """Record the notice a judge body carries for the session's next prompt."""
-        notice = body.get("notice") if isinstance(body, dict) else None
-        if not isinstance(notice, str) or not notice:
-            return
-        try:
-            self.gate.record_notice(event, notice)
-        except (OSError, ValueError):
-            pass
 
     def deliver_notice(self, event: dict[str, Any], notice: Any) -> None:
         """Leave one notice for the next prompt, or show it now if it cannot wait.

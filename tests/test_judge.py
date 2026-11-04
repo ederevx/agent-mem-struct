@@ -142,18 +142,21 @@ class JudgeReviewTests(JudgeCase):
         self.write([assistant("a1", None, "rewritten"), assistant("a2", "a1", "second")])
         self.assertEqual(self.review(self.event)["error"], "invalid_window")
 
-    def test_judge_route_queues_the_activation_notice(self) -> None:
-        # Pi asks for the baseline and keeps the receipt, not the reply, so the
-        # refusal has to be recorded before that reply is discarded.
+    def test_judge_route_leaves_the_activation_notice_to_the_bridge(self) -> None:
+        # The bridge delivers the reply it holds, so a refusal recorded here as
+        # well would reach the model twice, on two consecutive turns.
         path = self.root / "malformed.jsonl"
         path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')
         self.receipt(self.event)
         dispatcher = EventDispatcher("pi", None, None, self.gate)
-        with contextlib.redirect_stdout(io.StringIO()):
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
             dispatcher.handle_judge(
                 {"session_id": "s1", "cwd": str(self.root), "phase": "baseline",
                  "transcript_path": str(path)}, self.state)
-        self.assertIn("invalid_window", self.gate.notification(self.event))
+        body = json.loads(captured.getvalue())["hookSpecificOutput"]["judge"]
+        self.assertIn("invalid_window", body["notice"])
+        self.assertEqual(self.gate.notification(self.event), "")
 
     def test_activation_refusal_survives_the_next_review(self) -> None:
         # The refusal belongs to the turn that produced it, so a later review
@@ -179,6 +182,18 @@ class JudgeReviewTests(JudgeCase):
         self.assertIsNone(status["anchor"])
         self.assertTrue(status["anchored"])
         self.assertFalse(status["reviewed"])
+
+    def test_a_consumed_refusal_is_not_carried_again(self) -> None:
+        # A prompt reads the receipt notice and clears it, so the refusal
+        # activation queued reaches one turn instead of every later one.
+        path = self.root / "malformed.jsonl"
+        path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')
+        self.receipt(self.event)
+        EventDispatcher("claude", None, None, self.gate).baseline_judge(
+            {**self.event, "transcript_path": str(path)}, self.state)
+        self.assertIn("invalid_window", self.gate.notification(self.event))
+        self.gate.record_notice(self.event, "")
+        self.assertEqual(self.gate.notification(self.event), "")
 
     def test_status_of_a_refused_activation_names_no_watermark(self) -> None:
         path = self.root / "malformed.jsonl"
