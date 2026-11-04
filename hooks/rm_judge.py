@@ -712,9 +712,11 @@ class ConventionJudge:
         findings = recorded.get("findings")
         return {
             "anchor": recorded.get("anchor"),
-            # A refusal leaves an error where an anchor would be, so the surface
-            # can say no watermark exists instead of naming a boundary.
-            "anchored": bool(recorded.get("anchor")),
+            # Only a valid window writes an epoch, so it - not the anchor - says
+            # whether a watermark exists: an empty-origin activation has none
+            # and is still initialized. A refusal leaves an error where an epoch
+            # would be.
+            "anchored": bool(recorded.get("epoch")),
             "seq": recorded.get("seq"),
             # Activation anchors without reviewing anything, so a state that has
             # not advanced its sequence holds no review to report.
