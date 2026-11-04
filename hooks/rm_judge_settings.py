@@ -41,12 +41,9 @@ LOCK_TIMEOUT_S = 2.0
 LOCK_POLL_S = 0.05
 # A review deadline has to fit inside the deadline the host installs for the
 # event that runs it, or the host kills the hook before its own timeout can
-# report anything. The installed bound is not restated here: it comes from
-# `manage_common`, and the margin left over is what the receipt write, the
-# notice, and process teardown need.
-REVIEW_TEARDOWN_S = 30.0
-TIMEOUT_MAX_S = min(EVENT_TIMEOUTS["Stop"] - REVIEW_TEARDOWN_S, threading.TIMEOUT_MAX,
-                    (2 ** 31 - 1) / 1000)
+# report anything. Neither number is restated here: the installed bound comes
+# from `manage_common`, the margin from the policy document, which owns the
+# room the receipt write, the notice, and process teardown need.
 
 
 class JudgeError(Exception):
@@ -144,7 +141,8 @@ class JudgePolicy:
         except (json.JSONDecodeError, ValueError):
             raise JudgeError("invalid_config") from None
         if not isinstance(document, dict) or set(document) != {
-            "schema", "settings", "adapter", "capture_bytes", "defaults", "hosts"
+            "schema", "settings", "adapter", "capture_bytes", "review_teardown_s",
+            "defaults", "hosts"
         }:
             raise JudgeError("invalid_config")
         return cls(document)
@@ -162,6 +160,19 @@ class JudgePolicy:
             raise JudgeError("invalid_config")
         return Path(__file__).resolve().parent / name
 
+    def teardown_margin(self) -> float:
+        """The seconds a review leaves for the receipt write and teardown."""
+        return float(number("review_teardown_s", self.document["review_teardown_s"]))
+
+    def deadline_ceiling(self) -> float:
+        """The largest review deadline the installed event bound allows.
+
+        It is derived, never restated: the host's own `Stop` budget less the
+        margin this document sets, and never more than the platform timers hold.
+        """
+        return min(EVENT_TIMEOUTS["Stop"] - self.teardown_margin(),
+                   threading.TIMEOUT_MAX, (2 ** 31 - 1) / 1000)
+
     def capture_bytes(self) -> int:
         """How much of a CLI's own output the adapter may hold before parsing."""
         return int(number("capture_bytes", self.document["capture_bytes"]))
@@ -174,7 +185,8 @@ class JudgePolicy:
         return {
             "protocol": protocol(raw["protocol"]),
             "baseline_entries": number("baseline_entries", raw["baseline_entries"]),
-            **{key: number(key, raw[key], maximum=TIMEOUT_MAX_S if key == "timeout_s" else None)
+            **{key: number(key, raw[key],
+                           maximum=self.deadline_ceiling() if key == "timeout_s" else None)
                for key in NUMERIC_KEYS},
         }
 
@@ -268,7 +280,8 @@ class JudgeSettings:
                 "command": None if command is None else argv(command),
                 "protocol": 1,
                 **{key: number(key, document[key],
-                               maximum=TIMEOUT_MAX_S if key == "timeout_s" else None)
+                               maximum=JudgePolicy.load().deadline_ceiling()
+                               if key == "timeout_s" else None)
                    for key in NUMERIC_KEYS},
                 "hosts": {},
             }
@@ -287,7 +300,9 @@ class JudgeSettings:
             "enabled": enabled,
             "command": None if command is None else argv(command),
             **({"protocol": protocol(document["protocol"])} if "protocol" in document else {}),
-            **{key: number(key, document[key], maximum=TIMEOUT_MAX_S if key == "timeout_s" else None)
+            **{key: number(key, document[key],
+                           maximum=JudgePolicy.load().deadline_ceiling()
+                           if key == "timeout_s" else None)
                for key in NUMERIC_KEYS if key in document},
             "hosts": {name: JudgeSettings._override(entry) for name, entry in hosts.items()},
         }
@@ -450,7 +465,8 @@ class JudgeSettings:
             if leaf == "extra_env":
                 return names(self._json(value))
             if leaf == "timeout_s":
-                return number(leaf, self._decimal(value), maximum=TIMEOUT_MAX_S)
+                return number(leaf, self._decimal(value),
+                              maximum=self.policy.deadline_ceiling())
             return number(leaf, self._integer(value))
         except JudgeError as refusal:
             raise JudgeError("invalid_settings_request") from refusal

@@ -471,12 +471,12 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `timeout_s` is capped by the deadline the installed `Stop` and `SubagentStop`
   handlers carry, less the room the receipt write, the notice, and teardown
   need, so a review that times out reports its own deadline instead of being
-  killed before it can record one. Both numbers live in one place: the bound
-  comes from `hooks/manage_common.py`, the margin from
-  `hooks/rm_judge_settings.py`. A larger value is `invalid_config`. Activation
-  reads at most the policy's `baseline_entries` of history, so how much is
-  accepted as pre-activation is a shipped value rather than a constant in the
-  bridge.
+  killed before it can record one. Neither number has two owners: the bound is
+  the installed deadline in `hooks/manage_common.py`, and the margin is
+  `review_teardown_s` in `hooks/judge-policy.json`, beside `capture_bytes`. A
+  larger value is `invalid_config`. Activation reads at most the policy's
+  `baseline_entries` of history, so how much is accepted as pre-activation is a
+  shipped value rather than a constant in the bridge.
 
   The one receipt writer enforces `RECEIPT_MAX_BYTES` on the exact payload it is
   about to replace, for every mutator rather than the judge alone, and refuses

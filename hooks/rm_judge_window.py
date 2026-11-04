@@ -158,7 +158,9 @@ def records(path: Path) -> list[dict[str, Any]]:
     """
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Bytes that are not UTF-8 are an unreadable transcript, not a torn one:
+        # refusing here reports a local code instead of raising through the hook.
         raise JudgeError("invalid_window") from None
     parsed: list[dict[str, Any]] = []
     for line in text.splitlines():

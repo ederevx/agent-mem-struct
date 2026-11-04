@@ -14,7 +14,7 @@ DEFAULT_TIMEOUT = 5
 # Building a checkpoint streams the whole transcript, and a timed-out PreCompact
 # is a silently skipped checkpoint. The event is not latency-sensitive.
 # Stop and SubagentStop run the convention judge, whose own deadline is capped at
-# 60 s (`rm_judge_settings.TIMEOUT_MAX_S`); this outer bound adds room for the
+# the policy's deadline ceiling; this outer bound adds room for the
 # receipt write, the notice, and process teardown, so the hook reports its own
 # timeout instead of being killed before it can record one.
 EVENT_TIMEOUTS = {"PreCompact": 60, "Stop": 90, "SubagentStop": 90}
