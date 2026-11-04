@@ -261,7 +261,7 @@ class JudgeSettings:
             raise JudgeError("invalid_config") from None
         # An omitted policy key inherits the shipped default; only what the
         # document states can override it.
-        config = {**self.policy.defaults(), **self.validate(document)}
+        config = {**self.policy.defaults(), **self._validated(document)}
         config["revision"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
         config["path"] = str(path)
         config["source"] = "file"
@@ -281,14 +281,17 @@ class JudgeSettings:
         return stated
 
     @classmethod
-    def validate(cls, document: Any) -> dict[str, Any]:
+    def validate(cls, document: Any, *, ceiling: float | None = None) -> dict[str, Any]:
         """The whole-document validation: a legacy shape normalizes to schema 2."""
         if not isinstance(document, dict):
             raise JudgeError("invalid_config")
         if "schema" not in document:
             # A pre-schema document keeps every value it holds and its wire
             # protocol, so an upgrade never changes what a command receives.
-            if set(document) != LEGACY_KEYS:
+            # It states no margin, so the caller supplies the ceiling of the
+            # policy it is read against; reloading one here would let the
+            # document and its validator disagree about the deadline.
+            if set(document) != LEGACY_KEYS or ceiling is None:
                 raise JudgeError("invalid_config")
             command = document["command"]
             return {
@@ -296,8 +299,7 @@ class JudgeSettings:
                 "command": None if command is None else argv(command),
                 "protocol": 1,
                 **{key: number(key, document[key],
-                               maximum=JudgePolicy.load().deadline_ceiling()
-                               if key == "timeout_s" else None)
+                               maximum=ceiling if key == "timeout_s" else None)
                    for key in NUMERIC_KEYS},
                 "hosts": {},
             }
@@ -305,6 +307,13 @@ class JudgeSettings:
             raise JudgeError("invalid_config")
         if set(document) - set(POLICY_KEYS) - {"schema", "hosts"}:
             raise JudgeError("invalid_config")
+        # A policy document states the margin its own deadline must fit, so the
+        # ceiling comes from the document; a settings document states none, and
+        # its owner passes the ceiling of the policy it is read against.
+        if ceiling is None:
+            if "review_teardown_s" not in document:
+                raise JudgeError("invalid_config")
+            ceiling = JudgePolicy(document).deadline_ceiling()
         enabled = document.get("enabled", True)
         if not isinstance(enabled, bool):
             raise JudgeError("invalid_config")
@@ -317,8 +326,7 @@ class JudgeSettings:
             "command": None if command is None else argv(command),
             **({"protocol": protocol(document["protocol"])} if "protocol" in document else {}),
             **{key: number(key, document[key],
-                           maximum=JudgePolicy.load().deadline_ceiling()
-                           if key == "timeout_s" else None)
+                           maximum=ceiling if key == "timeout_s" else None)
                for key in NUMERIC_KEYS if key in document},
             "hosts": {name: JudgeSettings._override(entry) for name, entry in hosts.items()},
         }
@@ -416,7 +424,7 @@ class JudgeSettings:
             raise JudgeError("invalid_config") from None
         # An edit may never repair a document it cannot first validate: the
         # values it would keep are unknown, so writing would destroy them.
-        config = self.validate(document)
+        config = self._validated(document)
         if "schema" in document:
             return document
         return {"schema": SCHEMA, "enabled": True, "command": config["command"],
@@ -444,7 +452,7 @@ class JudgeSettings:
             # Both sides are filled from the shipped defaults, because either
             # document may state only a few keys: a sparse document is the
             # default for everything it leaves out.
-            imported = self._effective(self.validate(json.loads(text, object_pairs_hook=unique_object)))
+            imported = self._effective(self._validated(json.loads(text, object_pairs_hook=unique_object)))
         except (json.JSONDecodeError, ValueError):
             raise JudgeError("invalid_settings_request") from None
         if document is not None:
@@ -551,9 +559,13 @@ class JudgeSettings:
             if not entry:
                 hosts.pop(path[1])
 
+    def _validated(self, document: Any) -> dict[str, Any]:
+        """Validate a document against this owner's policy, not a reloaded one."""
+        return self.validate(document, ceiling=self.policy.deadline_ceiling())
+
     def _replace(self, document: dict[str, Any]) -> None:
         """Validate, then replace the document atomically under the lock."""
-        self.validate(document)
+        self._validated(document)
         path = self.path()
         try:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
