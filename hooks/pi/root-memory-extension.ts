@@ -10,10 +10,12 @@
 //   session_before_compact -> PreCompact (cancel manual compaction on failure)
 //   session_compact      -> inject the memory/convention pointer immediately
 //                           (a mid-run compaction has no before_agent_start)
+//   agent_settled        -> Judge prepare/review (the bounded convention judge;
+//                           its notices reach the model on the next turn)
 //
 // Pi's session_start and agent_settled events cannot inject or block anything,
-// so they are deliberately not mapped: turn-end enforcement relies on the
-// PreToolUse gate. All context reaches the model through the single
+// so they carry no gate: turn-end enforcement relies on the PreToolUse gate,
+// and the judge only reports. All context reaches the model through the single
 // injectable point, before_agent_start.
 //
 // Two deployment modes share this one implementation:
@@ -46,6 +48,9 @@ const PREMEMORY_TIMEOUT_MS = 30000;
 const MEMORYUPDATE_TIMEOUT_MS = 30000;
 const MAX_INLINE_ENTRIES = 150;
 const LISTER_TIMEOUT_MS = 30000;
+const UNREADABLE_JUDGE =
+	"agent-mem-struct: the convention judge reply could not be read; " +
+	"that review did not run.";
 const INTERPRETER_NAME_RE = /^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$/i;
 const INTERPRETER_FLAGS = new Set(["-I", "-B", "-E", "-S", "-u"]);
 
@@ -211,6 +216,9 @@ export class RootMemoryBridge {
 	private turnCounter = 0;
 	private turnId = "bootstrap";
 	private pendingNotice = "";
+	/** The tail of every judge task, so receipt-changing calls can wait it out. */
+	private judgeChain: Promise<void> = Promise.resolve();
+	private judgeNotice: { session: string; text: string } | null = null;
 
 	constructor(private readonly config: BridgeConfig) {}
 
@@ -220,6 +228,9 @@ export class RootMemoryBridge {
 		this.registerMemoryUpdateTool(pi);
 		this.registerListerTool(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
+			// A reload may carry another session's in-flight review; settle it
+			// before this session's identity replaces the one it recorded under.
+			await this.judgeChain;
 			this.sessionLabel = this.sessionId(ctx);
 			// A reload reruns discovery; the next turn re-delivers the pre_memory
 			// pointer and any continuity checkpoint so a stale runtime cannot
@@ -231,6 +242,7 @@ export class RootMemoryBridge {
 		pi.on("tool_call", async (event: any, ctx: any) => this.onToolCall(event, ctx));
 		pi.on("session_compact", async () => this.onSessionCompact(pi));
 		pi.on("session_before_compact", async (event: any) => this.onBeforeCompact(event));
+		pi.on("agent_settled", async (_event: any, ctx: any) => this.onAgentSettled(ctx));
 	}
 
 	/** Registers `pre_memory`, the one call that pulls the shared worktree,
@@ -254,7 +266,8 @@ export class RootMemoryBridge {
 	/** Runs the PreMemory hook and turns its catalog, or its failure, into a
 	 *  result the model sees. */
 	private async loadPreMemory(): Promise<unknown> {
-		const result = await this.callHook("PreMemory", {}, PREMEMORY_TIMEOUT_MS);
+		const result = await this.serialize(() =>
+			this.callHook("PreMemory", {}, PREMEMORY_TIMEOUT_MS));
 		const context = this.additionalContext(result);
 		if (!result.ok || context === null) {
 			const fallback = result.timedOut
@@ -364,7 +377,8 @@ export class RootMemoryBridge {
 	 *  result the model sees; a conflict report is an error result so the agent
 	 *  fixes it before re-calling. */
 	private async runMemoryUpdate(params: Record<string, unknown>): Promise<unknown> {
-		const result = await this.callHook("MemoryUpdate", params, MEMORYUPDATE_TIMEOUT_MS);
+		const result = await this.serialize(() =>
+			this.callHook("MemoryUpdate", params, MEMORYUPDATE_TIMEOUT_MS));
 		const context = this.additionalContext(result);
 		if (!result.ok) {
 			const fallback = result.timedOut
@@ -575,11 +589,11 @@ export class RootMemoryBridge {
 		const wasContinuity = this.afterCompaction;
 		this.firstTurn = false;
 		this.afterCompaction = false;
-		const result = await this.callHook(
+		const result = await this.serialize(() => this.callHook(
 			eventName,
 			eventName === "SessionStart" ? { source } : { prompt: event.prompt ?? "" },
 			DEFAULT_TIMEOUT_MS,
-		);
+		));
 		const context = this.additionalContext(result);
 		const parts: string[] = [];
 		if (this.pendingNotice) {
@@ -588,13 +602,18 @@ export class RootMemoryBridge {
 		}
 		if (context === null) {
 			// Surface bridge failures instead of failing silently; retry the
-			// full bundle next turn rather than dropping the session load.
+			// full bundle next turn rather than dropping the session load. The
+			// judge notice is left for that turn.
 			if (eventName === "SessionStart") this.firstTurn = true;
 			this.pendingNotice =
 				`agent-mem-struct: the root-memory hook failed (${eventName}` +
 				`${result.timedOut ? " timed out" : ""}); root memory was NOT re-injected. ` +
 				"Read memory/MEMORY.md and RULES.md before memory work.";
 			return undefined;
+		}
+		if (this.judgeNotice && this.judgeNotice.session === this.sessionLabel) {
+			parts.push(this.judgeNotice.text);
+			this.judgeNotice = null;
 		}
 		parts.push(context);
 		if (wasContinuity && !context.includes("CONTINUITY CHECKPOINT") &&
@@ -615,7 +634,7 @@ export class RootMemoryBridge {
 
 	/** Pi can block, so the memory-mutation gate is enforced here. */
 	private async onToolCall(event: any, ctx: any): Promise<unknown> {
-		const result = await this.callHook(
+		const result = await this.serialize(() => this.callHook(
 			"PreToolUse",
 			{
 				tool_name: event.toolName ?? "",
@@ -623,7 +642,7 @@ export class RootMemoryBridge {
 				cwd: ctx?.cwd ?? process.cwd(),
 			},
 			DEFAULT_TIMEOUT_MS,
-		);
+		));
 		const denial = this.denialReason(result);
 		if (denial) {
 			return { block: true, reason: denial.context || denial.reason };
@@ -659,11 +678,11 @@ export class RootMemoryBridge {
 	 *  one owner, and surfaces a failed load on the next turn instead of
 	 *  dropping the reminder. */
 	private async postCompactionReminder(): Promise<string | null> {
-		const result = await this.callHook(
+		const result = await this.serialize(() => this.callHook(
 			"UserPromptSubmit",
 			{ prompt: "" },
 			DEFAULT_TIMEOUT_MS,
-		);
+		));
 		const context = this.additionalContext(result);
 		if (context === null) {
 			this.pendingNotice =
@@ -681,14 +700,14 @@ export class RootMemoryBridge {
 		const manual = event.reason === "manual";
 		const branchEntries = Array.isArray(event.branchEntries) ? event.branchEntries : [];
 		const sessionEntries = branchEntries.slice(-MAX_INLINE_ENTRIES);
-		const result = await this.callHook(
+		const result = await this.serialize(() => this.callHook(
 			"PreCompact",
 			{
 				triggered_by: manual ? "manual" : "auto",
 				session_entries: sessionEntries,
 			},
 			PRECOMPACT_TIMEOUT_MS,
-		);
+		));
 		if (manual && !result.ok) {
 			return { cancel: true };
 		}
@@ -699,6 +718,90 @@ export class RootMemoryBridge {
 				"next action from the transcript or user.";
 		}
 		return undefined;
+	}
+
+	/** One settle, queued behind every pending receipt writer. */
+	private async onAgentSettled(ctx: any): Promise<void> {
+		const session = this.sessionLabel;
+		await this.serialize(() => this.runJudge(ctx, session));
+	}
+
+	private async runJudge(ctx: any, session: string): Promise<void> {
+		const plan = this.judgeBody(
+			await this.callHook("Judge", { phase: "prepare" }, DEFAULT_TIMEOUT_MS),
+		);
+		if (plan === null) {
+			this.judgeNotice = { session, text: UNREADABLE_JUDGE };
+			return;
+		}
+		if (plan.enabled !== true) {
+			// Silence is right only when no configuration exists at all.
+			if (plan.error !== "disabled") {
+				this.judgeNotice = {
+					session,
+					text: `agent-mem-struct: the convention judge did not run (${plan.error}).`,
+				};
+			}
+			return;
+		}
+		const limits = (plan.limits ?? {}) as Record<string, unknown>;
+		const budget = Number(limits.timeout_s);
+		// The session manager belongs to the extension context, not to the API.
+		const manager = ctx?.sessionManager;
+		const branch = typeof manager?.getBranch === "function" ? manager.getBranch() : [];
+		const leaf = typeof manager?.getLeafId === "function" ? manager.getLeafId() : null;
+		if (typeof leaf !== "string" || !Array.isArray(branch) || branch.length === 0) {
+			return;
+		}
+		// The hook owns the window and its bounds; send the contiguous branch from
+		// its own watermark so a truncating cut here can never read as a gap.
+		const anchor = typeof plan.cursor?.anchor === "string" ? plan.cursor.anchor : null;
+		const at = anchor === null
+			? 0
+			: branch.findIndex((entry: any) => entry?.id === anchor);
+		const entries = at > 0 ? branch.slice(at) : branch;
+		const result = await this.callHook(
+			"Judge",
+			{
+				phase: "review",
+				cursor: plan.cursor ?? null,
+				leaf_id: leaf,
+				session_entries: entries,
+			},
+			Number.isFinite(budget) && budget > 0
+				? Math.round(budget * 1000) + DEFAULT_TIMEOUT_MS
+				: DEFAULT_TIMEOUT_MS,
+		);
+		this.settleJudge(result, session);
+	}
+
+	/** The single writer queue: every receipt-touching hook call runs alone, in
+	 *  arrival order, so a review and a gate call can never interleave. */
+	private serialize<T>(work: () => Promise<T>): Promise<T> {
+		const task = this.judgeChain.then(work);
+		this.judgeChain = task.then(() => undefined, () => undefined);
+		return task;
+	}
+
+	/** The structured judge body of one hook reply, kept out of model context. */
+	private judgeBody(result: HookResult): Record<string, any> | null {
+		try {
+			const body = JSON.parse(result.stdout)?.hookSpecificOutput?.judge;
+			return body && typeof body === "object" ? body : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Turns one review into the notice the next turn of its session carries. */
+	private settleJudge(result: HookResult, session: string): void {
+		const body = this.judgeBody(result);
+		if (body === null) {
+			this.judgeNotice = { session, text: UNREADABLE_JUDGE };
+			return;
+		}
+		const notice = body.notice;
+		if (typeof notice === "string" && notice) this.judgeNotice = { session, text: notice };
 	}
 }
 
