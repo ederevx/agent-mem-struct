@@ -29,22 +29,42 @@ the child sees only the environment names the policy allows.
 
 The wire protocol is 2 and the reply is one line of freedom. The request names
 a `chain`; the reply must begin with it, then either `pass` alone or one
-`<turn> <rule> "<quote>"` line per finding in ascending order, each quote
-occurring exactly once in the turn it names. A wrong chain, `pass` beside
-findings, a reordering, an unquoted or repeated field, a carriage return, or
-trailing material is `invalid_response` and leaves the watermark alone. The
-shipped defaults are 30 s, 32 turns, 64 KiB in, and 4 KiB out, so one review
-costs one bounded call rather than a conversation.
+`<rule> <turn> "<quote>"` line per finding in strictly ascending order, each
+quote occurring exactly once in the turn it names. A wrong chain, `pass` beside
+findings, a reordering, an unquoted or repeated field, surrounding whitespace, a
+carriage return, or trailing material is `invalid_response` and leaves the
+watermark alone; so does a finding that names a turn the byte bound dropped,
+because a turn that was not transmitted is not evidence. The shipped defaults
+are 30 s, 32 turns, 64 KiB in, and 4 KiB out, so one review costs one bounded
+call rather than a conversation. The command's answer is bounded while it is
+read, and bytes that are not UTF-8 are refused rather than replaced.
+
+Two integration points decide whether a default-on judge behaves: activation and
+the host's own deadline. The watermark is now established at session start, so
+the first completed turn is reviewed instead of exempted, and a session with no
+history starts at the empty origin. `Stop` and `SubagentStop` allow 90 s, and
+`timeout_s` is capped at 60 s, so a review that overruns reports its own
+timeout instead of being killed before it can persist a notice. A configuration
+refusal on Claude or Codex is recorded as a notice rather than returning
+silently.
 
 `/judge-settings` in Pi is the surface over that document: it lists the
-effective values with their origin, the resolved launch argv and environment
-names, and any legacy per-harness file, and it applies `key=value`,
+effective values with the origin the document states (an explicit value equal
+to the default still reads as explicit), the effective host command and the
+adapter's argv, the environment names, and any legacy per-harness file, and it applies `key=value`,
 `unset <key>`, `reset`, and `import` transactionally against the revision it
 read, so a concurrent edit reports `stale_config` instead of being overwritten.
 A review carries the revision it was prepared under and is refused the same way
 if the document moved in between. A document without `schema` is still read as
 the pre-schema five keys and keeps protocol 1, and `import` copies such a file
-verbatim, so an existing judge keeps working unchanged.
+verbatim, so an existing judge keeps working unchanged. An explicit
+`hosts.<host>.extra_env` replaces the shipped names instead of adding to them,
+so `[]` forwards nothing.
+
+The judge is on by default; that is a disclosure, not a determinism claim. Its
+validator is deterministic and local, and the command it runs is neither: the
+model it reaches, the endpoint behind that model, and the retention terms of
+both are the user's to choose with `command` and `hosts.<host>.*`.
 
 ## 2026-11-04T10:35:23-05:00 - review settled turns against the conventions an agent read
 

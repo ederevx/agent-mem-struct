@@ -74,16 +74,21 @@ class Window:
         return turns
 
     def digest(self, anchor: str) -> str:
-        """Continuity evidence through one anchor: its whole prefix, in order."""
-        prefix: list[Any] = []
-        for position in self.positions:
-            prefix.append([position, self.records[position]])
-            if position == anchor:
-                break
-        else:
+        """Continuity evidence for one anchor: the anchor record itself.
+
+        A transport bound can make the window start at the anchor instead of at
+        the branch root, so evidence over "everything before the anchor" cannot
+        be recomputed from the window a later settle supplies. The anchor record
+        alone is present in every window that still contains the anchor, so it is
+        the part of the history both sides can always compare: a rewritten
+        anchor is detected, and the turns before it are outside the judge's scope
+        because the watermark already passed them.
+        """
+        if anchor not in self.records:
             raise JudgeError("invalid_window")
         return hashlib.sha256(
-            canonical([FORMAT_VERSION, self.host, self.session, prefix]).encode("utf-8")
+            canonical([FORMAT_VERSION, self.host, self.session, anchor,
+                       self.records[anchor]]).encode("utf-8")
         ).hexdigest()
 
     def boundary(self, anchor: str) -> dict[str, Any]:
@@ -160,14 +165,29 @@ def blocks_text(value: Any) -> str:
         if isinstance(block, str):
             parts.append(block)
         elif isinstance(block, dict):
-            kind = str(block.get("type") or "")
-            if isinstance(block.get("text"), str):
-                parts.append(block["text"])
-            elif kind == "tool_use" or "input" in block:
-                parts.append(f"[{block.get('name') or 'tool'}] {canonical(block.get('input') or {})}")
-            elif "content" in block:
-                parts.append(blocks_text(block["content"]))
+            parts.append(block_text(block))
     return "\n".join(part for part in parts if part)
+
+
+def block_text(block: dict[str, Any]) -> str:
+    """One content block's model-visible text, across the hosts' block shapes.
+
+    Each host names a tool invocation differently - `tool_use` with `input` in
+    Claude's, `toolCall` with `arguments` in Pi's - so the name and the
+    arguments identify one, not the type string. A block that carries either is
+    a call, and dropping it would hide a tool call from the judge.
+    """
+    if isinstance(block.get("text"), str):
+        return block["text"]
+    kind = str(block.get("type") or "")
+    arguments = block.get("input")
+    if arguments is None:
+        arguments = block.get("arguments")
+    if arguments is not None or kind in ("tool_use", "toolCall"):
+        return f"[{block.get('name') or 'tool'}] {canonical(arguments if arguments is not None else {})}"
+    if "content" in block:
+        return blocks_text(block["content"])
+    return ""
 
 
 def pi_window(event: dict[str, Any]) -> Window:

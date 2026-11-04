@@ -35,6 +35,8 @@ EMPTY_MARKER = "(none)"
 # A pipe buffer's size, not a policy: reads return as soon as the command writes.
 READ_CHUNK = 65536
 FINDING = re.compile(r"^([1-9][0-9]*) ([1-9][0-9]*) (.*)$", re.S)
+# What the adapter returns when it must refuse its own capture.
+ADAPTER_CODES = {3: "oversized_output", 4: "invalid_response"}
 
 
 def digest(text: str) -> str:
@@ -196,16 +198,28 @@ class ConventionJudge:
         rules = self.rules(event)
         state = self._cursor_state(self.gate.read_receipt(event).get("judge"))
         if state["epoch"] is None:
-            # First valid window: a baseline claims no historical review.
-            self._store(event, self._baseline(window))
-            return self.result("baseline", [])
+            # No watermark yet, so nothing has been accepted as pre-activation:
+            # the session activated with the judge on and every supplied turn is
+            # this epoch's to review. Anchoring at the leaf here would exempt
+            # exactly the turn that triggered this review.
+            state = self._baseline(None)
+            # Store the epoch now: a first window that cannot be reviewed - the
+            # transport bound, an unreadable source - must still be a refusal
+            # this session can report, and the epoch it reports it against is
+            # the empty origin rather than a watermark that skips a turn.
+            self._store(event, state)
         anchor = state["anchor"]
-        if anchor is not None:
+        if anchor is None:
+            delta = self._all_turns(window)
+        else:
+            delta = window.turns(anchor)
+            if delta is None:
+                # The anchor left the supplied branch, which is a gap to report
+                # and not a rewrite to refuse: refusal would strand the session
+                # on an epoch it can never resume.
+                self._store(event, self._baseline(window, "coverage_gap"))
+                return self.result("coverage_gap", [])
             self._continuity(window, state)
-        delta = window.turns(anchor) if anchor is not None else self._all_turns(window)
-        if delta is None:
-            self._store(event, self._baseline(window, "coverage_gap"))
-            return self.result("coverage_gap", [])
         if not delta:
             if event.get("session_leaf_id") and window.leaf() != event["session_leaf_id"]:
                 # The window stops at the reviewed anchor while the session runs
@@ -214,8 +228,12 @@ class ConventionJudge:
             return self.result("noop", [])
         delta = delta[: int(config["max_turns"])]
         request, payload = self._fit(config, window, state, delta, rules)
+        # The transmitted turns are the only ones a finding may name: a turn the
+        # transport bound dropped was never shown to the command, so an answer
+        # about it cannot be evidence for anything.
+        sent = request["turns"]
         findings = self._validate(
-            config, self._execute(config, launch, payload), request, delta, rules
+            config, self._execute(config, launch, payload), request, sent, rules
         )
         self._store(event, {
             "epoch": state["epoch"],
@@ -235,7 +253,7 @@ class ConventionJudge:
                 for entry_id in window.positions if entry_id in window.reviewable]
 
     def _continuity(self, window: Any, state: dict[str, Any]) -> None:
-        """Refuse an anchor whose recorded history the source no longer holds."""
+        """Refuse an anchor whose own record the source has rewritten."""
         recorded = state["source"]
         anchor = state["anchor"]
         if anchor is None:
@@ -245,7 +263,7 @@ class ConventionJudge:
         if recorded.get("host") != window.host or recorded.get("session") != window.session:
             raise JudgeError("invalid_window")
         if window.digest(anchor) != recorded.get("digest"):
-            # The same identifier over different history is not a new branch;
+            # The same identifier over different content is not a new branch;
             # it is a rewritten source this judge will not review silently.
             raise JudgeError("invalid_window")
 
@@ -353,6 +371,15 @@ class ConventionJudge:
         for name in launch.get("extra_env") or ():
             if name in os.environ:
                 environment[name] = os.environ[name]
+        if not launch.get("explicit"):
+            # The adapter is a fixed entry point, so the descriptor this hook
+            # already validated - host override included - travels beside it
+            # rather than being re-read from a policy the user cannot edit.
+            environment["AMS_JUDGE_LAUNCH"] = canonical({
+                "command": launch["host_command"],
+                "prompt": launch["prompt"],
+                "answer": launch["answer"],
+            })
         try:
             process = subprocess.Popen(
                 launch["argv"],
@@ -411,7 +438,13 @@ class ConventionJudge:
             if overflow.is_set():
                 # The output is already rejected; its exit code cannot change that.
                 raise JudgeError("oversized_output")
-            if process.wait(timeout=remaining()) != 0:
+            code = process.wait(timeout=remaining())
+            if code in ADAPTER_CODES:
+                # The adapter reports capture problems with codes of its own,
+                # because it must refuse an oversized or undecodable answer
+                # before this hook ever sees those bytes.
+                raise JudgeError(ADAPTER_CODES[code])
+            if code != 0:
                 raise JudgeError("command_failed")
         except subprocess.TimeoutExpired:
             raise JudgeError("timeout") from None
@@ -503,12 +536,14 @@ class ConventionJudge:
 
     @staticmethod
     def _string(quoted: str) -> str:
-        """One JSON string literal and nothing else."""
+        """One JSON string literal with nothing before or after it."""
         try:
-            value = json.loads(quoted)
+            value, end = json.JSONDecoder().raw_decode(quoted)
         except (json.JSONDecodeError, ValueError):
             raise JudgeError("invalid_response") from None
-        if not isinstance(value, str):
+        if not isinstance(value, str) or end != len(quoted):
+            # `json.loads` accepts surrounding whitespace, which would let a
+            # finding end in a space or tab and still parse.
             raise JudgeError("invalid_response")
         return value
 
@@ -559,8 +594,15 @@ class ConventionJudge:
 
     @staticmethod
     def _baseline(window: Any, error: str | None = None) -> dict[str, Any]:
-        """A fresh epoch anchored at the window's own leaf, claiming no review."""
-        leaf = window.leaf()
+        """A fresh epoch that claims no review.
+
+        With no window - a session whose first review is also its activation -
+        the epoch starts empty, so the turns supplied to that review are all
+        reviewed. With a window the epoch anchors at its leaf, which is the
+        boundary activation accepted: everything the caller already had is
+        pre-activation, and nothing after it is skipped.
+        """
+        leaf = window.leaf() if window is not None else ""
         return {
             "epoch": uuid.uuid4().hex,
             "anchor": leaf or None,
@@ -568,8 +610,38 @@ class ConventionJudge:
             "chain": "",
             "findings": [],
             "error": error,
-            "source": window.boundary(leaf) if leaf else None,
+            "source": window.boundary(leaf) if window is not None and leaf else None,
         }
+
+    def baseline(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Establish this session's watermark at activation, reviewing nothing.
+
+        The host calls this when the session starts, so the turns that follow
+        are reviewed and the turns that came before are accepted as history the
+        judge was not asked about. An empty leaf is the empty origin: a session
+        that begins with the judge on has no pre-activation turns at all.
+        """
+        try:
+            _, config = self.configuration()
+            if not config["enabled"]:
+                return self.result("disabled", [])
+            revision = event.get("config_revision")
+            if revision is not None and revision != config["revision"]:
+                raise JudgeError("stale_config")
+            state = self._cursor_state(self.gate.read_receipt(event).get("judge"))
+            if state["epoch"] is not None:
+                return self.result("noop", [])
+            try:
+                window = build_window(self.state, event) if event.get("session_entries") else None
+            except JudgeError:
+                # At activation an unreadable or absent source is not a refusal:
+                # there is simply nothing yet to accept as pre-activation, which
+                # is the empty origin.
+                window = None
+        except JudgeError as refusal:
+            return self.result(str(refusal), [])
+        self._store(event, self._baseline(window))
+        return self.result("baseline", [])
 
     def _store(self, event: dict[str, Any], state: dict[str, Any]) -> None:
         """Record one judge state; the receipt writer bounds and refuses it.
