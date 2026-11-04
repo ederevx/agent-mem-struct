@@ -234,6 +234,7 @@ export class RootMemoryBridge {
 		this.registerPreMemoryTool(pi);
 		this.registerMemoryUpdateTool(pi);
 		this.registerListerTool(pi);
+		new JudgeSettingsSurface(this).register(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
 			const label = this.sessionId(ctx);
 			// The identity transition is a queued receipt operation like any other:
@@ -818,6 +819,7 @@ export class RootMemoryBridge {
 		return {
 			phase: "review",
 			cursor: plan.cursor ?? null,
+			config_revision: plan.revision ?? null,
 			leaf_id: end,
 			session_leaf_id: leaf,
 			session_entries: entries,
@@ -860,6 +862,13 @@ export class RootMemoryBridge {
 		}
 	}
 
+	/** One judge settings operation, validated and applied by the hook. */
+	async judgeSettings(extra: Record<string, unknown>): Promise<Record<string, any> | null> {
+		const result = await this.serialize(() => this.callHook(
+			"Judge", { phase: "settings", ...extra }, PREMEMORY_TIMEOUT_MS));
+		return this.judgeBody(result);
+	}
+
 	/** Turns one review into the notice the next turn of its session carries. */
 	private settleJudge(result: HookResult, session: string): void {
 		const body = this.judgeBody(result);
@@ -869,6 +878,116 @@ export class RootMemoryBridge {
 		}
 		const notice = body.notice;
 		if (typeof notice === "string" && notice) this.judgeNotice = { session, text: notice };
+	}
+}
+
+/**
+ * The `/judge-settings` command.
+ *
+ * One responsibility: the user-facing surface of the judge's settings - the
+ * listing, the accepted key forms, and where each value came from. The hook
+ * owns validation and persistence, so every change is applied once and the
+ * displayed state is always read back rather than assumed. There is no
+ * interactive dock: the command reports and edits in one step, which keeps
+ * this surface inside the managed copy the installer renders.
+ */
+class JudgeSettingsSurface {
+	private static readonly SETTABLE = [
+		"enabled", "command", "protocol", "timeout_s", "max_turns",
+		"max_input_bytes", "max_output_bytes", "hosts.<host>.command",
+		"hosts.<host>.extra_env",
+	];
+
+	constructor(private readonly bridge: RootMemoryBridge) {}
+
+	register(pi: any): void {
+		// A host without commands still gets the tools; the settings surface is
+		// optional by construction rather than a reason to fail registration.
+		if (typeof pi.registerCommand !== "function") return;
+		pi.registerCommand("judge-settings", {
+			description:
+				"View or change the convention judge settings (writes the " +
+				"agent-mem-struct judge.json that all three harnesses read).",
+			handler: async (args: string, ctx: any) => {
+				await this.handle(args.trim(), ctx);
+			},
+		});
+	}
+
+	private async handle(args: string, ctx: any): Promise<void> {
+		if (args === "" || args === "show" || args === "list") {
+			this.notify(ctx, this.listing(await this.bridge.judgeSettings({})));
+			return;
+		}
+		if (args === "reset" || args === "import") {
+			await this.edit(ctx, { operation: args });
+			return;
+		}
+		if (args.startsWith("unset ")) {
+			await this.edit(ctx, { operation: "unset", key: args.slice(6).trim() });
+			return;
+		}
+		const equals = args.indexOf("=");
+		if (equals > 0) {
+			await this.edit(ctx, {
+				operation: "set",
+				key: args.slice(0, equals).trim(),
+				value: args.slice(equals + 1).trim(),
+			});
+			return;
+		}
+		this.notify(ctx, "usage: /judge-settings [show | key=value | unset <key> | reset | import]");
+	}
+
+	/** Apply one change, then show the state the hook actually holds. */
+	private async edit(ctx: any, request: Record<string, unknown>): Promise<void> {
+		const current = await this.bridge.judgeSettings({});
+		const revision = typeof current?.revision === "string" ? current.revision : "";
+		const body = await this.bridge.judgeSettings({ ...request, revision });
+		if (typeof body?.error === "string" && body.error) {
+			this.notify(ctx, `convention judge: ${body.error}`, "error");
+			return;
+		}
+		this.notify(ctx, this.listing(body));
+	}
+
+	private listing(body: Record<string, any> | null): string {
+		if (body === null) {
+			return "convention judge: the settings reply could not be read.";
+		}
+		if (typeof body.error === "string" && body.error) {
+			return `convention judge: ${body.error}`;
+		}
+		const values = body.values ?? {};
+		const defaults = body.defaults ?? {};
+		const lines = [`convention judge: ${values.enabled ? "on" : "off"}`];
+		for (const key of ["enabled", "command", "protocol", "timeout_s", "max_turns",
+			"max_input_bytes", "max_output_bytes"]) {
+			const explicit = body.source === "file" && values[key] !== defaults[key];
+			const shown = key === "command"
+				? (values.command === null ? "shipped adapter" : JSON.stringify(values.command))
+				: String(values[key]);
+			lines.push(`  ${key} = ${shown} (${explicit ? "explicit" : "default"})`);
+		}
+		lines.push(`  settings = ${body.path} (${body.source})`);
+		const launch = body.launch ?? {};
+		const argv = Array.isArray(launch.argv) ? launch.argv.join(" ") : "";
+		lines.push(`  launch (${launch.host}) = ${argv}`);
+		const env = Array.isArray(launch.extra_env) && launch.extra_env.length > 0
+			? launch.extra_env.join(", ")
+			: "(none)";
+		lines.push(`  command environment = ${env}`);
+		lines.push(`  legacy document = ${body.legacy_present ? body.legacy : "none"}`);
+		lines.push(`settable: ${JudgeSettingsSurface.SETTABLE.join(", ")}`);
+		return lines.join("\n");
+	}
+
+	private notify(ctx: any, text: string, level: "info" | "error" = "info"): void {
+		try {
+			ctx.ui.notify(text, level);
+		} catch {
+			// No notification surface; nothing else to do.
+		}
 	}
 }
 
