@@ -97,7 +97,13 @@ def bounded(stream: Any, limit: int) -> bytes | None:
 
 
 def run(descriptor: dict[str, Any], text: str, limit: int, cwd: Path) -> tuple[int, bytes]:
-    """Run one host CLI, returning its exit code and bounded captured output."""
+    """Run one host CLI, returning its exit code and bounded captured output.
+
+    The CLI is left in this process's group on purpose: the hook enforces the
+    review deadline by killing the group it started, so a child that began its
+    own session would outlive the deadline it was given and keep billing for an
+    answer nobody will read.
+    """
     argv = list(descriptor["command"])
     stdin_text = text.encode("utf-8")
     with tempfile.TemporaryDirectory(prefix="judge-") as scratch:
@@ -116,7 +122,6 @@ def run(descriptor: dict[str, Any], text: str, limit: int, cwd: Path) -> tuple[i
                 stderr=subprocess.DEVNULL,
                 cwd=str(cwd),
                 shell=False,
-                start_new_session=True,
             )
         except OSError:
             return 127, b""
