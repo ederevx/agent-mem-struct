@@ -134,6 +134,27 @@ class JudgeReviewTests(JudgeCase):
         self.event = {"session_id": "s1", "transcript_path": str(self.transcript),
                       "cwd": str(self.root)}
 
+    def test_a_rewritten_earlier_record_is_a_refusal(self) -> None:
+        # A window read from the whole transcript proves the history the
+        # watermark passed, not only the anchor's own record.
+        self.write([assistant("a1", None, "first"), assistant("a2", "a1", "second")])
+        self.receipt(self.event)
+        self.assertIsNone(self.review(self.event)["error"])
+        self.write([assistant("a1", None, "rewritten"), assistant("a2", "a1", "second")])
+        self.assertEqual(self.review(self.event)["error"], "invalid_window")
+
+    def test_settings_report_the_last_review(self) -> None:
+        self.write([assistant("a1", None, "first")])
+        self.receipt(self.event)
+        self.assertIsNone(self.review(self.event)["error"])
+        dispatcher = EventDispatcher("claude", None, None, self.gate)
+        body = dispatcher.judge_settings(
+            {**self.event, "config_revision": None}, self.state)
+        self.assertIsNone(body["error"], body)
+        self.assertEqual(body["review"]["anchor"], "a1")
+        self.assertEqual(body["review"]["findings"], 0)
+        self.assertIsNone(body["review"]["error"])
+
     def test_activation_anchors_a_transcript_host_at_its_leaf(self) -> None:
         # Claude and Codex have no inline entries: activation must read the
         # transcript, or the whole history would be reviewed on the first Stop.
@@ -351,6 +372,17 @@ class PiWindowTests(JudgeCase):
         self.assertIsNone(body["error"], body)
         self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "c")
 
+    def test_activation_accepts_at_most_the_policy_bound(self) -> None:
+        branch = [pi_entry("e0", None, "zero")]
+        for index in range(1, 70):
+            branch.append(pi_entry(f"e{index}", branch[-1]["id"], f"turn {index}"))
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "session_entries": branch,
+                              "leaf_id": branch[-1]["id"],
+                              "session_leaf_id": branch[-1]["id"]})
+        self.assertEqual(body["error"], "baseline", body)
+        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "e69")
+
     def test_activation_without_history_starts_at_the_empty_origin(self) -> None:
         judge = ConventionJudge(self.state, self.gate)
         body = judge.baseline({**self.event, "session_entries": [], "leaf_id": ""})
@@ -497,8 +529,10 @@ class JudgeSettingsTests(unittest.TestCase):
 
     def test_shipped_policy_names_the_defaults(self) -> None:
         defaults = JudgePolicy.load().defaults()
-        self.assertEqual(sorted(defaults), ["max_input_bytes", "max_output_bytes", "max_turns",
-                                            "protocol", "timeout_s"])
+        self.assertEqual(sorted(defaults), ["baseline_entries", "max_input_bytes",
+                                            "max_output_bytes", "max_turns", "protocol",
+                                            "timeout_s"])
+        self.assertGreater(defaults["baseline_entries"], 0)
 
     def test_edits_are_transactional(self) -> None:
         self.settings.apply("set", "", "timeout_s", "12")

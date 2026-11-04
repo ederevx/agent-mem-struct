@@ -421,12 +421,13 @@ The bridge maps Pi events onto the hook's event vocabulary:
   what `threading` and a host timer can hold, and a larger value is
   `invalid_config` before anything is spawned. A finding may name only a
   supplied rule, a supplied turn, and a quote that occurs there exactly once;
-  its offsets are string indices derived locally. Continuity binds the anchor
-  record itself - its identity and content - because a bounded window may start
-  at the anchor, and evidence about everything before it cannot be recomputed
-  from a window that no longer contains it; a rewritten anchor is
-  `invalid_window`, while an anchor the source no longer holds at all is a
-  `coverage_gap` that rebaselines instead of stranding the session. Refusal
+  its offsets are string indices derived locally. Continuity proves as much as
+  the window can: the anchor's own record always, so a rewritten anchor is
+  `invalid_window`, and the whole ordered history through it whenever the
+  window starts at the branch root - Claude and Codex read the transcript from
+  its first record, while Pi's is trimmed at its head by the transport bound
+  and can prove only the anchor. An anchor the source no longer holds at all is
+  a `coverage_gap` that rebaselines instead of stranding the session. Refusal
   codes are local:
   `disabled`, `invalid_config`, `invalid_cursor`, `invalid_window`,
   `stale_cursor`, `stale_config`, `unreadable_rules`, `stale_rules`,
@@ -458,12 +459,20 @@ The bridge maps Pi events onto the hook's event vocabulary:
   under and is refused as `stale_config` if the document changed in between.
   Provenance is what the document states, not what a value looks like: an
   explicit `max_turns: 32` reads as explicit. The listing shows the effective
-  host command and, when the adapter is in use, its argv as well.
+  host command, the adapter's argv when it is in use, the activation bound the
+  shipped policy sets, and the last review this session actually holds - its
+  refusal code or its acceptance, the boundary it reached, and any notice a
+  turn has yet to collect.
 
-  `timeout_s` is capped at 60 s because the installed `Stop` and `SubagentStop`
-  handlers allow 90 s: the rest is the receipt write, the notice, and teardown,
-  so a review that times out reports its own deadline instead of being killed
-  before it can record one. A larger value is `invalid_config`.
+  `timeout_s` is capped by the deadline the installed `Stop` and `SubagentStop`
+  handlers carry, less the room the receipt write, the notice, and teardown
+  need, so a review that times out reports its own deadline instead of being
+  killed before it can record one. Both numbers live in one place: the bound
+  comes from `hooks/manage_common.py`, the margin from
+  `hooks/rm_judge_settings.py`. A larger value is `invalid_config`. Activation
+  reads at most the policy's `baseline_entries` of history, so how much is
+  accepted as pre-activation is a shipped value rather than a constant in the
+  bridge.
 
   The one receipt writer enforces `RECEIPT_MAX_BYTES` on the exact payload it is
   about to replace, for every mutator rather than the judge alone, and refuses

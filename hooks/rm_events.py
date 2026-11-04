@@ -473,7 +473,7 @@ class EventDispatcher:
             owner, config = judge.configuration()
             operation = event.get("operation")
             if operation is None:
-                return self.judge_settings_body(owner, config)
+                return self.judge_settings_body(owner, config, judge.status(event))
             if not isinstance(operation, str):
                 raise JudgeError("invalid_settings_request")
             revision = event.get("revision")
@@ -486,12 +486,13 @@ class EventDispatcher:
                 key if isinstance(key, str) else None,
                 value if isinstance(value, str) else None,
             )
-            return self.judge_settings_body(owner, owner.read())
+            return self.judge_settings_body(owner, owner.read(), judge.status(event))
         except JudgeError as refusal:
             return {"error": str(refusal), "notice": ""}
 
-    def judge_settings_body(self, owner: JudgeSettings, config: dict[str, Any]) -> dict[str, Any]:
-        """What `/judge-settings` displays: values, provenance, and launch."""
+    def judge_settings_body(self, owner: JudgeSettings, config: dict[str, Any],
+                            review: dict[str, Any] | None = None) -> dict[str, Any]:
+        """What `/judge-settings` displays: values, provenance, progress, and launch."""
         try:
             launch = owner.launch(config)
         except JudgeError as refusal:
@@ -505,6 +506,7 @@ class EventDispatcher:
             "values": config,
             "defaults": owner.policy.defaults(),
             "launch": launch,
+            "review": review,
             "legacy": str(legacy),
             "legacy_present": legacy.exists(),
             "notice": "",

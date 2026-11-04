@@ -39,6 +39,16 @@ are 30 s, 32 turns, 64 KiB in, and 4 KiB out, so one review costs one bounded
 call rather than a conversation. The command's answer is bounded while it is
 read, and bytes that are not UTF-8 are refused rather than replaced.
 
+Continuity proves what the window can support rather than a fixed amount: the
+anchor record always, and the whole ordered history through it whenever the
+window begins at the branch root, which is what Claude's and Codex's transcripts
+do. Pi's window is trimmed at its head by the transport bound, so it proves the
+anchor alone and is not refused after the first review. Activation reads the
+policy's `baseline_entries` of history instead of a constant in the bridge, and
+`/judge-settings` reports the last review the session holds - acceptance or
+refusal code, the boundary reached, and any uncollected notice - because a
+receipt on disk is not an inspectable surface.
+
 Two integration points decide whether a default-on judge behaves: activation and
 the host's own deadline. The watermark is now established at session start, so
 the first completed turn is reviewed instead of exempted, and a session with no
