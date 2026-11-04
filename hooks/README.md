@@ -68,7 +68,10 @@ The shared hook `root-memory-context.py`:
     publish attestation only as advice.
 18. appends a read-only leftovers report at a non-compaction session start:
     the local-only commits of repositories this agent touched, plus stale
-    immediate children of the scratch root.
+    immediate children of the scratch root; and
+19. runs the opt-in convention judge after a Pi settle, recording only the rule
+    ids and string offsets of evidence it could validate against the supplied
+    turns, never command-authored text.
 
 The runtime hook creates no documents. The installer manages only the two root
 `RULES.md` and `STRUCTURE.md` copies described above; it does not add another
@@ -238,8 +241,8 @@ The bridge maps Pi events onto the hook's event vocabulary:
   first turn of a session and the turn after any compaction, the compact
   per-turn reminder otherwise) telling the model to call `pre_memory`; the full
   root bundle is never injected. This is the only hook-context injectable
-  point Pi offers, so `session_start` and `agent_settled` are deliberately not
-  mapped.
+  point Pi offers; `session_start` and `agent_settled` carry no context of
+  their own, so the judge's notices ride the next turn instead.
 - `session_compact` marks the session for continuity restoration and steers
   the same one-line pointer into the ongoing context immediately. A mid-run
   compaction (threshold, overflow retry) resumes without another
@@ -343,6 +346,38 @@ The bridge maps Pi events onto the hook's event vocabulary:
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an
   overflow recovery would wedge the session at its context ceiling).
+- `agent_settled` drives the convention judge, which stays off until
+  `<agent-home>/.agent-mem-struct/judge.json` exists. Creating that file is the
+  explicit authorization for its `command` to receive the supplied transcript
+  turns and convention text: a receipt and a transcript read cannot establish
+  the command's provider, account, endpoint, or retention terms. The file
+  carries exactly `command`, `timeout_s`, `max_turns`, `max_input_bytes`, and
+  `max_output_bytes`; an absent file disables the judge, while an existing file
+  that is unreadable, is not a regular file, or is malformed is reported as
+  `invalid_config` rather than silently disabling it. The file is user-owned -
+  the installers never create, replace, or remove it. Each settle runs
+  `prepare` (configuration, cursor, and transport limits; the command is not
+  invoked) and then `review`, which sends the contiguous branch from the
+  watermark together with one rule unit per acknowledged convention source, and
+  receives a reply bound to that exact payload by a `chain` it must echo. The
+  hook, not the bridge, bounds the window: it takes the configured number of
+  turns after the watermark and drops trailing turns until the request fits
+  `max_input_bytes`, so a short window still advances the watermark and only a
+  window that cannot reach the watermark is a gap. A finding may name only a
+  supplied rule, a supplied turn, and a quote that occurs there exactly once;
+  its offsets are string indices derived locally. Refusal codes are local:
+  `disabled`, `invalid_config`, `invalid_cursor`, `invalid_window`,
+  `stale_cursor`, `unreadable_rules`, `stale_rules`, `oversized_input`,
+  `oversized_output`, `oversized_receipt`, `timeout`, `command_failed`,
+  `invalid_response`, and `persistence_failed` from the dispatcher. A recorded
+  refusal sets its code on the stored state and keeps every other field,
+  including previously accepted findings; only an unreadable or malformed
+  configuration leaves the watermark untouched without storing a code. A
+  settled turn whose anchor has left the supplied branch records
+  `coverage_gap` and rebaselines a new epoch without claiming any review of the
+  skipped turns. The request carries no task statement: the judge sees the
+  settled turns only. Findings and errors reach the model on the next turn of
+  the session that produced them and never block a tool call or a settle.
 
 Limitations: Pi exposes no subagent identity on events, so the bridge cannot
 mark a spawned child as read-only the way `SubagentStart` does for the other

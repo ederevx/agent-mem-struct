@@ -22,6 +22,8 @@ from rm_tree import SharedTree
 
 RECEIPT_MAX_AGE = 7 * 24 * 60 * 60
 RECEIPT_MAX_FILES = 512
+# A larger receipt is refused on read, so every writer bounds itself by it.
+RECEIPT_MAX_BYTES = 1024 * 1024
 PREMEMORY_DENIAL = (
     "Convention acknowledgment required: call pre_memory first "
     "(it pulls the shared worktree and lists the conventions to read)."
@@ -68,11 +70,14 @@ class ConventionGate:
             raise ValueError("hook event lacks a stable session_id")
         return self.dir() / f"{identity}.json"
 
-    def remove_receipt(self, event: dict[str, Any]) -> None:
-        try:
-            self.path(event).unlink(missing_ok=True)
-        except (OSError, ValueError):
-            pass
+    def reset_receipt(self, event: dict[str, Any]) -> None:
+        """A session starting over drops its read evidence but keeps its judge
+        watermark, which describes the transcript rather than the context."""
+        if self.identity(event) is None:
+            return
+        self._store_receipt(
+            event, {}, {}, tree=None, judge=self._judge(self.read_receipt(event))
+        )
 
     def prune_receipts(self) -> None:
         directory = self.dir()
@@ -334,6 +339,7 @@ class ConventionGate:
                 "root": os.path.normcase(str(shared.resolve(strict=False))),
                 "digest": digest,
             },
+            judge=self._judge(current),
         )
 
     def clear_reads(self, event: dict[str, Any]) -> None:
@@ -347,6 +353,7 @@ class ConventionGate:
             sources if isinstance(sources, dict) else {},
             {},
             tree=None,
+            judge=self._judge(current),
         )
 
     def _is_convention_source(self, resolved: Path) -> bool:
@@ -459,6 +466,7 @@ class ConventionGate:
                 sources if isinstance(sources, dict) else {},
                 reads,
                 tree=tree if isinstance(tree, dict) else None,
+                judge=self._judge(current),
             )
 
     def _digest(
@@ -503,7 +511,7 @@ class ConventionGate:
                 return {}
             if path.is_symlink() or (path.exists() and not path.is_file()):
                 return {}
-            if path.exists() and path.stat().st_size > 1024 * 1024:
+            if path.exists() and path.stat().st_size > RECEIPT_MAX_BYTES:
                 return {}
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -528,8 +536,62 @@ class ConventionGate:
         reads = dict(prior_reads) if isinstance(prior_reads, dict) else {}
         prior_tree = prior.get("tree")
         self._store_receipt(
-            event, sources, reads, tree=prior_tree if isinstance(prior_tree, dict) else None
+            event,
+            sources,
+            reads,
+            tree=prior_tree if isinstance(prior_tree, dict) else None,
+            judge=self._judge(prior),
         )
+
+    def record_judge(self, event: dict[str, Any], judge: dict[str, Any] | None) -> None:
+        """Replace the judge state, preserving every other receipt field."""
+        current = self.read_receipt(event)
+        sources = current.get("sources")
+        reads = current.get("reads")
+        tree = current.get("tree")
+        self._store_receipt(
+            event,
+            sources if isinstance(sources, dict) else {},
+            reads if isinstance(reads, dict) else {},
+            tree=tree if isinstance(tree, dict) else None,
+            judge=judge,
+        )
+
+    @staticmethod
+    def _judge(current: dict[str, Any]) -> dict[str, Any] | None:
+        """The judge state a rewrite must carry forward, never one it invents."""
+        judge = current.get("judge")
+        return judge if isinstance(judge, dict) else None
+
+    def judge_fits(self, event: dict[str, Any], judge: dict[str, Any]) -> bool:
+        """Whether a receipt carrying this judge state is one the reader keeps."""
+        current = self.read_receipt(event)
+        sources = current.get("sources")
+        reads = current.get("reads")
+        tree = current.get("tree")
+        return len(self.payload(
+            sources if isinstance(sources, dict) else {},
+            reads if isinstance(reads, dict) else {},
+            tree if isinstance(tree, dict) else None,
+            judge=judge,
+        ).encode("utf-8")) <= RECEIPT_MAX_BYTES
+
+    def payload(
+        self,
+        sources: dict[str, str],
+        reads: dict[str, str],
+        tree: dict[str, str] | None = None,
+        *,
+        judge: dict[str, Any] | None = None,
+    ) -> str:
+        """The exact text of one receipt, so its size is measured as written."""
+        return json.dumps({
+            "shared_root": os.path.normcase(str(self.state.shared_resolved)),
+            "sources": sources,
+            "reads": reads,
+            "tree": tree,
+            "judge": judge,
+        }, separators=(",", ":")) + "\n"
 
     def _store_receipt(
         self,
@@ -537,6 +599,8 @@ class ConventionGate:
         sources: dict[str, str],
         reads: dict[str, str],
         tree: dict[str, str] | None = None,
+        *,
+        judge: dict[str, Any] | None = None,
     ) -> None:
         """Atomically write one session receipt; the only receipt writer."""
         directory = self.dir()
@@ -554,12 +618,7 @@ class ConventionGate:
         temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
         try:
             temporary.write_text(
-                json.dumps({
-                    "shared_root": os.path.normcase(str(self.state.shared_resolved)),
-                    "sources": sources,
-                    "reads": reads,
-                    "tree": tree,
-                }, separators=(",", ":")) + "\n",
+                self.payload(sources, reads, tree, judge=judge),
                 encoding="utf-8",
             )
             try:

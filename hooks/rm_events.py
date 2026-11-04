@@ -18,6 +18,7 @@ from typing import Any
 from rm_checkpoints import CheckpointStore
 from rm_control import RootState, RootControl
 from rm_git import GitWorktree
+from rm_judge import ConventionJudge
 from rm_ledger import RepoLedger
 from rm_leftovers import LeftoverReport
 from rm_lint import PushLint
@@ -411,6 +412,31 @@ class EventDispatcher:
                     ledger.record(top)
                 except OSError:
                     return
+
+    def handle_judge(self, event: dict[str, Any], state: RootState) -> int:
+        """Report the cursor, or judge the settled turns since it.
+
+        Pi-only: the other hosts expose no verified session entry id. The reply
+        carries internal cursor metadata under `judge`, apart from the model's
+        `additionalContext`: the bridge reads that body, not the context, so a
+        notice is never injected twice. Nothing here blocks anything.
+        """
+        if self.agent != "pi":
+            return 0
+        judge = ConventionJudge(state, self.gate)
+        phase = str(event.get("phase") or "")
+        if phase == "prepare":
+            body = judge.prepare(event)
+        elif phase == "review":
+            body = judge.review(event)
+        else:
+            return 0
+        json.dump(
+            {"hookSpecificOutput": {"hookEventName": "Judge", "judge": body}},
+            sys.stdout,
+            separators=(",", ":"),
+        )
+        return 0
 
     def handle_stop(self, event: dict[str, Any], state: RootState) -> None:
         # Both hosts set this flag when re-entering Stop/SubagentStop after a hook
