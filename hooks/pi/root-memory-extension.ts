@@ -1027,6 +1027,14 @@ class JudgeSettingsSurface {
 		if (review === null || typeof review !== "object") {
 			return "last review = none in this session";
 		}
+		if (!review.reviewed) {
+			// Activation anchors the watermark and reviews nothing, so reporting
+			// it as an accepted review would claim work that never ran.
+			const at = typeof review.anchor === "string" && review.anchor
+				? ` at ${review.anchor}`
+				: " at the empty origin";
+			return `last review = none (watermark anchored${at})`;
+		}
 		const anchor = typeof review.anchor === "string" && review.anchor ? review.anchor : "activation";
 		const verdict = typeof review.error === "string" && review.error
 			? review.error

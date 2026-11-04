@@ -3,6 +3,7 @@
   "settings": "{user_home}/.agent-mem-struct/judge.json",
   "adapter": "rm_judge_adapter.py",
   "capture_bytes": 8388608,
+  "review_teardown_s": 30,
   "defaults": {
     "protocol": 2,
     "baseline_entries": 64,

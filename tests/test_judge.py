@@ -26,7 +26,6 @@ from rm_control import RootControl  # noqa: E402
 from rm_events import EventDispatcher  # noqa: E402
 from rm_judge import ConventionJudge, digest  # noqa: E402
 from rm_judge_settings import (  # noqa: E402
-    TIMEOUT_MAX_S,
     JudgeError,
     JudgePolicy,
     JudgeSettings,
@@ -397,6 +396,31 @@ class PiWindowTests(JudgeCase):
         self.assertIsNotNone(recorded["epoch"])
         self.assertIsNone(recorded["anchor"])
 
+    def test_activation_refuses_a_source_it_cannot_decode(self) -> None:
+        # Bytes that are not UTF-8 are an unreadable transcript, not a blank one:
+        # they must be refused like any other unreadable source, and not raise
+        # through the hook where nothing can record them.
+        path = self.root / "binary.jsonl"
+        path.write_bytes(b"\xff\xfe\x00invalid")
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "transcript_path": str(path)})
+        self.assertEqual(body["error"], "invalid_window", body)
+        self.assertIsNone(self.gate.read_receipt(self.event)["judge"]["epoch"])
+
+    def test_activation_treats_a_directory_path_as_a_refusal(self) -> None:
+        # Only absence is the empty origin; a path that exists as something other
+        # than a transcript is a source the window has to refuse.
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "transcript_path": str(self.root)})
+        self.assertEqual(body["error"], "invalid_window", body)
+
+    def test_status_does_not_report_activation_as_a_review(self) -> None:
+        judge = ConventionJudge(self.state, self.gate)
+        judge.baseline({**self.event, "session_entries": [], "leaf_id": ""})
+        status = judge.status(self.event)
+        self.assertIsNotNone(status)
+        self.assertFalse(status["reviewed"], status)
+
     def test_activation_accepts_at_most_the_policy_bound(self) -> None:
         branch = [pi_entry("e0", None, "zero")]
         for index in range(1, 70):
@@ -452,8 +476,10 @@ class StopWiringTests(JudgeCase):
     def test_installed_deadline_exceeds_the_review_deadline(self) -> None:
         # A review the host kills mid-flight loses its notice, so the installed
         # Stop bound has to exceed the review bound with room to persist.
-        self.assertGreaterEqual(EVENT_TIMEOUTS["Stop"], TIMEOUT_MAX_S + 20)
-        self.assertGreaterEqual(EVENT_TIMEOUTS["SubagentStop"], TIMEOUT_MAX_S + 20)
+        self.assertGreaterEqual(EVENT_TIMEOUTS["Stop"],
+                                JudgePolicy.load().deadline_ceiling() + 20)
+        self.assertGreaterEqual(EVENT_TIMEOUTS["SubagentStop"],
+                                JudgePolicy.load().deadline_ceiling() + 20)
 
     def test_configuration_refusal_is_visible_on_stop(self) -> None:
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -558,6 +584,10 @@ class JudgeSettingsTests(unittest.TestCase):
                                             "max_output_bytes", "max_turns", "protocol",
                                             "timeout_s"])
         self.assertGreater(defaults["baseline_entries"], 0)
+        # The room a review leaves for its receipt write is the policy's, and the
+        # deadline ceiling is derived from it rather than restated.
+        self.assertGreater(JudgePolicy.load().teardown_margin(), 0)
+        self.assertLess(JudgePolicy.load().deadline_ceiling(), EVENT_TIMEOUTS["Stop"])
 
     def test_edits_are_transactional(self) -> None:
         self.settings.apply("set", "", "timeout_s", "12")
@@ -598,7 +628,8 @@ class JudgeSettingsTests(unittest.TestCase):
 
     def test_a_deadline_beyond_the_installed_bound_is_refused(self) -> None:
         with self.assertRaises(JudgeError):
-            self.settings.apply("set", "", "timeout_s", str(TIMEOUT_MAX_S + 1))
+            self.settings.apply("set", "", "timeout_s",
+                                str(JudgePolicy.load().deadline_ceiling() + 1))
         self.settings.apply("set", "", "timeout_s", "12.5")
         self.assertEqual(self.settings.read()["timeout_s"], 12.5)
 

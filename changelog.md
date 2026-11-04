@@ -58,7 +58,9 @@ be read is `invalid_window`, recorded and reported rather than accepted as
 history the judge never saw. `timeout_s` is capped by the deadline the installed
 `Stop` and `SubagentStop` handlers carry, less the room the receipt write and
 teardown need, so a review that overruns reports its own timeout instead of
-being killed before it can persist a notice. A configuration
+being killed before it can persist a notice. That margin is `review_teardown_s`
+in the policy document, so the ceiling is derived from two owned values rather
+than from a constant beside its caller. A configuration
 refusal on Claude or Codex is recorded as a notice rather than returning
 silently.
 

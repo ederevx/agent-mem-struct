@@ -671,17 +671,33 @@ class ConventionJudge:
                 return None
         else:
             path = event.get("transcript_path")
-            if not isinstance(path, str) or not path or not Path(path).is_file():
+            if not isinstance(path, str) or not path:
+                return None
+            if not Path(path).is_file():
+                # Nothing there yet is the empty origin; anything else - a
+                # directory, a device - is a source the window must refuse
+                # rather than one activation may call empty.
+                if Path(path).exists():
+                    return build_window(self.state, event)
                 return None
             # A host opens its transcript before it writes to it, and a session
             # that begins with the judge on has no records yet: that is the
             # empty origin, not an unreadable source.
-            try:
-                if not Path(path).read_text(encoding="utf-8").strip():
-                    return None
-            except OSError:
-                pass
+            if self._opened_empty(path):
+                return None
         return build_window(self.state, event)
+
+    @staticmethod
+    def _opened_empty(path: str) -> bool:
+        """Whether an existing transcript has no record in it yet.
+
+        Bytes that are not UTF-8 are not emptiness: the window refuses them,
+        and a decode failure here must not be mistaken for a blank file.
+        """
+        try:
+            return not Path(path).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return False
 
     def status(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """The last review this session holds, for the settings surface.
@@ -697,6 +713,9 @@ class ConventionJudge:
         return {
             "anchor": recorded.get("anchor"),
             "seq": recorded.get("seq"),
+            # Activation anchors without reviewing anything, so a state that has
+            # not advanced its sequence holds no review to report.
+            "reviewed": bool(recorded.get("seq")),
             "findings": len(findings) if isinstance(findings, list) else 0,
             "error": recorded.get("error"),
             "notice": recorded.get("notice"),
