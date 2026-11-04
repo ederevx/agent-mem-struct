@@ -1027,20 +1027,25 @@ class JudgeSettingsSurface {
 		if (review === null || typeof review !== "object") {
 			return "last review = none in this session";
 		}
+		const notice = typeof review.notice === "string" && review.notice ? `, notice: ${review.notice}` : "";
+		if (typeof review.error === "string" && review.error) {
+			// A refusal keeps an error where an accepted review keeps its
+			// boundary, so it is reported first and never as an anchor.
+			const mark = review.anchored === true ? "anchored" : "not established";
+			return `last review = ${review.error} (watermark ${mark})${notice}`;
+		}
 		if (!review.reviewed) {
 			// Activation anchors the watermark and reviews nothing, so reporting
 			// it as an accepted review would claim work that never ran.
 			const at = typeof review.anchor === "string" && review.anchor
 				? ` at ${review.anchor}`
 				: " at the empty origin";
-			return `last review = none (watermark anchored${at})`;
+			const mark = review.anchored === true ? `watermark anchored${at}` : "no watermark established";
+			return `last review = none (${mark})${notice}`;
 		}
 		const anchor = typeof review.anchor === "string" && review.anchor ? review.anchor : "activation";
-		const verdict = typeof review.error === "string" && review.error
-			? review.error
-			: "accepted";
-		const notice = typeof review.notice === "string" && review.notice ? `, notice: ${review.notice}` : "";
-		return `last review = ${verdict} through ${anchor}, ${review.findings} finding(s)${notice}`;
+		const findings = typeof review.findings === "number" ? review.findings : 0;
+		return `last review = accepted through ${anchor}, ${findings} finding(s)${notice}`;
 	}
 
 	private notify(ctx: any, text: string, level: "info" | "error" = "info"): void {

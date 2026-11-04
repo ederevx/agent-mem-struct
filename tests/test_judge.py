@@ -142,6 +142,32 @@ class JudgeReviewTests(JudgeCase):
         self.write([assistant("a1", None, "rewritten"), assistant("a2", "a1", "second")])
         self.assertEqual(self.review(self.event)["error"], "invalid_window")
 
+    def test_activation_refusal_survives_the_next_review(self) -> None:
+        # The refusal belongs to the turn that produced it, so a later review
+        # writing its own state may not swallow the notice before a prompt reads
+        # it.
+        path = self.root / "malformed.jsonl"
+        path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')
+        self.receipt(self.event)
+        dispatcher = EventDispatcher("claude", None, None, self.gate)
+        dispatcher.baseline_judge({**self.event, "transcript_path": str(path)},
+                                 self.state)
+        self.write([assistant("a1", None, "first")])
+        self.assertIsNone(self.review(self.event)["error"])
+        self.assertIn("invalid_window", self.gate.notification(self.event))
+
+    def test_status_of_a_refused_activation_names_no_watermark(self) -> None:
+        path = self.root / "malformed.jsonl"
+        path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')
+        self.receipt(self.event)
+        dispatcher = EventDispatcher("claude", None, None, self.gate)
+        dispatcher.baseline_judge({**self.event, "transcript_path": str(path)},
+                                 self.state)
+        status = ConventionJudge(self.state, self.gate).status(self.event)
+        self.assertEqual(status["error"], "invalid_window")
+        self.assertFalse(status["anchored"])
+        self.assertFalse(status["reviewed"])
+
     def test_activation_refusal_reaches_the_next_prompt(self) -> None:
         # Recording a refusal in the receipt is not delivering it: the notice the
         # next prompt carries is the only channel the user ever sees.
@@ -603,6 +629,20 @@ class JudgeSettingsTests(unittest.TestCase):
         self.assertGreater(JudgePolicy.load().lock_timeout(), 0)
         self.assertLessEqual(JudgePolicy.load().lock_poll(),
                              JudgePolicy.load().lock_timeout())
+
+    def test_every_path_reads_the_deadline_ceiling_from_one_policy(self) -> None:
+        # The whole-document and single-edit paths must agree on the deadline,
+        # so neither may reload the shipped policy while the other uses this
+        # owner's.
+        document = dict(JudgePolicy.load().document)
+        document["review_teardown_s"] = EVENT_TIMEOUTS["Stop"] - 10
+        policy = JudgePolicy(document)
+        config = JudgeSettings(self.state, policy)
+        with self.assertRaises(JudgeError):
+            JudgeSettings.validate({"schema": 2, "timeout_s": 20},
+                                   ceiling=policy.deadline_ceiling())
+        with self.assertRaises(JudgeError):
+            config.apply("set", "", "timeout_s", "20")
 
     def test_a_margin_that_leaves_no_review_room_is_invalid(self) -> None:
         document = dict(JudgePolicy.load().document)
