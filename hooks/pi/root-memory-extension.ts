@@ -48,9 +48,16 @@ const PREMEMORY_TIMEOUT_MS = 30000;
 const MEMORYUPDATE_TIMEOUT_MS = 30000;
 const MAX_INLINE_ENTRIES = 150;
 const LISTER_TIMEOUT_MS = 30000;
+// A host timer cannot hold a larger millisecond delay; the hook bounds
+// `timeout_s` against the same ceiling, so this only guards the arithmetic.
+const MAX_TIMER_MS = 2 ** 31 - 1;
 const UNREADABLE_JUDGE =
 	"agent-mem-struct: the convention judge reply could not be read; " +
-	"that review did not run.";
+	"the review result is unavailable and whether it was recorded is unknown.";
+const OVERSIZED_INPUT =
+	"agent-mem-struct: the convention review did not run (oversized_input); no " +
+	"review request fits the configured transport size limit, so nothing was " +
+	"reviewed and the watermark stays where it was.";
 const INTERPRETER_NAME_RE = /^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$/i;
 const INTERPRETER_FLAGS = new Set(["-I", "-B", "-E", "-S", "-u"]);
 
@@ -228,14 +235,17 @@ export class RootMemoryBridge {
 		this.registerMemoryUpdateTool(pi);
 		this.registerListerTool(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
-			// A reload may carry another session's in-flight review; settle it
-			// before this session's identity replaces the one it recorded under.
-			await this.judgeChain;
-			this.sessionLabel = this.sessionId(ctx);
-			// A reload reruns discovery; the next turn re-delivers the pre_memory
-			// pointer and any continuity checkpoint so a stale runtime cannot
-			// outlive the documents it points at.
-			this.firstTurn = true;
+			const label = this.sessionId(ctx);
+			// The identity transition is a queued receipt operation like any other:
+			// enqueued rather than awaited, it cannot run between a request that
+			// already captured the old session and the reply that request records.
+			await this.serialize(async () => {
+				this.sessionLabel = label;
+				// A reload reruns discovery; the next turn re-delivers the pre_memory
+				// pointer and any continuity checkpoint so a stale runtime cannot
+				// outlive the documents it points at.
+				this.firstTurn = true;
+			});
 		});
 
 		pi.on("before_agent_start", async (event: any) => this.onBeforeAgentStart(event));
@@ -477,18 +487,24 @@ export class RootMemoryBridge {
 		return `pi-process-${process.pid}-${randomUUID().slice(0, 8)}`;
 	}
 
+	/** The serialized hook request both the measurement and the write use. */
+	private hookBody(eventName: string, extra: Record<string, unknown>, session: string): string {
+		return JSON.stringify({
+			hook_event_name: eventName,
+			session_id: session,
+			turn_id: this.turnId,
+			...extra,
+		});
+	}
+
 	private callHook(
 		eventName: string,
 		extra: Record<string, unknown>,
 		timeoutMs: number,
+		session: string = this.sessionLabel,
 	): Promise<HookResult> {
 		return new Promise((resolve) => {
-			const body = JSON.stringify({
-				hook_event_name: eventName,
-				session_id: this.sessionLabel,
-				turn_id: this.turnId,
-				...extra,
-			});
+			const body = this.hookBody(eventName, extra, session);
 			const stdout: Buffer[] = [];
 			const stderr: Buffer[] = [];
 			let settled = false;
@@ -513,7 +529,7 @@ export class RootMemoryBridge {
 					stdout: decodeUtf8(stdout),
 					stderr: decodeUtf8(stderr),
 				});
-			}, timeoutMs);
+			}, Math.min(timeoutMs, MAX_TIMER_MS));
 			child.stdout.on("data", (chunk) => {
 				stdout.push(chunk);
 			});
@@ -728,7 +744,7 @@ export class RootMemoryBridge {
 
 	private async runJudge(ctx: any, session: string): Promise<void> {
 		const plan = this.judgeBody(
-			await this.callHook("Judge", { phase: "prepare" }, DEFAULT_TIMEOUT_MS),
+			await this.callHook("Judge", { phase: "prepare" }, DEFAULT_TIMEOUT_MS, session),
 		);
 		if (plan === null) {
 			this.judgeNotice = { session, text: UNREADABLE_JUDGE };
@@ -746,33 +762,84 @@ export class RootMemoryBridge {
 		}
 		const limits = (plan.limits ?? {}) as Record<string, unknown>;
 		const budget = Number(limits.timeout_s);
+		const maxTurns = Number(limits.max_turns);
+		const maxBytes = Number(limits.max_input_bytes);
 		// The session manager belongs to the extension context, not to the API.
 		const manager = ctx?.sessionManager;
 		const branch = typeof manager?.getBranch === "function" ? manager.getBranch() : [];
 		const leaf = typeof manager?.getLeafId === "function" ? manager.getLeafId() : null;
-		if (typeof leaf !== "string" || !Array.isArray(branch) || branch.length === 0) {
+		if (typeof leaf !== "string" || !leaf || !Array.isArray(branch) || branch.length === 0) {
 			return;
 		}
-		// The hook owns the window and its bounds; send the contiguous branch from
-		// its own watermark so a truncating cut here can never read as a gap.
+		// The hook owns the window; this bounds only what crosses the pipe, so a
+		// long branch is trimmed at its tail and the window's end - never the
+		// session's leaf - is what the hook validates and reviews. Trimming the
+		// tail advances the watermark one window at a time; trimming the head
+		// would drop the turn the cursor names and read as a coverage gap.
 		const anchor = typeof plan.cursor?.anchor === "string" ? plan.cursor.anchor : null;
+		// An anchor at the session leaf leaves nothing unreviewed, so there is
+		// nothing to fit and nothing to send.
+		if (anchor === leaf) return;
 		const at = anchor === null
-			? 0
+			? -1
 			: branch.findIndex((entry: any) => entry?.id === anchor);
-		const entries = at > 0 ? branch.slice(at) : branch;
+		const window = this.boundWindow(
+			branch.slice(at >= 0 ? at : 0),
+			Number.isFinite(maxTurns) && maxTurns >= 1 ? Math.floor(maxTurns) + (at >= 0 ? 1 : 0) : null,
+			Number.isFinite(maxBytes) && maxBytes >= 1 ? Math.floor(maxBytes) : null,
+			(candidate: any[]) => Buffer.byteLength(
+				this.hookBody("Judge", this.reviewExtra(plan, candidate, leaf), session),
+				"utf-8",
+			),
+		);
+		if (window.length === 0) {
+			// No candidate review request fits the transport bound, so nothing
+			// crosses the pipe and the receipt keeps its watermark.
+			this.judgeNotice = { session, text: OVERSIZED_INPUT };
+			return;
+		}
+		const extra = this.reviewExtra(plan, window, leaf);
+		const end = extra.leaf_id;
+		if (typeof end !== "string" || !end) return;
 		const result = await this.callHook(
 			"Judge",
-			{
-				phase: "review",
-				cursor: plan.cursor ?? null,
-				leaf_id: leaf,
-				session_entries: entries,
-			},
+			extra,
 			Number.isFinite(budget) && budget > 0
 				? Math.round(budget * 1000) + DEFAULT_TIMEOUT_MS
 				: DEFAULT_TIMEOUT_MS,
+			session,
 		);
 		this.settleJudge(result, session);
+	}
+
+	/** The review request body, without the fields every hook call carries. */
+	private reviewExtra(plan: Record<string, any>, entries: any[], leaf: string): Record<string, unknown> {
+		const end = entries.length > 0 ? entries[entries.length - 1]?.id : null;
+		return {
+			phase: "review",
+			cursor: plan.cursor ?? null,
+			leaf_id: end,
+			session_leaf_id: leaf,
+			session_entries: entries,
+		};
+	}
+
+	/** The longest prefix of one branch that stays within the configured turns and
+	 *  bytes, counting the whole request and not its turns alone. An empty window
+	 *  means not even the first turn fits, so nothing may be transmitted. */
+	private boundWindow(
+		entries: any[],
+		maxTurns: number | null,
+		maxBytes: number | null,
+		bytes: (candidate: any[]) => number,
+	): any[] {
+		const allowed = maxTurns === null ? entries.length : Math.max(1, Math.min(entries.length, maxTurns));
+		let window = entries.slice(0, allowed);
+		if (maxBytes === null) return window;
+		while (window.length > 0 && bytes(window) > maxBytes) {
+			window = window.slice(0, -1);
+		}
+		return window;
 	}
 
 	/** The single writer queue: every receipt-touching hook call runs alone, in
