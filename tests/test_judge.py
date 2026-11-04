@@ -636,6 +636,10 @@ class AdapterCaptureTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout, b"c\npass\n")
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows has no process groups for the hook to kill",
+    )
     def test_the_command_stays_in_the_group_the_hook_kills(self) -> None:
         # The hook enforces the review deadline by killing the process group it
         # started, so a child in a session of its own would survive the deadline
@@ -805,6 +809,10 @@ class JudgeSettingsTests(unittest.TestCase):
         self.assertFalse(config["enabled"])
         self.assertEqual(config["timeout_s"], JudgePolicy.load().defaults()["timeout_s"])
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows chmod does not enforce directory write permissions",
+    )
     def test_unwritable_directory_reports_a_write_failure(self) -> None:
         directory = self.path.parent
         directory.mkdir(parents=True, exist_ok=True)
@@ -837,4 +845,3 @@ class JudgeSettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
