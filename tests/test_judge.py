@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""The default-on convention judge: settings, protocol 2, and the windows."""
+"""The convention judge: settings, protocol 2, windows, and its wiring."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,22 +21,54 @@ SCRATCH_ROOT = Path(
     os.environ.get("AGENT_MEM_STRUCT_TEST_TMP", str(Path.home() / "tmp" / "agent-mem-struct-tests"))
 )
 
+from manage_common import EVENT_TIMEOUTS  # noqa: E402
 from rm_control import RootControl  # noqa: E402
+from rm_events import EventDispatcher  # noqa: E402
 from rm_judge import ConventionJudge, digest  # noqa: E402
-from rm_judge_settings import JudgeError, JudgePolicy, JudgeSettings  # noqa: E402
+from rm_judge_settings import (  # noqa: E402
+    TIMEOUT_MAX_S,
+    JudgeError,
+    JudgePolicy,
+    JudgeSettings,
+)
+from rm_judge_window import blocks_text, pi_window  # noqa: E402
 from rm_receipts import ConventionGate  # noqa: E402
 
-PASS = "import sys\ntext = sys.stdin.read()\nrequest = __import__('json').loads(text[text.index('{'):])\nsys.stdout.write(request['chain'] + '\\npass\\n')\n"
+ADAPTER = HOOKS / "rm_judge_adapter.py"
+# A stub that answers with the chain and `pass`, like a correct command.
+PASS = (
+    "import json, sys\n"
+    "text = sys.stdin.read()\n"
+    "request = json.loads(text[text.index('{'):])\n"
+    "sys.stdout.write(request['chain'] + '\\npass\\n')\n"
+)
+# A stub that names one finding: rule, turn, and a quote it must locate.
+def finding(rule: int, turn: int, quote: str) -> str:
+    return (
+        "import json, sys\n"
+        "text = sys.stdin.read()\n"
+        "request = json.loads(text[text.index('{'):])\n"
+        f"sys.stdout.write(request['chain'] + '\\n{rule} {turn} ' + json.dumps({quote!r}) + '\\n')\n"
+    )
+
+
+def assistant(uuid: str, parent: str | None, text: str) -> dict:
+    return {"type": "assistant", "uuid": uuid, "parentUuid": parent, "sessionId": "s1",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+def pi_entry(identifier: str, parent: str | None, text: str) -> dict:
+    return {"id": identifier, "parentId": parent, "message": {"content": text}}
 
 
 class JudgeCase(unittest.TestCase):
-    """A scratch agent home, its shared tree, and one receipt per session."""
+    """A scratch agent home, its shared tree, a receipt, and a passing command."""
 
     agent = "claude"
 
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-        self.root = Path(tempfile.mkdtemp(prefixed(), dir=SCRATCH_ROOT))
+        self.root = Path(tempfile.mkdtemp(prefix="judge-", dir=SCRATCH_ROOT))
         self.home = self.root / "agent"
         self.shared = self.root / "shared"
         self.shared.mkdir()
@@ -51,6 +86,10 @@ class JudgeCase(unittest.TestCase):
         self.state = RootControl(self.home, REPO).load(self.agent)
         self.gate = ConventionGate(self.state)
         self.settings_path = self.root / "user" / ".agent-mem-struct" / "judge.json"
+        # Every review spawns its command, so a test never reaches a real host
+        # CLI: the default here is the same stub the individual cases reuse.
+        self.command = self.stub("pass.py", PASS)
+        self.settings({"schema": 2, "command": self.command})
 
     def tearDown(self) -> None:
         if self.previous_home is None:
@@ -88,15 +127,6 @@ class JudgeCase(unittest.TestCase):
         })
 
 
-def prefixed() -> str:
-    return "judge-"
-
-
-def assistant(uuid: str, parent: str | None, text: str) -> dict:
-    return {"type": "assistant", "uuid": uuid, "parentUuid": parent, "sessionId": "s1",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
-
-
 class JudgeReviewTests(JudgeCase):
     def setUp(self) -> None:
         super().setUp()
@@ -109,6 +139,7 @@ class JudgeReviewTests(JudgeCase):
             "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
     def test_default_on_with_no_settings_document(self) -> None:
+        self.settings(None)
         self.write([assistant("a1", None, "first")])
         self.receipt(self.event)
         plan = ConventionJudge(self.state, self.gate).prepare(self.event)
@@ -118,36 +149,24 @@ class JudgeReviewTests(JudgeCase):
         self.assertEqual(plan["revision"], "")
         self.assertEqual(plan["launch"]["argv"][-2:], ["--agent", "claude"])
 
-    def test_first_window_is_a_baseline_and_a_pass_advances_the_watermark(self) -> None:
+    def test_first_review_covers_the_turn_that_triggered_it(self) -> None:
         self.write([assistant("a1", None, "first")])
         self.receipt(self.event)
         body = self.review(self.event)
-        self.assertEqual(body["error"], "baseline")
-        self.assertEqual(body["notice"], "")
-        self.settings({"schema": 2, "command": self.stub("pass.py", PASS)})
-        self.write([assistant("a1", None, "first"), assistant("a2", "a1", "second")])
-        body = self.review(self.event)
         self.assertIsNone(body["error"], body)
         recorded = self.gate.read_receipt(self.event)["judge"]
-        self.assertEqual(recorded["anchor"], "a2")
+        self.assertEqual(recorded["anchor"], "a1")
         self.assertEqual(recorded["seq"], 1)
         self.assertEqual(len(recorded["chain"]), 64)
         self.assertEqual(recorded["source"]["host"], "claude")
 
     def test_finding_resolves_to_offsets_in_the_supplied_turn(self) -> None:
-        quoting = self.stub("quote.py",
-                            "import json, sys\n"
-                            "text = sys.stdin.read()\n"
-                            "request = json.loads(text[text.index('{'):])\n"
-                            "sys.stdout.write(request['chain'] + '\\n1 1 ' + json.dumps('Claimed') + '\\n')\n")
-        self.settings({"schema": 2, "command": quoting})
-        self.write([assistant("a1", None, "first")])
+        self.settings({"schema": 2, "command": self.stub("quote.py", finding(1, 1, "Claimed"))})
+        self.write([assistant("a1", None, "Claimed it passed.")])
         self.receipt(self.event)
-        self.review(self.event)
-        self.write([assistant("a1", None, "first"), assistant("a2", "a1", "Claimed it passed.")])
         body = self.review(self.event)
         self.assertIsNone(body["error"], body)
-        self.assertEqual(body["findings"][0]["turn"], "a2")
+        self.assertEqual(body["findings"][0]["turn"], "a1")
         self.assertEqual(body["findings"][0]["start"], 0)
         self.assertEqual(body["findings"][0]["end"], 7)
         self.assertIn("unmet convention finding", body["notice"])
@@ -161,6 +180,7 @@ class JudgeReviewTests(JudgeCase):
             "index beyond turns": "print(c + '\\n1 9 \\\"first\\\"')\n",
             "unquoted evidence": "print(c + '\\n1 1 first')\n",
             "trailing material": "print(c + '\\n1 1 \\\"first\\\" extra')\n",
+            "trailing whitespace": "print(c + '\\n1 1 \\\"first\\\" \\t')\n",
             "two lines of findings out of order": (
                 "print(c + '\\n2 1 \\\"first\\\"\\n1 1 \\\"first\\\"')\n"),
             "carriage return": "print(c + '\\r\\npass')\n",
@@ -173,34 +193,51 @@ class JudgeReviewTests(JudgeCase):
                     "request = json.loads(text[text.index('{'):])\n"
                     "c = request['chain']\n" + body
                 )
-                self.settings({"schema": 2, "command": self.stub("bad.py", program),
-                               "max_turns": 32})
-                self.write([assistant("a1", None, "first")])
+                self.settings({"schema": 2, "command": self.stub("bad.py", program)})
+                self.write([assistant("a1", None, "first and second")])
                 self.receipt(self.event)
-                self.review(self.event)
-                self.write([assistant("a1", None, "first"),
-                            assistant("a2", "a1", "first and second")])
                 refusal = self.review(self.event)
                 self.assertEqual(refusal["error"], "invalid_response", (label, refusal))
 
+    def test_a_turn_the_transport_dropped_cannot_be_cited(self) -> None:
+        # The first turn fits, the second does not: the payload carries only the
+        # first, so a finding that names the second names a turn nobody saw.
+        # A correct answer cannot know its text, and an incorrect one must not
+        # be accepted on the strength of a local lookup.
+        self.settings({"schema": 2, "command": self.stub("cite.py", finding(1, 2, "SECRET")),
+                       "max_input_bytes": 900})
+        self.write([assistant("a1", None, "alpha"), assistant("a2", "a1", "SECRET" + "x" * 5000)])
+        self.receipt(self.event)
+        body = self.review(self.event)
+        self.assertEqual(body["error"], "invalid_response", body)
+        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["seq"], 0)
+
     def test_oversized_input_leaves_the_watermark_alone(self) -> None:
-        self.settings({"schema": 2, "command": self.stub("pass.py", PASS), "max_input_bytes": 200})
+        self.settings({"schema": 2, "command": self.command, "max_input_bytes": 200})
         self.write([assistant("a1", None, "first")])
         self.receipt(self.event)
-        self.review(self.event)
-        self.write([assistant("a1", None, "first"), assistant("a2", "a1", "second")])
         body = self.review(self.event)
         self.assertEqual(body["error"], "oversized_input", body)
-        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "a1")
+        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], None)
 
-    def test_rewritten_history_is_refused_rather_than_rebased(self) -> None:
-        self.settings({"schema": 2, "command": self.stub("pass.py", PASS)})
+    def test_rewritten_anchor_is_refused_rather_than_rebased(self) -> None:
         self.write([assistant("a1", None, "first")])
         self.receipt(self.event)
         self.review(self.event)
         self.write([assistant("a1", None, "rewritten"), assistant("a2", "a1", "second")])
         body = self.review(self.event)
         self.assertEqual(body["error"], "invalid_window", body)
+
+    def test_missing_anchor_rebaselines_instead_of_stranding_the_session(self) -> None:
+        self.write([assistant("a1", None, "first")])
+        self.receipt(self.event)
+        self.review(self.event)
+        # The saved anchor is gone from the source entirely: that is a gap to
+        # report, not a rewrite to refuse, or the session could never resume.
+        self.write([assistant("b1", None, "second")])
+        body = self.review(self.event)
+        self.assertEqual(body["error"], "coverage_gap", body)
+        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "b1")
 
     def test_unknown_record_type_is_refused(self) -> None:
         self.write([assistant("a1", None, "first")])
@@ -222,18 +259,103 @@ class JudgeReviewTests(JudgeCase):
         plan = ConventionJudge(self.state, self.gate).prepare(self.event)
         self.assertFalse(plan["enabled"])
         self.assertEqual(plan["error"], "disabled")
-        body = self.review(self.event)
-        self.assertEqual(body["error"], "disabled")
+        self.assertEqual(self.review(self.event)["error"], "disabled")
 
     def test_stale_config_between_prepare_and_review_runs_nothing(self) -> None:
         self.write([assistant("a1", None, "first")])
         self.receipt(self.event)
         judge = ConventionJudge(self.state, self.gate)
         plan = judge.prepare(self.event)
-        self.settings({"schema": 2, "command": self.stub("pass.py", PASS)})
+        self.settings({"schema": 2, "command": self.command, "timeout_s": 12})
         body = judge.review({**self.event, "cursor": plan["cursor"],
                              "config_revision": plan["revision"]})
         self.assertEqual(body["error"], "stale_config", body)
+
+    def test_host_override_is_what_the_adapter_runs(self) -> None:
+        # The override is the only way a user changes what runs, so it has to
+        # reach the child's argv rather than being re-derived from the policy.
+        marker = self.root / "argv.json"
+        recorder = self.stub("record.py",
+                             "import json, sys\n"
+                             f"open({str(marker)!r}, 'w').write(json.dumps(sys.argv))\n" + PASS)
+        self.settings({"schema": 2, "hosts": {"claude": {"command": recorder}}})
+        self.write([assistant("a1", None, "first")])
+        self.receipt(self.event)
+        body = self.review(self.event)
+        self.assertIsNone(body["error"], body)
+        self.assertIn(str(Path(recorder[1]).resolve()), json.loads(marker.read_text())[0])
+
+    def test_adapter_capture_codes_become_local_refusals(self) -> None:
+        for code, expected in ((3, "oversized_output"), (4, "invalid_response")):
+            with self.subTest(code):
+                self.settings({"schema": 2, "command": self.stub(
+                    f"exit{code}.py", f"import sys\nsys.exit({code})\n")})
+                self.write([assistant("a1", None, "first")])
+                self.receipt(self.event)
+                self.assertEqual(self.review(self.event)["error"], expected)
+
+
+class PiWindowTests(JudgeCase):
+    agent = "pi"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.branch = [pi_entry("a", None, "one"), pi_entry("b", "a", "two")]
+        self.event = {"session_id": "s1", "cwd": str(self.root)}
+        self.receipt(self.event)
+
+    def settle(self, entries: list[dict], leaf: str) -> dict:
+        return self.review({**self.event, "session_entries": entries, "leaf_id": leaf,
+                            "session_leaf_id": self.branch[-1]["id"]})
+
+    def test_consecutive_settles_survive_a_bounded_window(self) -> None:
+        # Each settle ships a window that starts at the saved anchor, so the
+        # same anchor has to produce the same digest from a shorter window.
+        body = self.settle([self.branch[0]], "a")
+        self.assertIsNone(body["error"], body)
+        c = pi_entry("c", "b", "three")
+        body = self.settle([self.branch[0], self.branch[1]], "b")
+        self.assertIsNone(body["error"], body)
+        body = self.review({**self.event, "session_entries": [self.branch[1], c], "leaf_id": "c",
+                            "session_leaf_id": "c"})
+        self.assertIsNone(body["error"], body)
+        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "c")
+
+    def test_anchor_outside_the_window_is_a_coverage_gap(self) -> None:
+        self.settle([self.branch[0], self.branch[1]], "b")
+        c = pi_entry("c", "b", "three")
+        body = self.review({**self.event, "session_entries": [c], "leaf_id": "c",
+                            "session_leaf_id": "c"})
+        self.assertEqual(body["error"], "coverage_gap", body)
+
+    def test_activation_baseline_anchors_before_the_first_turn(self) -> None:
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "session_entries": self.branch, "leaf_id": "b",
+                               "session_leaf_id": "b"})
+        self.assertEqual(body["error"], "baseline", body)
+        recorded = self.gate.read_receipt(self.event)["judge"]
+        self.assertEqual(recorded["anchor"], "b")
+        c = pi_entry("c", "b", "three")
+        body = self.settle([self.branch[1], c], "c")
+        self.assertIsNone(body["error"], body)
+        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "c")
+
+    def test_activation_without_history_starts_at_the_empty_origin(self) -> None:
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "session_entries": [], "leaf_id": ""})
+        self.assertEqual(body["error"], "baseline", body)
+        self.assertIsNone(self.gate.read_receipt(self.event)["judge"]["anchor"])
+
+    def test_pi_tool_calls_are_part_of_the_turn(self) -> None:
+        self.assertEqual(
+            blocks_text([{"type": "toolCall", "name": "bash",
+                          "arguments": {"command": "echo test"}}]),
+            '[bash] {"command":"echo test"}',
+        )
+        self.assertEqual(
+            blocks_text([{"type": "tool_use", "name": "Read", "input": {"p": 1}}]),
+            '[Read] {"p":1}',
+        )
 
 
 class CodexWindowTests(JudgeCase):
@@ -250,12 +372,76 @@ class CodexWindowTests(JudgeCase):
         transcript.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
         self.receipt(event)
         body = self.review(event)
-        self.assertEqual(body["error"], "baseline", body)
+        self.assertIsNone(body["error"], body)
         self.assertEqual(self.gate.read_receipt(event)["judge"]["anchor"], "1")
         broken = records + [{"type": "response_item", "ordinal": 1,
                              "payload": {"type": "message", "role": "assistant", "content": "again"}}]
         transcript.write_text("".join(json.dumps(r) + "\n" for r in broken), encoding="utf-8")
         self.assertEqual(self.review(event)["error"], "invalid_window")
+
+
+class StopWiringTests(JudgeCase):
+    def test_installed_deadline_exceeds_the_review_deadline(self) -> None:
+        # A review the host kills mid-flight loses its notice, so the installed
+        # Stop bound has to exceed the review bound with room to persist.
+        self.assertGreaterEqual(EVENT_TIMEOUTS["Stop"], TIMEOUT_MAX_S + 20)
+        self.assertGreaterEqual(EVENT_TIMEOUTS["SubagentStop"], TIMEOUT_MAX_S + 20)
+
+    def test_configuration_refusal_is_visible_on_stop(self) -> None:
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings_path.write_text("{not json", encoding="utf-8")
+        event = {"session_id": "s1", "transcript_path": str(self.root / "t.jsonl"),
+                 "cwd": str(self.root)}
+        dispatcher = EventDispatcher("claude", None, None, self.gate)
+        with contextlib.redirect_stdout(io.StringIO()):
+            dispatcher.review_on_stop(event, self.state)
+        self.assertIn("did not run", self.gate.notification(event))
+
+    def test_unwritable_receipt_falls_back_to_the_host_message(self) -> None:
+        event = {"session_id": "s1", "transcript_path": str(self.root / "t.jsonl"),
+                 "cwd": str(self.root)}
+        dispatcher = EventDispatcher("claude", None, None, self.gate)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            dispatcher.deliver_notice(event, "convention judge: the review did not run (x).")
+        self.assertEqual(output.getvalue(), "")
+
+
+class AdapterCaptureTests(unittest.TestCase):
+    """The adapter refuses its own capture instead of repairing it."""
+
+    def run_adapter(self, command: list[str]) -> subprocess.CompletedProcess:
+        environment = dict(os.environ)
+        environment["AMS_JUDGE_LAUNCH"] = json.dumps(
+            {"command": command, "prompt": "stdin", "answer": "stdout"})
+        return subprocess.run(
+            [sys.executable, str(ADAPTER), "--agent", "claude"],
+            input=b'{"chain":"c"}', capture_output=True, env=environment, timeout=120,
+        )
+
+    def program(self, body: str) -> list[str]:
+        directory = Path(tempfile.mkdtemp(prefix="adapter-", dir=SCRATCH_ROOT))
+        path = directory / "stub.py"
+        path.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+        path.chmod(0o700)
+        return [sys.executable, str(path)]
+
+    def test_a_flood_is_refused_rather_than_buffered(self) -> None:
+        flood = self.program(
+            "import sys\n"
+            "sys.stdin.read()\n"
+            "sys.stdout.write('x' * (9 * 1024 * 1024))\n")
+        self.assertEqual(self.run_adapter(flood).returncode, 3)
+
+    def test_invalid_bytes_are_refused_rather_than_replaced(self) -> None:
+        invalid = self.program("import sys\nsys.stdin.read()\nsys.stdout.buffer.write(b'\\xff\\xfe')\n")
+        self.assertEqual(self.run_adapter(invalid).returncode, 4)
+
+    def test_a_normal_answer_passes_through(self) -> None:
+        answer = self.program("import sys\nsys.stdin.read()\nsys.stdout.write('c\\npass\\n')\n")
+        completed = self.run_adapter(answer)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, b"c\npass\n")
 
 
 class JudgeSettingsTests(unittest.TestCase):
@@ -282,6 +468,7 @@ class JudgeSettingsTests(unittest.TestCase):
         self.assertTrue(config["enabled"])
         self.assertIsNone(config["command"])
         self.assertEqual(config["protocol"], 2)
+        self.assertEqual(config["stated"], [])
         self.assertEqual(config["max_turns"], JudgePolicy.load().defaults()["max_turns"])
 
     def test_shipped_policy_names_the_defaults(self) -> None:
@@ -301,6 +488,12 @@ class JudgeSettingsTests(unittest.TestCase):
         self.assertEqual(str(stale.exception), "stale_config")
         self.assertEqual(self.settings.read()["timeout_s"], 12)
 
+    def test_stated_keys_are_reported_even_at_default_values(self) -> None:
+        self.settings.apply("set", "", "max_turns", "32")
+        config = self.settings.read()
+        self.assertIn("max_turns", config["stated"])
+        self.assertEqual(config["max_turns"], JudgePolicy.load().defaults()["max_turns"])
+
     def test_invalid_document_is_never_repaired_or_overwritten(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text("{not json", encoding="utf-8")
@@ -319,6 +512,12 @@ class JudgeSettingsTests(unittest.TestCase):
             with self.assertRaises(JudgeError) as refused:
                 self.settings.apply("set", "", key, value)
             self.assertEqual(str(refused.exception), "invalid_settings_request", key)
+
+    def test_a_deadline_beyond_the_installed_bound_is_refused(self) -> None:
+        with self.assertRaises(JudgeError):
+            self.settings.apply("set", "", "timeout_s", str(TIMEOUT_MAX_S + 1))
+        self.settings.apply("set", "", "timeout_s", "12.5")
+        self.assertEqual(self.settings.read()["timeout_s"], 12.5)
 
     def test_legacy_document_keeps_its_protocol(self) -> None:
         legacy = {"command": ["x"], "timeout_s": 9, "max_turns": 2,
@@ -342,6 +541,17 @@ class JudgeSettingsTests(unittest.TestCase):
         self.assertEqual(imported["protocol"], 1)
         self.assertEqual(imported["timeout_s"], 9)
         self.assertEqual(imported["command"], ["x"])
+
+    def test_import_into_a_sparse_document_refuses_instead_of_crashing(self) -> None:
+        self.settings.apply("set", "", "max_turns", "8")
+        legacy = self.home / ".agent-mem-struct" / "judge.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"command": ["x"], "timeout_s": 9, "max_turns": 2,
+                                     "max_input_bytes": 100, "max_output_bytes": 10}),
+                          encoding="utf-8")
+        with self.assertRaises(JudgeError) as refused:
+            self.settings.apply("import", self.settings.read()["revision"], None, None)
+        self.assertEqual(str(refused.exception), "settings_conflict")
 
     def test_reset_removes_numeric_overrides_only(self) -> None:
         self.settings.apply("set", "", "timeout_s", "12")
@@ -367,6 +577,18 @@ class JudgeSettingsTests(unittest.TestCase):
         launch = self.settings.launch(self.settings.read())
         self.assertEqual(launch["argv"], ["my-judge", "--fast"])
         self.assertTrue(launch["explicit"])
+
+    def test_environment_override_replaces_the_shipped_names(self) -> None:
+        self.assertEqual(self.settings.launch(self.settings.read())["extra_env"],
+                         JudgePolicy.load().host("claude")["extra_env"])
+        self.settings.apply("set", "", "hosts.claude.extra_env", "[]")
+        self.assertEqual(self.settings.launch(self.settings.read())["extra_env"], [])
+
+    def test_host_command_override_is_carried_to_the_adapter(self) -> None:
+        self.settings.apply("set", "", "hosts.claude.command", '["my-cli", "-p"]')
+        launch = self.settings.launch(self.settings.read())
+        self.assertEqual(launch["host_command"], ["my-cli", "-p"])
+        self.assertFalse(launch["explicit"])
 
 
 if __name__ == "__main__":

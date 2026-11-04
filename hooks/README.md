@@ -364,21 +364,33 @@ The bridge maps Pi events onto the hook's event vocabulary:
   --no-tools --no-mcp --no-extensions --no-skills --no-prompt-templates
   --no-context-files`, `claude -p --safe-mode --tools "" ...
   --no-session-persistence`, or `codex exec - --ephemeral -s read-only ...
-  --disable hooks --disable plugins --disable apps`. An argv `command` replaces
+  --disable hooks --disable plugins --disable apps`. The hook passes the
+  descriptor it already validated - the host override included - in
+  `AMS_JUDGE_LAUNCH`, so the adapter runs what the settings say rather than
+  re-reading a policy file the user cannot edit. The adapter bounds its own
+  capture while reading, and exits `3` for output beyond the policy's capture
+  bound and `4` for bytes that are not UTF-8; the hook maps those to
+  `oversized_output` and `invalid_response` instead of repairing the answer. An argv `command` replaces
   the adapter and runs under protocol 1 unless the document also declares
   `protocol: 2`; a document without `schema` is read exactly as the pre-schema
   five keys, and `import` copies such a file verbatim, protocol included.
-  `enabled: false` is the only way to turn the judge off. A document that is
+  `hosts.<host>.extra_env` states the whole forwarded list for that host, so an
+  explicit `[]` forwards nothing: names cannot be removed by adding to the
+  shipped set. `enabled: false` is the only way to turn the judge off. A document that is
   unreadable, is not a regular file, or is malformed is reported as
   `invalid_config` rather than running or silently disabling the judge.
 
   Protocol 2 keeps the command's freedom to a single line. The request names a
   `chain` and the reply must begin with that chain followed by either `pass`
-  and nothing else, or one line per finding - `<turn> <rule> "<quote>"` - in
-  ascending order, the quote occurring exactly once in the turn it names.
-  Anything else (a wrong chain, `pass` beside findings, a finding out of order,
-  an unquoted or repeated field, a carriage return, trailing material) is
-  `invalid_response` and leaves the watermark where it was.
+  and nothing else, or one line per finding - `<rule> <turn> "<quote>"`, both
+  indices 1-based - in strictly ascending `(rule, turn)` order, the quote
+  occurring exactly once in the turn it names. Anything else (a wrong chain,
+  `pass` beside findings, a finding out of order, an unquoted or repeated
+  field, surrounding whitespace, a carriage return, trailing material) is
+  `invalid_response` and leaves the watermark where it was. A finding may name
+  only a turn that was actually transmitted: when the byte bound drops trailing
+  turns, an answer about a dropped turn is refused rather than resolved against
+  text the command never saw.
 
   Each settle runs `prepare` (configuration, cursor, and transport limits; the
   command is not invoked) and then `review`, which sends the contiguous branch
@@ -397,17 +409,31 @@ The bridge maps Pi events onto the hook's event vocabulary:
   measures and writes the request, so the bound covers every byte; when no
   candidate review request fits, the bridge transmits nothing, reports
   `oversized_input` itself and leaves the receipt untouched, since no hook call
-  can annotate a refusal it never saw. A baseline - the first valid window and a
-  `coverage_gap` rebaseline alike - anchors at `session_leaf_id`, so turns that
-  predate activation are never reviewed afterwards. `timeout_s` is bounded by
+  can annotate a refusal it never saw. Activation is its own phase: at session
+  start the host anchors the watermark at the session's current leaf and
+  reviews nothing, so the turns that follow are reviewed and the history that
+  came before is accepted as pre-activation. A session that starts with no
+  history at all begins at the empty origin, which anchors at no turn, so its
+  first completed turn is reviewed rather than exempted; a review that finds no
+  epoch establishes the same empty origin before reviewing, so a session whose
+  host never sent the activation phase still reviews every turn it was given.
+  A `coverage_gap` rebaseline anchors at the supplied window's leaf. `timeout_s` is bounded by
   what `threading` and a host timer can hold, and a larger value is
   `invalid_config` before anything is spawned. A finding may name only a
   supplied rule, a supplied turn, and a quote that occurs there exactly once;
-  its offsets are string indices derived locally. Refusal codes are local:
+  its offsets are string indices derived locally. Continuity binds the anchor
+  record itself - its identity and content - because a bounded window may start
+  at the anchor, and evidence about everything before it cannot be recomputed
+  from a window that no longer contains it; a rewritten anchor is
+  `invalid_window`, while an anchor the source no longer holds at all is a
+  `coverage_gap` that rebaselines instead of stranding the session. Refusal
+  codes are local:
   `disabled`, `invalid_config`, `invalid_cursor`, `invalid_window`,
   `stale_cursor`, `stale_config`, `unreadable_rules`, `stale_rules`,
   `oversized_input`, `oversized_output`, `oversized_receipt`, `timeout`,
-  `command_failed`, `invalid_response`, and `persistence_failed`, which
+  `command_failed`, `invalid_response`, `unsupported_host`, `settings_busy`,
+  `invalid_settings_request`, `settings_write_failed`, `settings_conflict`, and
+  `persistence_failed`, which
   `ConventionJudge.review` returns when it cannot convert a refusal into a
   stored one. A recorded refusal sets its code on the stored state and keeps
   every other field, including previously accepted findings; a session with no
@@ -430,6 +456,14 @@ The bridge maps Pi events onto the hook's event vocabulary:
   document and takes a short lock (reporting `settings_busy`); the command
   holds no state of its own. A review carries the revision it was prepared
   under and is refused as `stale_config` if the document changed in between.
+  Provenance is what the document states, not what a value looks like: an
+  explicit `max_turns: 32` reads as explicit. The listing shows the effective
+  host command and, when the adapter is in use, its argv as well.
+
+  `timeout_s` is capped at 60 s because the installed `Stop` and `SubagentStop`
+  handlers allow 90 s: the rest is the receipt write, the notice, and teardown,
+  so a review that times out reports its own deadline instead of being killed
+  before it can record one. A larger value is `invalid_config`.
 
   The one receipt writer enforces `RECEIPT_MAX_BYTES` on the exact payload it is
   about to replace, for every mutator rather than the judge alone, and refuses
