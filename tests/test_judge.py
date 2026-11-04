@@ -142,6 +142,19 @@ class JudgeReviewTests(JudgeCase):
         self.write([assistant("a1", None, "rewritten"), assistant("a2", "a1", "second")])
         self.assertEqual(self.review(self.event)["error"], "invalid_window")
 
+    def test_judge_route_queues_the_activation_notice(self) -> None:
+        # Pi asks for the baseline and keeps the receipt, not the reply, so the
+        # refusal has to be recorded before that reply is discarded.
+        path = self.root / "malformed.jsonl"
+        path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')
+        self.receipt(self.event)
+        dispatcher = EventDispatcher("pi", None, None, self.gate)
+        with contextlib.redirect_stdout(io.StringIO()):
+            dispatcher.handle_judge(
+                {"session_id": "s1", "cwd": str(self.root), "phase": "baseline",
+                 "transcript_path": str(path)}, self.state)
+        self.assertIn("invalid_window", self.gate.notification(self.event))
+
     def test_activation_refusal_survives_the_next_review(self) -> None:
         # The refusal belongs to the turn that produced it, so a later review
         # writing its own state may not swallow the notice before a prompt reads

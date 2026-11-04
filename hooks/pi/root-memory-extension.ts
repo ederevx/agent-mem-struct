@@ -884,12 +884,13 @@ export class RootMemoryBridge {
 		const settings = await this.judgeSettings({});
 		const bound = settings?.defaults?.baseline_entries;
 		if (typeof bound !== "number" || bound <= 0) return;
-		await this.serialize(() => this.callHook("Judge", {
+		const result = await this.serialize(() => this.callHook("Judge", {
 			phase: "baseline",
 			leaf_id: leaf,
 			session_leaf_id: leaf,
 			session_entries: branch.slice(-bound),
 		}, DEFAULT_TIMEOUT_MS, this.sessionId(ctx)));
+		this.settleJudge(result as HookResult, this.sessionId(ctx));
 	}
 
 	/** One judge settings operation, validated and applied by the hook. */
