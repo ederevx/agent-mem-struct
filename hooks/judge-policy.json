@@ -4,6 +4,8 @@
   "adapter": "rm_judge_adapter.py",
   "capture_bytes": 8388608,
   "review_teardown_s": 30,
+  "lock_timeout_s": 2,
+  "lock_poll_s": 0.05,
   "defaults": {
     "protocol": 2,
     "baseline_entries": 64,

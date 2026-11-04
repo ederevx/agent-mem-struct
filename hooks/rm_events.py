@@ -136,16 +136,20 @@ class EventDispatcher:
 
         A session that begins with the judge on has no pre-activation turns, so
         an absent transcript is the empty origin and not a refusal. Nothing here
-        may fail a session start.
+        may fail a session start. A refusal still has to reach the user, so it
+        takes the same channel a review's notice does: the next prompt carries
+        it, and the receipt no longer hides it.
         """
         judge = ConventionJudge(state, self.gate)
         try:
             _, config = judge.configuration()
             if not config["enabled"]:
                 return
-            judge.baseline({**event, "config_revision": config["revision"]})
+            body = judge.baseline({**event, "config_revision": config["revision"]})
         except (JudgeError, OSError, ValueError):
             return
+        if isinstance(body, dict):
+            self.deliver_notice(event, body.get("notice"))
 
     def continuity_context(
         self, state: RootState, checkpoint: str | None, base: str | None = None
