@@ -43,6 +43,11 @@ PASS = (
 )
 
 
+# A stub answers like a POSIX CLI: text-mode stdout would end its lines
+# with a carriage return, which the reply grammar refuses.
+STUB_PROLOGUE = "import sys\nsys.stdout.reconfigure(newline='\\n')\n"
+
+
 # A stub that names one finding: rule, turn, and a quote it must locate.
 def finding(rule: int, turn: int, quote: str) -> str:
     return (
@@ -116,7 +121,7 @@ class JudgeCase(unittest.TestCase):
 
     def stub(self, name: str, body: str) -> list[str]:
         path = self.root / name
-        path.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+        path.write_text("#!/usr/bin/env python3\n" + STUB_PROLOGUE + body, encoding="utf-8")
         path.chmod(0o700)
         return [sys.executable, str(path)]
 
@@ -610,7 +615,7 @@ class AdapterCaptureTests(unittest.TestCase):
     def program(self, body: str) -> list[str]:
         directory = Path(tempfile.mkdtemp(prefix="adapter-", dir=SCRATCH_ROOT))
         path = directory / "stub.py"
-        path.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+        path.write_text("#!/usr/bin/env python3\n" + STUB_PROLOGUE + body, encoding="utf-8")
         path.chmod(0o700)
         return [sys.executable, str(path)]
 

@@ -174,11 +174,15 @@ def main() -> int:
     if code != 0:
         return code
     try:
-        sys.stdout.write(answer.decode("utf-8"))
+        answer.decode("utf-8")
     except UnicodeDecodeError:
         # A command that answered with bytes no text protocol can carry is a
         # result the judge must refuse, not one it repairs into acceptance.
         return UNDECODABLE
+    # The judge reads this answer verbatim, so text-mode newline translation
+    # here would turn every line into a carriage return it refuses.
+    sys.stdout.buffer.write(answer)
+    sys.stdout.buffer.flush()
     return 0
 
 
