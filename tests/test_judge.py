@@ -41,6 +41,8 @@ PASS = (
     "request = json.loads(text[text.index('{'):])\n"
     "sys.stdout.write(request['chain'] + '\\npass\\n')\n"
 )
+
+
 # A stub that names one finding: rule, turn, and a quote it must locate.
 def finding(rule: int, turn: int, quote: str) -> str:
     return (
@@ -58,6 +60,24 @@ def assistant(uuid: str, parent: str | None, text: str) -> dict:
 
 def pi_entry(identifier: str, parent: str | None, text: str) -> dict:
     return {"id": identifier, "parentId": parent, "message": {"content": text}}
+
+
+# Path.home() reads USERPROFILE on Windows and HOME everywhere else, so a
+# fixture that redirects only one of them still resolves the real user home.
+HOME_VARIABLES = ("HOME", "USERPROFILE")
+
+
+def set_home(home: Path) -> None:
+    for name in HOME_VARIABLES:
+        os.environ[name] = str(home)
+
+
+def restore_home(previous: dict[str, str | None]) -> None:
+    for name, value in previous.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 class JudgeCase(unittest.TestCase):
@@ -80,8 +100,9 @@ class JudgeCase(unittest.TestCase):
         (self.home / "RULES.md").write_text(
             "# Rules\n\n## Mandatory conventions\n\n- Keep continuity.\n", encoding="utf-8")
         (self.home / "STRUCTURE.md").write_text("Structure-Version: t\n", encoding="utf-8")
-        self.previous_home = os.environ.get("HOME")
-        os.environ["HOME"] = str(self.root / "user")
+        self.previous_home = {name: os.environ.get(name)
+                              for name in HOME_VARIABLES}
+        set_home(self.root / "user")
         self.state = RootControl(self.home, REPO).load(self.agent)
         self.gate = ConventionGate(self.state)
         self.settings_path = self.root / "user" / ".agent-mem-struct" / "judge.json"
@@ -91,10 +112,7 @@ class JudgeCase(unittest.TestCase):
         self.settings({"schema": 2, "command": self.command})
 
     def tearDown(self) -> None:
-        if self.previous_home is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = self.previous_home
+        restore_home(self.previous_home)
 
     def stub(self, name: str, body: str) -> list[str]:
         path = self.root / name
@@ -633,17 +651,15 @@ class JudgeSettingsTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="judge-settings-", dir=SCRATCH_ROOT))
         self.home = self.root / "agent"
         self.home.mkdir()
-        self.previous_home = os.environ.get("HOME")
-        os.environ["HOME"] = str(self.root / "user")
+        self.previous_home = {name: os.environ.get(name)
+                              for name in HOME_VARIABLES}
+        set_home(self.root / "user")
         self.state = type("State", (), {"home": self.home, "agent": "claude"})()
         self.settings = JudgeSettings(self.state)
         self.path = self.settings.path()
 
     def tearDown(self) -> None:
-        if self.previous_home is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = self.previous_home
+        restore_home(self.previous_home)
 
     def test_absent_document_is_the_shipped_default(self) -> None:
         config = self.settings.read()
@@ -816,3 +832,4 @@ class JudgeSettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
