@@ -4,6 +4,32 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T10:35:23-05:00 - review settled turns against the conventions an agent read
+
+The gate proves which convention sources a session read; it cannot show whether
+the turn that followed obeyed them, and every host that exposes a settle gives
+the hook one whole turn at a time. `hooks/rm_judge.py` sends the contiguous
+turns after a per-session watermark, with one rule unit per acknowledged source,
+to a command the user authorizes by creating `<agent-home>/.agent-mem-struct/
+judge.json`; the judge records only findings whose quote it can locate exactly
+once in a supplied turn, as rule id, turn id and string offsets.
+
+Authorization is the file, not consent carried by a receipt: neither a receipt
+nor a transcript read establishes a command's provider, endpoint, or retention
+terms, so the installers never create, replace, or remove that file and an
+absent one disables the judge. An existing but unreadable, non-regular or
+malformed file refuses as `invalid_config` instead of silently disabling.
+
+The window and its bounds belong to the hook, so a short window still advances
+the watermark and only one that cannot reach it is a `coverage_gap` that
+rebaselines without claiming any review of the skipped turns. Each answer is
+bound to its request by a chain over the previous chain, position, anchor and
+payload digest, and a reply that is oversized, mistimed, malformed, or cites
+anything but supplied text is refused with a local code. A recorded refusal
+keeps the findings it already had; nothing the judge returns blocks a tool call
+or a settle, and its notice reaches the model on the next turn of the session
+that produced it.
+
 ## 2026-11-03T00:00:00-05:00 - require the literal `Assisted-by: LLM` trailer
 
 The trailer recorded which model answered, in a project where one session's work
