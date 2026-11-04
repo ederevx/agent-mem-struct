@@ -467,8 +467,8 @@ The bridge maps Pi events onto the hook's event vocabulary:
   explicit `max_turns: 32` reads as explicit. The listing shows the effective
   host command, the adapter's argv when it is in use, the activation bound the
   shipped policy sets, and the last review this session actually holds - its
-  refusal code or its acceptance, the boundary it reached, and any notice a
-  turn has yet to collect.
+  refusal code or its acceptance, the boundary it reached, whether activation
+  established a watermark at all, and any notice a turn has yet to collect.
 
   `timeout_s` is capped by the deadline the installed `Stop` and `SubagentStop`
   handlers carry, less the room the receipt write, the notice, and teardown
