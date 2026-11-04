@@ -420,7 +420,9 @@ The bridge maps Pi events onto the hook's event vocabulary:
   An empty inline window or an opened-but-unwritten transcript is that empty
   origin, while a source that exists and cannot be read is `invalid_window`:
   accepting it would claim a baseline nobody could verify and then present the
-  history it hid as new work.
+  history it hid as new work. A refusal at activation takes the same channel a
+  review's does - the next prompt carries its notice - so a session whose
+  history could not be read says so instead of looking inert.
   A `coverage_gap` rebaseline anchors at the supplied window's leaf. `timeout_s` is bounded by
   what `threading` and a host timer can hold, and a larger value is
   `invalid_config` before anything is spawned. A finding may name only a
@@ -474,9 +476,11 @@ The bridge maps Pi events onto the hook's event vocabulary:
   killed before it can record one. Neither number has two owners: the bound is
   the installed deadline in `hooks/manage_common.py`, and the margin is
   `review_teardown_s` in `hooks/judge-policy.json`, beside `capture_bytes`. A
-  larger value is `invalid_config`. Activation reads at most the policy's
-  `baseline_entries` of history, so how much is accepted as pre-activation is a
-  shipped value rather than a constant in the bridge.
+  larger value is `invalid_config`. Pi's activation reads at most the policy's
+  `baseline_entries` of inline history, since the bridge must ship the branch
+  inside the hook call; Claude and Codex read their transcript whole, because
+  reading a file has no such bound. Either way the amount accepted as
+  pre-activation is a shipped value rather than a constant in the bridge.
 
   The one receipt writer enforces `RECEIPT_MAX_BYTES` on the exact payload it is
   about to replace, for every mutator rather than the judge alone, and refuses
