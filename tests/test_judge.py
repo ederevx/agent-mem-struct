@@ -134,6 +134,15 @@ class JudgeReviewTests(JudgeCase):
         self.event = {"session_id": "s1", "transcript_path": str(self.transcript),
                       "cwd": str(self.root)}
 
+    def test_activation_anchors_a_transcript_host_at_its_leaf(self) -> None:
+        # Claude and Codex have no inline entries: activation must read the
+        # transcript, or the whole history would be reviewed on the first Stop.
+        self.write([assistant("a1", None, "first")])
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "config_revision": None})
+        self.assertEqual(body["error"], "baseline", body)
+        self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "a1")
+
     def write(self, records: list[dict]) -> None:
         self.transcript.write_text(
             "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
@@ -183,6 +192,8 @@ class JudgeReviewTests(JudgeCase):
             "trailing whitespace": "print(c + '\\n1 1 \\\"first\\\" \\t')\n",
             "two lines of findings out of order": (
                 "print(c + '\\n2 1 \\\"first\\\"\\n1 1 \\\"first\\\"')\n"),
+            "two findings for one rule and turn": (
+                "print(c + '\\n1 1 \\\"first\\\"\\n1 1 \\\"second\\\"')\n"),
             "carriage return": "print(c + '\\r\\npass')\n",
         }
         for label, body in cases.items():
@@ -443,6 +454,19 @@ class AdapterCaptureTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout, b"c\npass\n")
 
+    def test_the_command_stays_in_the_group_the_hook_kills(self) -> None:
+        # The hook enforces the review deadline by killing the process group it
+        # started, so a child in a session of its own would survive the deadline
+        # and keep billing for an answer nobody reads.
+        probe = self.program(
+            "import os, sys\n"
+            "sys.stdin.read()\n"
+            "marker = os.path.join(os.path.dirname(sys.argv[0]), 'pgid.txt')\n"
+            "open(marker, 'w').write(str(os.getpgrp()))\n"
+            "sys.stdout.write('c\\npass\\n')\n")
+        self.assertEqual(self.run_adapter(probe).returncode, 0)
+        self.assertEqual(int((Path(probe[1]).parent / "pgid.txt").read_text()), os.getpgrp())
+
 
 class JudgeSettingsTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -549,6 +573,15 @@ class JudgeSettingsTests(unittest.TestCase):
         legacy.write_text(json.dumps({"command": ["x"], "timeout_s": 9, "max_turns": 2,
                                      "max_input_bytes": 100, "max_output_bytes": 10}),
                           encoding="utf-8")
+        with self.assertRaises(JudgeError) as refused:
+            self.settings.apply("import", self.settings.read()["revision"], None, None)
+        self.assertEqual(str(refused.exception), "settings_conflict")
+
+    def test_import_of_a_sparse_legacy_file_conflicts_instead_of_crashing(self) -> None:
+        self.settings.apply("set", "", "max_turns", "8")
+        legacy = self.home / ".agent-mem-struct" / "judge.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps({"schema": 2}), encoding="utf-8")
         with self.assertRaises(JudgeError) as refused:
             self.settings.apply("import", self.settings.read()["revision"], None, None)
         self.assertEqual(str(refused.exception), "settings_conflict")

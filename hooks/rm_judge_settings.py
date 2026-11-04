@@ -388,12 +388,14 @@ class JudgeSettings:
                 "protocol": config["protocol"],
                 **{key: config[key] for key in NUMERIC_KEYS}}
 
-    def _effective(self, document: dict[str, Any] | None) -> dict[str, Any]:
-        """Every policy key, with the shipped defaults filled in."""
-        defaults = {**self.policy.defaults(), "enabled": True, "command": None}
-        if document is None:
-            return defaults
-        return {**defaults, **self.validate(document)}
+    def _effective(self, config: dict[str, Any]) -> dict[str, Any]:
+        """A validated document with the shipped defaults filled in.
+
+        `validate` is sparse by design - it returns only what the document
+        states - so provenance and comparison both need the effective value of
+        every key, and a sparse document is the default for what it leaves out.
+        """
+        return {**self.policy.defaults(), "enabled": True, "command": None, **config}
 
     def _import_legacy(self, document: dict[str, Any] | None) -> None:
         """Copy this host's pre-schema document into the shared owner, once."""
@@ -404,14 +406,13 @@ class JudgeSettings:
         if error or text is None:
             raise JudgeError("invalid_settings_request")
         try:
-            imported = self.validate(json.loads(text, object_pairs_hook=unique_object))
+            # Both sides are filled from the shipped defaults, because either
+            # document may state only a few keys: a sparse document is the
+            # default for everything it leaves out.
+            imported = self._effective(self.validate(json.loads(text, object_pairs_hook=unique_object)))
         except (json.JSONDecodeError, ValueError):
             raise JudgeError("invalid_settings_request") from None
         if document is not None:
-            # `validate` is sparse for a schema-2 document, so the comparison
-            # has to fill the shipped defaults in on both sides; a document that
-            # states none of the legacy keys is the default and still conflicts
-            # with a legacy file that changed them.
             current = self._effective(document)
             if any(current[key] != imported[key] for key in LEGACY_KEYS):
                 raise JudgeError("settings_conflict")
