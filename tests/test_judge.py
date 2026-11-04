@@ -372,6 +372,31 @@ class PiWindowTests(JudgeCase):
         self.assertIsNone(body["error"], body)
         self.assertEqual(self.gate.read_receipt(self.event)["judge"]["anchor"], "c")
 
+    def test_activation_refuses_a_source_it_cannot_read(self) -> None:
+        # A resumed session whose transcript is malformed is neither history to
+        # accept nor an empty origin: accepting it would claim a baseline nobody
+        # could verify, and the next readable review would call it new work.
+        path = self.root / "malformed.jsonl"
+        path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "transcript_path": str(path)})
+        self.assertEqual(body["error"], "invalid_window", body)
+        recorded = self.gate.read_receipt(self.event)["judge"]
+        self.assertEqual(recorded["error"], "invalid_window")
+        self.assertIsNone(recorded["epoch"])
+
+    def test_activation_treats_an_opened_but_empty_transcript_as_the_origin(self) -> None:
+        # A host creates the transcript before it writes to it, so an empty file
+        # is a session with no history yet, not a source that could not be read.
+        path = self.root / "empty.jsonl"
+        path.write_text("")
+        judge = ConventionJudge(self.state, self.gate)
+        body = judge.baseline({**self.event, "transcript_path": str(path)})
+        self.assertEqual(body["error"], "baseline", body)
+        recorded = self.gate.read_receipt(self.event)["judge"]
+        self.assertIsNotNone(recorded["epoch"])
+        self.assertIsNone(recorded["anchor"])
+
     def test_activation_accepts_at_most_the_policy_bound(self) -> None:
         branch = [pi_entry("e0", None, "zero")]
         for index in range(1, 70):

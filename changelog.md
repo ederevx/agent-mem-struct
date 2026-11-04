@@ -52,9 +52,13 @@ receipt on disk is not an inspectable surface.
 Two integration points decide whether a default-on judge behaves: activation and
 the host's own deadline. The watermark is now established at session start, so
 the first completed turn is reviewed instead of exempted, and a session with no
-history starts at the empty origin. `Stop` and `SubagentStop` allow 90 s, and
-`timeout_s` is capped at 60 s, so a review that overruns reports its own
-timeout instead of being killed before it can persist a notice. A configuration
+history starts at the empty origin. An empty inline window or an
+opened-but-unwritten transcript is that origin; a source that exists and cannot
+be read is `invalid_window`, recorded and reported rather than accepted as
+history the judge never saw. `timeout_s` is capped by the deadline the installed
+`Stop` and `SubagentStop` handlers carry, less the room the receipt write and
+teardown need, so a review that overruns reports its own timeout instead of
+being killed before it can persist a notice. A configuration
 refusal on Claude or Codex is recorded as a notice rather than returning
 silently.
 

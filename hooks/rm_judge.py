@@ -646,19 +646,42 @@ class ConventionJudge:
                 if len(entries) > bound:
                     event = {**event, "session_entries": entries[-bound:]}
             try:
-                # Every host has a window source: inline entries from Pi, the
-                # transcript from Claude and Codex. Only a source that has
-                # nothing yet is the empty origin.
-                window = build_window(self.state, event)
-            except JudgeError:
-                # At activation an unreadable or absent source is not a refusal:
-                # there is simply nothing yet to accept as pre-activation, which
-                # is the empty origin.
-                window = None
+                window = self._activation_window(event)
+            except JudgeError as refusal:
+                # A source that exists but cannot be read is a refusal, not an
+                # empty history: accepting it as the origin would claim a
+                # baseline nobody could verify before reviewing it as new work.
+                self._store(event, {**self._cursor_state(None), "error": str(refusal)})
+                return self.result(str(refusal), [])
         except JudgeError as refusal:
             return self.result(str(refusal), [])
         self._store(event, self._baseline(window))
         return self.result("baseline", [])
+
+    def _activation_window(self, event: dict[str, Any]) -> Any:
+        """The window activation reads, or None when the source is simply empty.
+
+        Every host has a window source: inline entries from Pi, the transcript
+        from Claude and Codex. Only a source with nothing in it yet is the empty
+        origin; one that exists and cannot be read is the caller's refusal.
+        """
+        entries = event.get("session_entries")
+        if isinstance(entries, list):
+            if not entries:
+                return None
+        else:
+            path = event.get("transcript_path")
+            if not isinstance(path, str) or not path or not Path(path).is_file():
+                return None
+            # A host opens its transcript before it writes to it, and a session
+            # that begins with the judge on has no records yet: that is the
+            # empty origin, not an unreadable source.
+            try:
+                if not Path(path).read_text(encoding="utf-8").strip():
+                    return None
+            except OSError:
+                pass
+        return build_window(self.state, event)
 
     def status(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """The last review this session holds, for the settings surface.

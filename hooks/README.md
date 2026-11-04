@@ -417,6 +417,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   first completed turn is reviewed rather than exempted; a review that finds no
   epoch establishes the same empty origin before reviewing, so a session whose
   host never sent the activation phase still reviews every turn it was given.
+  An empty inline window or an opened-but-unwritten transcript is that empty
+  origin, while a source that exists and cannot be read is `invalid_window`:
+  accepting it would claim a baseline nobody could verify and then present the
+  history it hid as new work.
   A `coverage_gap` rebaseline anchors at the supplied window's leaf. `timeout_s` is bounded by
   what `threading` and a host timer can hold, and a larger value is
   `invalid_config` before anything is spawned. A finding may name only a
