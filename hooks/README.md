@@ -69,9 +69,10 @@ The shared hook `root-memory-context.py`:
 18. appends a read-only leftovers report at a non-compaction session start:
     the local-only commits of repositories this agent touched, plus stale
     immediate children of the scratch root; and
-19. runs the opt-in convention judge after a Pi settle, recording only the rule
-    ids and string offsets of evidence it could validate against the supplied
-    turns, never command-authored text.
+19. runs the convention judge after a Pi settle (on by default for every host,
+    with one shared settings document and the `/judge-settings` surface over
+    it), recording only the rule ids and string offsets of evidence it could
+    validate against the supplied turns, never command-authored text.
 
 The runtime hook creates no documents. The installer manages only the two root
 `RULES.md` and `STRUCTURE.md` copies described above; it does not add another
@@ -346,34 +347,57 @@ The bridge maps Pi events onto the hook's event vocabulary:
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an
   overflow recovery would wedge the session at its context ceiling).
-- `agent_settled` drives the convention judge, which stays off until
-  `<agent-home>/.agent-mem-struct/judge.json` exists. Creating that file is the
-  explicit authorization for its `command` to receive the supplied transcript
-  turns and convention text: a receipt and a transcript read cannot establish
-  the command's provider, account, endpoint, or retention terms. The file
-  carries exactly `command`, `timeout_s`, `max_turns`, `max_input_bytes`, and
-  `max_output_bytes`; an absent file disables the judge, while an existing file
-  that is unreadable, is not a regular file, or is malformed is reported as
-  `invalid_config` rather than silently disabling it. The file is user-owned -
-  the installers never create, replace, or remove it. Each settle runs
-  `prepare` (configuration, cursor, and transport limits; the command is not
-  invoked) and then `review`, which sends the contiguous branch from the
-  watermark together with one rule unit per acknowledged convention source, and
-  receives a reply bound to that exact payload by a `chain` it must echo. Two
-  layers bound the window and neither can skip a turn silently: the bridge
-  sends the longest prefix of the branch whose whole request, envelope included,
-  fits the configured turns and bytes, and reports that prefix's own end as
-  `leaf_id` beside the session's `session_leaf_id`; the hook then takes the
-  configured number of turns after the watermark and drops trailing turns until
-  the request fits `max_input_bytes`. A short window therefore still advances the
-  watermark one window at a time, and a window that stops at the reviewed anchor
-  while the session runs past it is refused as `oversized_input` rather than
-  repeated as a silent no-op: the turns after it were not reviewed, and the
-  watermark stays where it was. One serializer both measures and writes the
-  request, so the bound covers every byte; when no candidate review request
-  fits, the bridge transmits nothing, reports `oversized_input` itself and
-  leaves the receipt untouched, since no hook call can annotate a refusal it
-  never saw. A baseline - the first valid window and a
+- `agent_settled` drives the convention judge, which is **on by default** for Pi,
+  Claude, and Codex alike. One user-owned settings document,
+  `<user-home>/.agent-mem-struct/judge.json`, is shared by all three, so
+  enabling, redirecting, or narrowing the judge is one edit rather than three.
+  The document is optional: an absent file is the shipped default, not a
+  refusal, and the installers never create, replace, or remove it.
+
+  The defaults come from `hooks/judge-policy.json` - protocol 2, `timeout_s` 30,
+  `max_turns` 32, `max_input_bytes` 65536, `max_output_bytes` 4096 - and the
+  document may carry `schema` (2), `enabled`, `command`, `protocol`, those four
+  limits, and per-host `hosts.<host>.command` / `hosts.<host>.extra_env`.
+  `command: null`, the default, means the shipped adapter
+  `hooks/rm_judge_adapter.py`, which turns one review request into a single
+  constrained prompt for the host CLI named in the policy: `pi -p --no-session
+  --no-tools --no-mcp --no-extensions --no-skills --no-prompt-templates
+  --no-context-files`, `claude -p --safe-mode --tools "" ...
+  --no-session-persistence`, or `codex exec - --ephemeral -s read-only ...
+  --disable hooks --disable plugins --disable apps`. An argv `command` replaces
+  the adapter and runs under protocol 1 unless the document also declares
+  `protocol: 2`; a document without `schema` is read exactly as the pre-schema
+  five keys, and `import` copies such a file verbatim, protocol included.
+  `enabled: false` is the only way to turn the judge off. A document that is
+  unreadable, is not a regular file, or is malformed is reported as
+  `invalid_config` rather than running or silently disabling the judge.
+
+  Protocol 2 keeps the command's freedom to a single line. The request names a
+  `chain` and the reply must begin with that chain followed by either `pass`
+  and nothing else, or one line per finding - `<turn> <rule> "<quote>"` - in
+  ascending order, the quote occurring exactly once in the turn it names.
+  Anything else (a wrong chain, `pass` beside findings, a finding out of order,
+  an unquoted or repeated field, a carriage return, trailing material) is
+  `invalid_response` and leaves the watermark where it was.
+
+  Each settle runs `prepare` (configuration, cursor, and transport limits; the
+  command is not invoked) and then `review`, which sends the contiguous branch
+  from the watermark together with one rule unit per acknowledged convention
+  source, and receives a reply bound to that exact payload by the `chain` it
+  must echo. Two layers bound the window and neither can skip a turn silently:
+  the bridge sends the longest prefix of the branch whose whole request,
+  envelope included, fits the configured turns and bytes, and reports that
+  prefix's own end as `leaf_id` beside the session's `session_leaf_id`; the hook
+  then takes the configured number of turns after the watermark and drops
+  trailing turns until the request fits `max_input_bytes`. A short window
+  therefore still advances the watermark one window at a time, and a window that
+  stops at the reviewed anchor while the session runs past it is refused as
+  `oversized_input` rather than repeated as a silent no-op: the turns after it
+  were not reviewed, and the watermark stays where it was. One serializer both
+  measures and writes the request, so the bound covers every byte; when no
+  candidate review request fits, the bridge transmits nothing, reports
+  `oversized_input` itself and leaves the receipt untouched, since no hook call
+  can annotate a refusal it never saw. A baseline - the first valid window and a
   `coverage_gap` rebaseline alike - anchors at `session_leaf_id`, so turns that
   predate activation are never reviewed afterwards. `timeout_s` is bounded by
   what `threading` and a host timer can hold, and a larger value is
@@ -381,31 +405,46 @@ The bridge maps Pi events onto the hook's event vocabulary:
   supplied rule, a supplied turn, and a quote that occurs there exactly once;
   its offsets are string indices derived locally. Refusal codes are local:
   `disabled`, `invalid_config`, `invalid_cursor`, `invalid_window`,
-  `stale_cursor`, `unreadable_rules`, `stale_rules`, `oversized_input`,
-  `oversized_output`, `oversized_receipt`, `timeout`, `command_failed`,
-  `invalid_response`, and `persistence_failed`, which `ConventionJudge.review`
-  returns when it cannot convert a refusal into a stored one. A recorded
-  refusal sets its code on the stored state and keeps every other field,
-  including previously accepted findings; a session with no watermark is left
-  uninitialized, so a refusal never becomes a watermark that later reviews read
-  as nothing to do. A settled turn whose anchor has left the supplied branch
-  records `coverage_gap` and rebaselines a new epoch without claiming any review
-  of the skipped turns. The request carries no task statement: the judge sees
-  the settled turns, the rule units, and nothing else.
+  `stale_cursor`, `stale_config`, `unreadable_rules`, `stale_rules`,
+  `oversized_input`, `oversized_output`, `oversized_receipt`, `timeout`,
+  `command_failed`, `invalid_response`, and `persistence_failed`, which
+  `ConventionJudge.review` returns when it cannot convert a refusal into a
+  stored one. A recorded refusal sets its code on the stored state and keeps
+  every other field, including previously accepted findings; a session with no
+  watermark is left uninitialized, so a refusal never becomes a watermark that
+  later reviews read as nothing to do. A settled turn whose anchor has left the
+  supplied branch records `coverage_gap` and rebaselines a new epoch without
+  claiming any review of the skipped turns. The request carries no task
+  statement: the judge sees the settled turns, the rule units, and nothing else.
+
+  `/judge-settings` in Pi is the one surface over this document: no argument or
+  `show` lists every effective value with its origin (shipped default or the
+  document), the file in use, the resolved launch argv and environment names
+  for the current host, and any legacy document; `key=value` applies one edit,
+  `unset <key>` removes one, `reset` restores the shipped numeric limits, and
+  `import` copies the legacy per-harness document verbatim. Edits are
+  transactional and revision-checked: the surface reads the current revision,
+  applies the change, and prints the state the hook actually holds, so a
+  concurrent edit reports `stale_config` instead of overwriting it. Validation
+  and persistence belong to `hooks/rm_judge_settings.py`, which owns the
+  document and takes a short lock (reporting `settings_busy`); the command
+  holds no state of its own. A review carries the revision it was prepared
+  under and is refused as `stale_config` if the document changed in between.
 
   The one receipt writer enforces `RECEIPT_MAX_BYTES` on the exact payload it is
   about to replace, for every mutator rather than the judge alone, and refuses
   as `oversized_receipt` while the previous receipt stays in place. Notices
-  claim only what is known locally: `invalid_config`, `invalid_window`,
-  `invalid_cursor`, `stale_cursor`, `unreadable_rules`, `stale_rules` and
-  `oversized_input` say the review did not run, because no command was invoked;
-  `timeout`, `command_failed`, `invalid_response` and `oversized_output` say the
-  result is unavailable, because the command may have run and produced output
-  that cannot be accepted; and `oversized_receipt` or `persistence_failed` say
-  the state could not be saved. An unreadable hook reply is reported the same
-  way, without claiming whether a finding was recorded. Findings and errors
-  reach the model on the next turn of the session that produced them and never
-  block a tool call or a settle.
+  claim only what is known locally: `disabled`, `invalid_config`,
+  `invalid_window`, `invalid_cursor`, `stale_cursor`, `stale_config`,
+  `unreadable_rules`, `stale_rules` and `oversized_input` say the review did not
+  run, because no command was invoked; `timeout`, `command_failed`,
+  `invalid_response` and `oversized_output` say the result is unavailable,
+  because the command may have run and produced output that cannot be accepted;
+  and `oversized_receipt` or `persistence_failed` say the state could not be
+  saved. An unreadable hook reply is reported the same way, without claiming
+  whether a finding was recorded. Findings and errors reach the model on the
+  next turn of the session that produced them and never block a tool call or a
+  settle.
 
 Limitations: Pi exposes no subagent identity on events, so the bridge cannot
 mark a spawned child as read-only the way `SubagentStart` does for the other

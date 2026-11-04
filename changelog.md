@@ -4,6 +4,48 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T16:21:16-05:00 - the judge ships on, with one settings document for every host
+
+The judge was opt-in per agent: the authorization was the existence of
+`<agent-home>/.agent-mem-struct/judge.json`, so Pi, Claude, and Codex each
+needed their own file before anything ran, and no host offered a way to see or
+change what that file did. That is now inverted. The judge is on by default on
+all three, and one user-owned document,
+`<user-home>/.agent-mem-struct/judge.json`, is shared by every harness, so
+enabling, redirecting, narrowing, or disabling the judge is one edit.
+
+The document is optional again, in the other direction: an absent file is the
+shipped default rather than a refusal, and the installers still never create,
+replace, or remove it. Its defaults come from `hooks/judge-policy.json`, and it
+may carry `schema` (2), `enabled`, `command`, `protocol`, the four limits, and
+per-host `command` / `extra_env` overrides. `command: null` means the new
+`hooks/rm_judge_adapter.py`, which runs the host's own CLI in its most
+constrained non-interactive mode: `pi -p --no-session --no-tools --no-mcp
+--no-extensions --no-skills --no-prompt-templates --no-context-files`,
+`claude -p --safe-mode --tools "" --no-session-persistence --permission-mode
+dontAsk --permission-prompts none`, or `codex exec - --ephemeral -s read-only
+--disable hooks --disable plugins --disable apps`. Nothing else is passed, and
+the child sees only the environment names the policy allows.
+
+The wire protocol is 2 and the reply is one line of freedom. The request names
+a `chain`; the reply must begin with it, then either `pass` alone or one
+`<turn> <rule> "<quote>"` line per finding in ascending order, each quote
+occurring exactly once in the turn it names. A wrong chain, `pass` beside
+findings, a reordering, an unquoted or repeated field, a carriage return, or
+trailing material is `invalid_response` and leaves the watermark alone. The
+shipped defaults are 30 s, 32 turns, 64 KiB in, and 4 KiB out, so one review
+costs one bounded call rather than a conversation.
+
+`/judge-settings` in Pi is the surface over that document: it lists the
+effective values with their origin, the resolved launch argv and environment
+names, and any legacy per-harness file, and it applies `key=value`,
+`unset <key>`, `reset`, and `import` transactionally against the revision it
+read, so a concurrent edit reports `stale_config` instead of being overwritten.
+A review carries the revision it was prepared under and is refused the same way
+if the document moved in between. A document without `schema` is still read as
+the pre-schema five keys and keeps protocol 1, and `import` copies such a file
+verbatim, so an existing judge keeps working unchanged.
+
 ## 2026-11-04T10:35:23-05:00 - review settled turns against the conventions an agent read
 
 The gate proves which convention sources a session read; it cannot show whether
