@@ -310,7 +310,7 @@ class JudgeSettings:
         # A policy document states the margin its own deadline must fit, so the
         # ceiling comes from the document; a settings document states none, and
         # its owner passes the ceiling of the policy it is read against.
-        if ceiling is None:
+        if ceiling is None and "timeout_s" in document:
             if "review_teardown_s" not in document:
                 raise JudgeError("invalid_config")
             ceiling = JudgePolicy(document).deadline_ceiling()
