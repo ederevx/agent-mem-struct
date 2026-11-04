@@ -159,7 +159,12 @@ class ConventionJudge:
         value = config.get(key)
         if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
             raise JudgeError("invalid_config")
-        if not math.isfinite(value) or not value > 0:
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            # An integer beyond the float range is finite in neither sense.
+            raise JudgeError("invalid_config") from None
+        if not finite or not value > 0:
             raise JudgeError("invalid_config")
         if integer and value > sys.maxsize:
             raise JudgeError("invalid_config")
@@ -420,15 +425,15 @@ class ConventionJudge:
         try:
             if not closed.wait(timeout=remaining()):
                 raise JudgeError("timeout")
-        finally:
-            self._terminate(process)
-        if overflow.is_set():
-            raise JudgeError("oversized_output")
-        try:
+            if overflow.is_set():
+                # The output is already rejected; its exit code cannot change that.
+                raise JudgeError("oversized_output")
             if process.wait(timeout=remaining()) != 0:
                 raise JudgeError("command_failed")
         except subprocess.TimeoutExpired:
             raise JudgeError("timeout") from None
+        finally:
+            self._terminate(process)
         try:
             return bytes(collected).decode("utf-8")
         except UnicodeDecodeError:
