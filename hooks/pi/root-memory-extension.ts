@@ -216,6 +216,9 @@ export class ListerCommand {
  * this object; the event handlers are single-responsibility methods and no
  * module-level state is mutated.
  */
+/** How much history activation accepts as pre-activation, not as a review. */
+const BASELINE_ENTRIES = 64;
+
 export class RootMemoryBridge {
 	private sessionLabel = "";
 	private firstTurn = true; // emit the full root bundle on the next turn
@@ -247,6 +250,10 @@ export class RootMemoryBridge {
 				// outlive the documents it points at.
 				this.firstTurn = true;
 			});
+			// Activation happens after the identity transition so the judge's
+			// baseline is stored under the session it belongs to. It reviews
+			// nothing; it only marks where this session's reviews begin.
+			await this.baselineJudge(ctx);
 		});
 
 		pi.on("before_agent_start", async (event: any) => this.onBeforeAgentStart(event));
@@ -862,6 +869,27 @@ export class RootMemoryBridge {
 		}
 	}
 
+	/** Establish the judge's watermark at session start, reviewing nothing.
+	 *
+	 * The window must end at the session leaf and stay contiguous, so it is
+	 * trimmed at its head: the oldest entries are exactly what activation
+	 * accepts as history the judge was not asked about. A brand new session
+	 * has no entries, and the hook then starts from the empty origin, so the
+	 * first completed turn is still reviewed.
+	 */
+	private async baselineJudge(ctx: any): Promise<void> {
+		const manager = ctx?.sessionManager;
+		const branch = typeof manager?.getBranch === "function" ? manager.getBranch() : [];
+		const leaf = typeof manager?.getLeafId === "function" ? manager.getLeafId() : null;
+		if (typeof leaf !== "string" || !leaf || !Array.isArray(branch) || branch.length === 0) return;
+		await this.serialize(() => this.callHook("Judge", {
+			phase: "baseline",
+			leaf_id: leaf,
+			session_leaf_id: leaf,
+			session_entries: branch.slice(-BASELINE_ENTRIES),
+		}, DEFAULT_TIMEOUT_MS, this.sessionId(ctx)));
+	}
+
 	/** One judge settings operation, validated and applied by the hook. */
 	async judgeSettings(extra: Record<string, unknown>): Promise<Record<string, any> | null> {
 		const result = await this.serialize(() => this.callHook(
@@ -959,20 +987,26 @@ class JudgeSettingsSurface {
 			return `convention judge: ${body.error}`;
 		}
 		const values = body.values ?? {};
-		const defaults = body.defaults ?? {};
+		// Provenance comes from what the document states, never from a comparison:
+		// an explicit value equal to the shipped default is still explicit.
+		const stated = new Set<string>(Array.isArray(values.stated) ? values.stated : []);
 		const lines = [`convention judge: ${values.enabled ? "on" : "off"}`];
 		for (const key of ["enabled", "command", "protocol", "timeout_s", "max_turns",
 			"max_input_bytes", "max_output_bytes"]) {
-			const explicit = body.source === "file" && values[key] !== defaults[key];
 			const shown = key === "command"
 				? (values.command === null ? "shipped adapter" : JSON.stringify(values.command))
 				: String(values[key]);
-			lines.push(`  ${key} = ${shown} (${explicit ? "explicit" : "default"})`);
+			lines.push(`  ${key} = ${shown} (${stated.has(key) ? "explicit" : "default"})`);
 		}
 		lines.push(`  settings = ${body.path} (${body.source})`);
 		const launch = body.launch ?? {};
-		const argv = Array.isArray(launch.argv) ? launch.argv.join(" ") : "";
-		lines.push(`  launch (${launch.host}) = ${argv}`);
+		const hostCommand = Array.isArray(launch.host_command)
+			? launch.host_command.join(" ")
+			: (Array.isArray(launch.argv) ? launch.argv.join(" ") : "");
+		lines.push(`  launch (${launch.host}) = ${hostCommand}`);
+		if (launch.explicit === false && Array.isArray(launch.argv)) {
+			lines.push(`  adapter = ${launch.argv.join(" ")}`);
+		}
 		const env = Array.isArray(launch.extra_env) && launch.extra_env.length > 0
 			? launch.extra_env.join(", ")
 			: "(none)";

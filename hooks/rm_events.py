@@ -126,8 +126,26 @@ class EventDispatcher:
                 except (OSError, ValueError):
                     pass
         self.emit_hook_context(event_name, context)
+        if event_name == "SessionStart" and not after_compaction:
+            self.baseline_judge(event, state)
         if after_compaction:
             self.checkpoints.remove(event)
+
+    def baseline_judge(self, event: dict[str, Any], state: RootState) -> None:
+        """Activate the judge's watermark for a session that is starting.
+
+        A session that begins with the judge on has no pre-activation turns, so
+        an absent transcript is the empty origin and not a refusal. Nothing here
+        may fail a session start.
+        """
+        judge = ConventionJudge(state, self.gate)
+        try:
+            _, config = judge.configuration()
+            if not config["enabled"]:
+                return
+            judge.baseline({**event, "config_revision": config["revision"]})
+        except (JudgeError, OSError, ValueError):
+            return
 
     def continuity_context(
         self, state: RootState, checkpoint: str | None, base: str | None = None
@@ -435,6 +453,8 @@ class EventDispatcher:
             body = judge.prepare(event)
         elif phase == "review":
             body = judge.review(event)
+        elif phase == "baseline":
+            body = judge.baseline(event)
         elif phase == "settings":
             body = self.judge_settings(event, state)
         else:
@@ -520,17 +540,30 @@ class EventDispatcher:
             return
         judge = ConventionJudge(state, self.gate)
         try:
-            owner, config = judge.configuration()
+            _, config = judge.configuration()
             if not config["enabled"]:
                 return
             prepared = {**event, "cursor": judge.cursor(event),
                         "config_revision": config["revision"]}
-        except JudgeError:
+        except JudgeError as refusal:
+            # A refusal that only reached a `return` would disable the review
+            # silently, which is the one thing this judge must never do.
+            self.deliver_notice(event, f"convention judge: the review did not run ({refusal}).")
             return
-        body = judge.review(prepared)
-        notice = body.get("notice")
-        if isinstance(notice, str) and notice:
-            try:
-                self.gate.record_notice(event, notice)
-            except (OSError, ValueError):
-                return
+        self.deliver_notice(event, judge.review(prepared).get("notice"))
+
+    def deliver_notice(self, event: dict[str, Any], notice: Any) -> None:
+        """Leave one notice for the next prompt, or show it now if it cannot wait.
+
+        The receipt is the durable channel; when it cannot be written the host's
+        own message field still carries the text, because losing a refusal is
+        worse than an extra line of output.
+        """
+        if not isinstance(notice, str) or not notice:
+            return
+        try:
+            self.gate.record_notice(event, notice)
+            return
+        except (OSError, ValueError):
+            pass
+        json.dump({"systemMessage": notice}, sys.stdout, separators=(",", ":"))

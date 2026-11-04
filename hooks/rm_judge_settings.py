@@ -38,8 +38,12 @@ RESET_KEEPS = frozenset({"schema", "enabled", "command", "protocol", "hosts"})
 # A settings edit waits this long for its lock, then reports `settings_busy`.
 LOCK_TIMEOUT_S = 2.0
 LOCK_POLL_S = 0.05
-# A `timeout_s` no waiter and no host timer can hold is refused up front.
-TIMEOUT_MAX_S = min(threading.TIMEOUT_MAX, (2 ** 31 - 1) / 1000)
+# A review deadline has to fit inside the deadline the host installs for the
+# event that runs it, or the host kills the hook before its own timeout can
+# report anything. `manage_common.EVENT_TIMEOUTS` allows 90 s for Stop, and
+# 60 s leaves the remaining 30 s for the receipt write, the notice, and process
+# teardown. A larger value is refused here rather than silently never reported.
+TIMEOUT_MAX_S = min(60.0, threading.TIMEOUT_MAX, (2 ** 31 - 1) / 1000)
 
 
 class JudgeError(Exception):
@@ -214,7 +218,7 @@ class JudgeSettings:
         if not path.exists() and not path.is_symlink():
             return {
                 **self.policy.defaults(), "enabled": True, "command": None, "hosts": {},
-                "revision": "", "path": str(path), "source": "default",
+                "revision": "", "path": str(path), "source": "default", "stated": [],
             }
         text, error = read_text(path) if path.is_file() else (None, "not a file")
         if error or text is None:
@@ -229,7 +233,20 @@ class JudgeSettings:
         config["revision"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
         config["path"] = str(path)
         config["source"] = "file"
+        config["stated"] = self._stated(document)
         return config
+
+    @staticmethod
+    def _stated(document: dict[str, Any]) -> list[str]:
+        """Every key the document states, so a value equal to its default still
+        reads as explicit. Provenance cannot be recovered by comparing values."""
+        stated = [key for key in POLICY_KEYS if key in document]
+        hosts = document.get("hosts")
+        if isinstance(hosts, dict):
+            for name, entry in hosts.items():
+                if isinstance(entry, dict):
+                    stated.extend(f"hosts.{name}.{key}" for key in sorted(entry))
+        return stated
 
     @classmethod
     def validate(cls, document: Any) -> dict[str, Any]:
@@ -293,6 +310,10 @@ class JudgeSettings:
                     "extra_env": []}
         override = config["hosts"].get(host) or {}
         descriptor = self.policy.host(host)
+        # A host override states the whole list: forwarding cannot be narrowed
+        # by addition, so `extra_env: []` has to mean "forward nothing" rather
+        # than "keep the shipped credentials".
+        extra_env = override.get("extra_env")
         return {
             "argv": [sys.executable, str(self.policy.adapter()), "--agent", host],
             "host": host,
@@ -300,7 +321,7 @@ class JudgeSettings:
             "host_command": override.get("command") or descriptor["command"],
             "prompt": descriptor["prompt"],
             "answer": descriptor["answer"],
-            "extra_env": descriptor["extra_env"] + list(override.get("extra_env") or []),
+            "extra_env": list(descriptor["extra_env"] if extra_env is None else extra_env),
         }
 
     # -- edits -------------------------------------------------------------
@@ -367,6 +388,13 @@ class JudgeSettings:
                 "protocol": config["protocol"],
                 **{key: config[key] for key in NUMERIC_KEYS}}
 
+    def _effective(self, document: dict[str, Any] | None) -> dict[str, Any]:
+        """Every policy key, with the shipped defaults filled in."""
+        defaults = {**self.policy.defaults(), "enabled": True, "command": None}
+        if document is None:
+            return defaults
+        return {**defaults, **self.validate(document)}
+
     def _import_legacy(self, document: dict[str, Any] | None) -> None:
         """Copy this host's pre-schema document into the shared owner, once."""
         legacy = self.legacy_path()
@@ -380,7 +408,11 @@ class JudgeSettings:
         except (json.JSONDecodeError, ValueError):
             raise JudgeError("invalid_settings_request") from None
         if document is not None:
-            current = self.validate(document)
+            # `validate` is sparse for a schema-2 document, so the comparison
+            # has to fill the shipped defaults in on both sides; a document that
+            # states none of the legacy keys is the default and still conflicts
+            # with a legacy file that changed them.
+            current = self._effective(document)
             if any(current[key] != imported[key] for key in LEGACY_KEYS):
                 raise JudgeError("settings_conflict")
             return
@@ -412,8 +444,9 @@ class JudgeSettings:
                 return None if value is None or value.strip() == "null" else argv(self._json(value))
             if leaf == "extra_env":
                 return names(self._json(value))
-            return number(leaf, self._integer(value),
-                          maximum=TIMEOUT_MAX_S if leaf == "timeout_s" else None)
+            if leaf == "timeout_s":
+                return number(leaf, self._decimal(value), maximum=TIMEOUT_MAX_S)
+            return number(leaf, self._integer(value))
         except JudgeError as refusal:
             raise JudgeError("invalid_settings_request") from refusal
 
@@ -425,6 +458,18 @@ class JudgeSettings:
         if text in ("off", "false", "no", "0"):
             return False
         raise JudgeError("invalid_settings_request")
+
+    @staticmethod
+    def _decimal(value: str | None) -> float:
+        """A positive decimal, as the document itself may hold for a deadline."""
+        text = (value or "").strip()
+        try:
+            parsed = float(text)
+        except ValueError:
+            raise JudgeError("invalid_settings_request") from None
+        if not text or not math.isfinite(parsed):
+            raise JudgeError("invalid_settings_request")
+        return parsed
 
     @staticmethod
     def _integer(value: str | None) -> int:
