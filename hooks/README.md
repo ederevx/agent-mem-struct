@@ -359,25 +359,53 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `prepare` (configuration, cursor, and transport limits; the command is not
   invoked) and then `review`, which sends the contiguous branch from the
   watermark together with one rule unit per acknowledged convention source, and
-  receives a reply bound to that exact payload by a `chain` it must echo. The
-  hook, not the bridge, bounds the window: it takes the configured number of
-  turns after the watermark and drops trailing turns until the request fits
-  `max_input_bytes`, so a short window still advances the watermark and only a
-  window that cannot reach the watermark is a gap. A finding may name only a
+  receives a reply bound to that exact payload by a `chain` it must echo. Two
+  layers bound the window and neither can skip a turn silently: the bridge
+  sends the longest prefix of the branch whose whole request, envelope included,
+  fits the configured turns and bytes, and reports that prefix's own end as
+  `leaf_id` beside the session's `session_leaf_id`; the hook then takes the
+  configured number of turns after the watermark and drops trailing turns until
+  the request fits `max_input_bytes`. A short window therefore still advances the
+  watermark one window at a time, and a window that stops at the reviewed anchor
+  while the session runs past it is refused as `oversized_input` rather than
+  repeated as a silent no-op: the turns after it were not reviewed, and the
+  watermark stays where it was. One serializer both measures and writes the
+  request, so the bound covers every byte; when no candidate review request
+  fits, the bridge transmits nothing, reports `oversized_input` itself and
+  leaves the receipt untouched, since no hook call can annotate a refusal it
+  never saw. A baseline - the first valid window and a
+  `coverage_gap` rebaseline alike - anchors at `session_leaf_id`, so turns that
+  predate activation are never reviewed afterwards. `timeout_s` is bounded by
+  what `threading` and a host timer can hold, and a larger value is
+  `invalid_config` before anything is spawned. A finding may name only a
   supplied rule, a supplied turn, and a quote that occurs there exactly once;
   its offsets are string indices derived locally. Refusal codes are local:
   `disabled`, `invalid_config`, `invalid_cursor`, `invalid_window`,
   `stale_cursor`, `unreadable_rules`, `stale_rules`, `oversized_input`,
   `oversized_output`, `oversized_receipt`, `timeout`, `command_failed`,
-  `invalid_response`, and `persistence_failed` from the dispatcher. A recorded
+  `invalid_response`, and `persistence_failed`, which `ConventionJudge.review`
+  returns when it cannot convert a refusal into a stored one. A recorded
   refusal sets its code on the stored state and keeps every other field,
-  including previously accepted findings; only an unreadable or malformed
-  configuration leaves the watermark untouched without storing a code. A
-  settled turn whose anchor has left the supplied branch records
-  `coverage_gap` and rebaselines a new epoch without claiming any review of the
-  skipped turns. The request carries no task statement: the judge sees the
-  settled turns only. Findings and errors reach the model on the next turn of
-  the session that produced them and never block a tool call or a settle.
+  including previously accepted findings; a session with no watermark is left
+  uninitialized, so a refusal never becomes a watermark that later reviews read
+  as nothing to do. A settled turn whose anchor has left the supplied branch
+  records `coverage_gap` and rebaselines a new epoch without claiming any review
+  of the skipped turns. The request carries no task statement: the judge sees
+  the settled turns, the rule units, and nothing else.
+
+  The one receipt writer enforces `RECEIPT_MAX_BYTES` on the exact payload it is
+  about to replace, for every mutator rather than the judge alone, and refuses
+  as `oversized_receipt` while the previous receipt stays in place. Notices
+  claim only what is known locally: `invalid_config`, `invalid_window`,
+  `invalid_cursor`, `stale_cursor`, `unreadable_rules`, `stale_rules` and
+  `oversized_input` say the review did not run, because no command was invoked;
+  `timeout`, `command_failed`, `invalid_response` and `oversized_output` say the
+  result is unavailable, because the command may have run and produced output
+  that cannot be accepted; and `oversized_receipt` or `persistence_failed` say
+  the state could not be saved. An unreadable hook reply is reported the same
+  way, without claiming whether a finding was recorded. Findings and errors
+  reach the model on the next turn of the session that produced them and never
+  block a tool call or a settle.
 
 Limitations: Pi exposes no subagent identity on events, so the bridge cannot
 mark a spawned child as read-only the way `SubagentStart` does for the other

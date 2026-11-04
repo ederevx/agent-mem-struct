@@ -35,6 +35,10 @@ READ_DENIAL = (
 )
 
 
+class ReceiptTooLarge(OSError):
+    """A receipt payload the reader would discard, refused before it replaces one."""
+
+
 class ConventionGate:
     """Owns receipt records and the convention acknowledgment gate."""
 
@@ -563,19 +567,6 @@ class ConventionGate:
         judge = current.get("judge")
         return judge if isinstance(judge, dict) else None
 
-    def judge_fits(self, event: dict[str, Any], judge: dict[str, Any]) -> bool:
-        """Whether a receipt carrying this judge state is one the reader keeps."""
-        current = self.read_receipt(event)
-        sources = current.get("sources")
-        reads = current.get("reads")
-        tree = current.get("tree")
-        return len(self.payload(
-            sources if isinstance(sources, dict) else {},
-            reads if isinstance(reads, dict) else {},
-            tree if isinstance(tree, dict) else None,
-            judge=judge,
-        ).encode("utf-8")) <= RECEIPT_MAX_BYTES
-
     def payload(
         self,
         sources: dict[str, str],
@@ -615,12 +606,14 @@ class ConventionGate:
         path = self.path(event)
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise OSError(f"unsafe convention receipt path: {path}")
+        text = self.payload(sources, reads, tree, judge=judge)
+        # The reader discards a larger receipt, so the writer refuses one here:
+        # the previous receipt stays in place and every mutator is bound alike.
+        if len(text.encode("utf-8")) > RECEIPT_MAX_BYTES:
+            raise ReceiptTooLarge(f"convention receipt over {RECEIPT_MAX_BYTES} bytes")
         temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
         try:
-            temporary.write_text(
-                self.payload(sources, reads, tree, judge=judge),
-                encoding="utf-8",
-            )
+            temporary.write_text(text, encoding="utf-8")
             try:
                 os.chmod(temporary, 0o600)
             except OSError:

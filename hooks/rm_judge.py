@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from rm_control import RootState
-from rm_receipts import ConventionGate
+from rm_receipts import ConventionGate, ReceiptTooLarge
 from rm_support import read_text
 
 CONFIG_NAME = "judge.json"
@@ -38,6 +38,9 @@ CONFIGURATION_KEYS = frozenset({
 })
 # A pipe buffer's size, not a policy: reads return as soon as the command writes.
 READ_CHUNK = 65536
+# `threading` refuses a longer wait and a host timer cannot hold a longer
+# millisecond delay, so this is the largest `timeout_s` either side accepts.
+TIMEOUT_MAX_S = min(threading.TIMEOUT_MAX, (2 ** 31 - 1) / 1000)
 
 
 class JudgeError(Exception):
@@ -147,14 +150,22 @@ class ConventionJudge:
             raise JudgeError("invalid_config")
         return {
             "command": list(command),
-            "timeout_s": self._number(config, "timeout_s", integer=False),
+            "timeout_s": self._number(
+                config, "timeout_s", integer=False, maximum=TIMEOUT_MAX_S
+            ),
             "max_turns": self._number(config, "max_turns", integer=True),
             "max_input_bytes": self._number(config, "max_input_bytes", integer=True),
             "max_output_bytes": self._number(config, "max_output_bytes", integer=True),
         }
 
     @staticmethod
-    def _number(config: dict[str, Any], key: str, *, integer: bool) -> int | float:
+    def _number(
+        config: dict[str, Any],
+        key: str,
+        *,
+        integer: bool,
+        maximum: float | None = None,
+    ) -> int | float:
         """A positive finite representable number of the configured kind."""
         value = config.get(key)
         if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
@@ -168,6 +179,10 @@ class ConventionJudge:
             raise JudgeError("invalid_config")
         if integer and value > sys.maxsize:
             raise JudgeError("invalid_config")
+        if maximum is not None and value > maximum:
+            # A finite number is not automatically one the waiter or the host
+            # timer can hold; refuse it here instead of failing after a spawn.
+            raise JudgeError("invalid_config")
         return value
 
     def cursor(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -176,16 +191,28 @@ class ConventionJudge:
 
     @staticmethod
     def _cursor_state(judge: Any) -> dict[str, Any]:
-        """A checked cursor; no state at all is the empty one."""
+        """The watermark a receipt holds; absent or uninitialized is the empty one.
+
+        A state is initialized only by a valid window, which writes a nonempty
+        epoch and anchor together. A refusal never manufactures one, so a state
+        that carries an error but no anchor stays uninitialized and the next
+        valid window establishes it, rather than being read as a watermark that
+        makes every later review find nothing to do.
+        """
+        empty: dict[str, Any] = {"epoch": None, "anchor": None, "seq": 0, "chain": None}
         if judge is None:
-            return {"epoch": None, "anchor": None, "seq": 0, "chain": None}
+            return dict(empty)
         if not isinstance(judge, dict):
             raise JudgeError("invalid_cursor")
         epoch, anchor, chain = judge.get("epoch"), judge.get("anchor"), judge.get("chain")
         seq = judge.get("seq", 0)
-        if epoch is not None and not isinstance(epoch, str):
+        if anchor is None:
+            if chain not in (None, "") or seq not in (0, None) or isinstance(seq, bool):
+                raise JudgeError("invalid_cursor")
+            return dict(empty)
+        if not isinstance(epoch, str) or not epoch:
             raise JudgeError("invalid_cursor")
-        if anchor is not None and not isinstance(anchor, str):
+        if not isinstance(anchor, str) or not anchor:
             raise JudgeError("invalid_cursor")
         if chain is not None and not isinstance(chain, str):
             raise JudgeError("invalid_cursor")
@@ -219,6 +246,8 @@ class ConventionJudge:
             return self._review(event)
         except JudgeError as refusal:
             code = str(refusal)
+        except ReceiptTooLarge:
+            code = "oversized_receipt"
         except (OSError, ValueError):
             code = "persistence_failed"
         if code == "disabled":
@@ -226,7 +255,9 @@ class ConventionJudge:
         try:
             return self._refused(event, code)
         except (JudgeError, OSError, ValueError):
-            return self.result(code, [])
+            # The refusal itself could not be recorded, so the code is reported
+            # as unsaved instead of being presented as a stored one.
+            return self.result("persistence_failed", [])
 
     def _review(self, event: dict[str, Any]) -> dict[str, Any]:
         settings = self.settings()
@@ -236,25 +267,33 @@ class ConventionJudge:
             raise JudgeError("stale_cursor")
         entries = self.window(event)
         leaf = str(event.get("leaf_id") or "")
-        judge = self.gate.read_receipt(event).get("judge")
-        if not isinstance(judge, dict):
-            # First activation: a baseline claims no historical review.
-            self._store(event, self._baseline(leaf, None))
+        session_leaf = event.get("session_leaf_id")
+        # A baseline claims no review, so it belongs at the session's own leaf.
+        # Anchoring it at a bounded prefix's end would review the turns between
+        # that end and the leaf, which predate the activation.
+        baseline_at = str(session_leaf or leaf)
+        state = self._cursor_state(self.gate.read_receipt(event).get("judge"))
+        if state["anchor"] is None:
+            # First valid window: a baseline claims no historical review.
+            self._store(event, self._baseline(baseline_at, None))
             return self.result(None, [])
-        state = self._cursor_state(judge)
         delta = self.delta(entries, state["anchor"], int(settings["max_turns"]))
         if delta is None:
-            self._store(event, self._baseline(leaf, "coverage_gap"))
+            self._store(event, self._baseline(baseline_at, "coverage_gap"))
             return self.result("coverage_gap", [])
         if not delta:
+            if session_leaf is not None and session_leaf != leaf:
+                # The window stops at the reviewed anchor while the session runs
+                # past it, so the next turn did not fit the transport budget.
+                raise JudgeError("oversized_input")
             return self.result(None, [])
         rules = self.rules(event)
-        request, payload = self._fit(event, judge, delta, rules, int(settings["max_input_bytes"]))
+        request, payload = self._fit(event, state, delta, rules, int(settings["max_input_bytes"]))
         findings = self._validate(
             self._execute(settings, payload), request["chain"], request["turns"], rules
         )
         self._store(event, {
-            "epoch": judge.get("epoch"),
+            "epoch": state["epoch"],
             "anchor": request["anchor"],
             "seq": request["seq"],
             "chain": request["chain"],
@@ -264,9 +303,17 @@ class ConventionJudge:
         return self.result(None, findings)
 
     def window(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        """The supplied branch snapshot, refused unless it is one chain to the leaf."""
+        """The supplied branch snapshot, refused unless it is one chain to its end.
+
+        `leaf_id` is the end of the supplied window, which a bounded prefix may
+        place before the session's own leaf; `session_leaf_id`, when the host
+        reports it, names that larger branch and never has to match.
+        """
         raw = event.get("session_entries")
         leaf = event.get("leaf_id")
+        session_leaf = event.get("session_leaf_id")
+        if session_leaf is not None and (not isinstance(session_leaf, str) or not session_leaf):
+            raise JudgeError("invalid_window")
         if not isinstance(raw, list) or not raw or not isinstance(leaf, str):
             raise JudgeError("invalid_window")
         ids: list[str] = []
@@ -321,14 +368,14 @@ class ConventionJudge:
     def _fit(
         self,
         event: dict[str, Any],
-        judge: dict[str, Any],
+        state: dict[str, Any],
         delta: list[dict[str, Any]],
         rules: list[dict[str, str]],
         limit: int,
     ) -> tuple[dict[str, Any], str]:
         """The newest-anchored request that fits the byte budget, trimming turns."""
         while delta:
-            request = self._request(event, judge, delta, rules)
+            request = self._request(event, state, delta, rules)
             payload = canonical(request)
             if len(payload.encode("utf-8")) <= limit:
                 return request, payload
@@ -338,29 +385,29 @@ class ConventionJudge:
     def _request(
         self,
         event: dict[str, Any],
-        judge: dict[str, Any],
+        state: dict[str, Any],
         delta: list[dict[str, Any]],
         rules: list[dict[str, str]],
     ) -> dict[str, Any]:
         request: dict[str, Any] = {
             "schema": SCHEMA,
-            "epoch": judge.get("epoch"),
-            "seq": int(judge.get("seq") or 0) + 1,
+            "epoch": state.get("epoch"),
+            "seq": int(state.get("seq") or 0) + 1,
             "anchor": delta[-1]["id"],
             "turns": delta,
             "rules": rules,
         }
-        request["chain"] = self.chain(judge, request["anchor"], canonical(request))
+        request["chain"] = self.chain(state, request["anchor"], canonical(request))
         return request
 
     @staticmethod
-    def chain(judge: dict[str, Any], anchor: str, payload: str) -> str:
+    def chain(state: dict[str, Any], anchor: str, payload: str) -> str:
         """Bind one answer to one request: previous chain, position, anchor, bytes."""
-        previous = judge.get("chain") if isinstance(judge.get("chain"), str) else ""
+        previous = state.get("chain") if isinstance(state.get("chain"), str) else ""
         return digest(canonical([
             previous,
-            judge.get("epoch"),
-            int(judge.get("seq") or 0) + 1,
+            state.get("epoch"),
+            int(state.get("seq") or 0) + 1,
             anchor,
             digest(payload),
         ]))
@@ -514,19 +561,26 @@ class ConventionJudge:
         }
 
     def _store(self, event: dict[str, Any], state: dict[str, Any]) -> None:
-        """Record one judge state, refusing one the receipt reader would discard."""
-        if not self.gate.judge_fits(event, state):
-            raise JudgeError("oversized_receipt")
+        """Record one judge state; the receipt writer bounds and refuses it."""
         self.gate.record_judge(event, state)
 
     def _refused(self, event: dict[str, Any], code: str) -> dict[str, Any]:
-        """Record one local refusal without moving the watermark or losing findings."""
+        """Record one local refusal without moving the watermark or losing findings.
+
+        A session with no watermark has nothing to annotate, and a refusal is
+        not evidence of one: that state is left uninitialized for the next
+        valid window to establish.
+        """
         judge = self.gate.read_receipt(event).get("judge")
-        state = dict(judge) if isinstance(judge, dict) else self._baseline(
-            str(event.get("leaf_id") or ""), None
-        )
-        state["error"] = code
-        self._store(event, state)
+        try:
+            state = self._cursor_state(judge)
+        except JudgeError:
+            return self.result(code, [])
+        if state["anchor"] is None or not isinstance(judge, dict):
+            return self.result(code, [])
+        recorded = dict(judge)
+        recorded["error"] = code
+        self._store(event, recorded)
         return self.result(code, [])
 
     def result(
@@ -541,14 +595,32 @@ class ConventionJudge:
             "notice": self._notice(error, findings),
         }
 
-    @staticmethod
-    def _notice(error: str | None, findings: list[dict[str, Any]]) -> str:
+    # Codes where the command may have produced a result that cannot be accepted.
+    UNAVAILABLE = frozenset(
+        {"invalid_response", "oversized_output", "timeout", "command_failed"}
+    )
+    # Codes where the outcome is known locally but could not be persisted.
+    UNSAVED = frozenset({"persistence_failed", "oversized_receipt"})
+
+    @classmethod
+    def _notice(cls, error: str | None, findings: list[dict[str, Any]]) -> str:
         """A short, judge-independent notice naming only locally resolved evidence."""
         if error == "coverage_gap":
             return (
                 "convention judge: the reviewed window no longer reaches the last "
                 "settled turn; review restarted at the current turn and the skipped "
                 "turns were NOT reviewed."
+            )
+        if error in cls.UNSAVED:
+            return (
+                f"convention judge: the review state could not be saved ({error}); "
+                "the previous review state stands and no finding from this review "
+                "was recorded."
+            )
+        if error in cls.UNAVAILABLE:
+            return (
+                f"convention judge: the review result is unavailable ({error}); "
+                "no finding from this review was recorded."
             )
         if error is not None:
             return f"convention judge: the review did not run ({error})."

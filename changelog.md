@@ -22,13 +22,34 @@ malformed file refuses as `invalid_config` instead of silently disabling.
 
 The window and its bounds belong to the hook, so a short window still advances
 the watermark and only one that cannot reach it is a `coverage_gap` that
-rebaselines without claiming any review of the skipped turns. Each answer is
-bound to its request by a chain over the previous chain, position, anchor and
-payload digest, and a reply that is oversized, mistimed, malformed, or cites
-anything but supplied text is refused with a local code. A recorded refusal
-keeps the findings it already had; nothing the judge returns blocks a tool call
-or a settle, and its notice reaches the model on the next turn of the session
-that produced it.
+rebaselines without claiming any review of the skipped turns. The bridge bounds
+what it hands over as well: it sends the longest prefix of the branch whose
+whole request fits the configured turns and bytes, and reports that prefix's end
+as the window's leaf beside the session's own. A window that stops at the
+reviewed anchor while the session runs past it refuses as `oversized_input`
+instead of repeating as a silent no-op, and a baseline anchors at the session's
+leaf, so turns that predate activation are never reviewed afterwards. One
+serializer both measures and writes the request, so the bound covers every
+byte; when no candidate review request fits, the bridge sends nothing and
+reports `oversized_input` itself, leaving the receipt as it was because no hook
+call can annotate a refusal it never saw. Each
+answer is bound to its request by a chain over the previous chain, position,
+anchor and payload digest, and a reply that is oversized, mistimed, malformed,
+or cites anything but supplied text is refused with a local code. `timeout_s`
+is bounded by what the waiter and a host timer can hold, and a larger value
+refuses as `invalid_config` before a command is spawned.
+
+One writer owns the receipt bound: `_store_receipt` measures the exact payload
+it is about to replace and refuses one over `RECEIPT_MAX_BYTES` as
+`oversized_receipt`, leaving the previous receipt in place. A refusal annotates
+a stored state but never creates one, so a session refused before its first
+valid window stays uninitialized and is baselined by the next one instead of
+silently reviewing nothing forever. Notices say only what is known: a refusal
+that invoked no command did not run, a timeout, a non-zero exit, or an unusable
+reply leaves the result unavailable, and a persistence failure leaves it
+unsaved. A recorded refusal keeps the findings it already had; nothing the
+judge returns blocks a tool call or a settle, and its notice reaches the model
+on the next turn of the session that produced it.
 
 ## 2026-11-03T00:00:00-05:00 - require the literal `Assisted-by: LLM` trailer
 
