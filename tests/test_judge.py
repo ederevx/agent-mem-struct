@@ -169,6 +169,17 @@ class JudgeReviewTests(JudgeCase):
         self.assertIsNone(self.review(self.event)["error"])
         self.assertIn("invalid_window", self.gate.notification(self.event))
 
+    def test_status_of_an_empty_activation_still_has_a_watermark(self) -> None:
+        # A session that starts with no turns has no anchor and is still
+        # activated: the epoch, not the anchor, is what says so.
+        self.receipt(self.event)
+        dispatcher = EventDispatcher("claude", None, None, self.gate)
+        dispatcher.baseline_judge(self.event, self.state)
+        status = ConventionJudge(self.state, self.gate).status(self.event)
+        self.assertIsNone(status["anchor"])
+        self.assertTrue(status["anchored"])
+        self.assertFalse(status["reviewed"])
+
     def test_status_of_a_refused_activation_names_no_watermark(self) -> None:
         path = self.root / "malformed.jsonl"
         path.write_text('{"type": "user", "uuid": "a1"}\nnot json\n')

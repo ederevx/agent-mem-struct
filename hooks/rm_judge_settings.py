@@ -281,17 +281,16 @@ class JudgeSettings:
         return stated
 
     @classmethod
-    def validate(cls, document: Any, *, ceiling: float | None = None) -> dict[str, Any]:
+    def validate(cls, document: Any, *, ceiling: float) -> dict[str, Any]:
         """The whole-document validation: a legacy shape normalizes to schema 2."""
         if not isinstance(document, dict):
             raise JudgeError("invalid_config")
         if "schema" not in document:
             # A pre-schema document keeps every value it holds and its wire
             # protocol, so an upgrade never changes what a command receives.
-            # It states no margin, so the caller supplies the ceiling of the
-            # policy it is read against; reloading one here would let the
-            # document and its validator disagree about the deadline.
-            if set(document) != LEGACY_KEYS or ceiling is None:
+            # It states no margin, so the ceiling is the caller's: reloading a
+            # policy here would let a document and its validator disagree.
+            if set(document) != LEGACY_KEYS:
                 raise JudgeError("invalid_config")
             command = document["command"]
             return {
@@ -307,13 +306,6 @@ class JudgeSettings:
             raise JudgeError("invalid_config")
         if set(document) - set(POLICY_KEYS) - {"schema", "hosts"}:
             raise JudgeError("invalid_config")
-        # A policy document states the margin its own deadline must fit, so the
-        # ceiling comes from the document; a settings document states none, and
-        # its owner passes the ceiling of the policy it is read against.
-        if ceiling is None and "timeout_s" in document:
-            if "review_teardown_s" not in document:
-                raise JudgeError("invalid_config")
-            ceiling = JudgePolicy(document).deadline_ceiling()
         enabled = document.get("enabled", True)
         if not isinstance(enabled, bool):
             raise JudgeError("invalid_config")
