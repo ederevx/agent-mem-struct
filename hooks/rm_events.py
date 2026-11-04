@@ -19,6 +19,7 @@ from rm_checkpoints import CheckpointStore
 from rm_control import RootState, RootControl
 from rm_git import GitWorktree
 from rm_judge import ConventionJudge
+from rm_judge_settings import JudgeError, JudgeSettings
 from rm_ledger import RepoLedger
 from rm_leftovers import LeftoverReport
 from rm_lint import PushLint
@@ -116,9 +117,39 @@ class EventDispatcher:
                 "\n\nCONTINUITY WARNING: no pre-compaction checkpoint was available for this session. "
                 "Reconfirm the active objective, completed actions, blockers, and next action from the transcript or user."
             )
+        if event_name == "UserPromptSubmit":
+            notice = self.gate.notification(event)
+            if notice:
+                context += "\n\n" + notice
+                try:
+                    self.gate.record_notice(event, "")
+                except (OSError, ValueError):
+                    pass
         self.emit_hook_context(event_name, context)
+        if event_name == "SessionStart" and not after_compaction:
+            self.baseline_judge(event, state)
         if after_compaction:
             self.checkpoints.remove(event)
+
+    def baseline_judge(self, event: dict[str, Any], state: RootState) -> None:
+        """Activate the judge's watermark for a session that is starting.
+
+        A session that begins with the judge on has no pre-activation turns, so
+        an absent transcript is the empty origin and not a refusal. Nothing here
+        may fail a session start. A refusal still has to reach the user, so it
+        takes the same channel a review's notice does: the next prompt carries
+        it, and the receipt no longer hides it.
+        """
+        judge = ConventionJudge(state, self.gate)
+        try:
+            _, config = judge.configuration()
+            if not config["enabled"]:
+                return
+            body = judge.baseline({**event, "config_revision": config["revision"]})
+        except (JudgeError, OSError, ValueError):
+            return
+        if isinstance(body, dict):
+            self.deliver_notice(event, body.get("notice"))
 
     def continuity_context(
         self, state: RootState, checkpoint: str | None, base: str | None = None
@@ -414,21 +445,22 @@ class EventDispatcher:
                     return
 
     def handle_judge(self, event: dict[str, Any], state: RootState) -> int:
-        """Report the cursor, or judge the settled turns since it.
+        """Report the cursor, judge the settled turns, or edit the settings.
 
-        Pi-only: the other hosts expose no verified session entry id. The reply
-        carries internal cursor metadata under `judge`, apart from the model's
+        The reply carries the judge body apart from the model's
         `additionalContext`: the bridge reads that body, not the context, so a
         notice is never injected twice. Nothing here blocks anything.
         """
-        if self.agent != "pi":
-            return 0
         judge = ConventionJudge(state, self.gate)
         phase = str(event.get("phase") or "")
         if phase == "prepare":
             body = judge.prepare(event)
         elif phase == "review":
             body = judge.review(event)
+        elif phase == "baseline":
+            body = judge.baseline(event)
+        elif phase == "settings":
+            body = self.judge_settings(event, state)
         else:
             return 0
         json.dump(
@@ -437,6 +469,52 @@ class EventDispatcher:
             separators=(",", ":"),
         )
         return 0
+
+    def judge_settings(self, event: dict[str, Any], state: RootState) -> dict[str, Any]:
+        """Read, describe, or edit the shared settings document."""
+        judge = ConventionJudge(state, self.gate)
+        try:
+            owner, config = judge.configuration()
+            operation = event.get("operation")
+            if operation is None:
+                return self.judge_settings_body(owner, config, judge.status(event))
+            if not isinstance(operation, str):
+                raise JudgeError("invalid_settings_request")
+            revision = event.get("revision")
+            if not isinstance(revision, str):
+                raise JudgeError("invalid_settings_request")
+            key = event.get("key")
+            value = event.get("value")
+            owner.apply(
+                operation, revision,
+                key if isinstance(key, str) else None,
+                value if isinstance(value, str) else None,
+            )
+            return self.judge_settings_body(owner, owner.read(), judge.status(event))
+        except JudgeError as refusal:
+            return {"error": str(refusal), "notice": ""}
+
+    def judge_settings_body(self, owner: JudgeSettings, config: dict[str, Any],
+                            review: dict[str, Any] | None = None) -> dict[str, Any]:
+        """What `/judge-settings` displays: values, provenance, progress, and launch."""
+        try:
+            launch = owner.launch(config)
+        except JudgeError as refusal:
+            return {"error": str(refusal), "notice": ""}
+        legacy = owner.legacy_path()
+        return {
+            "error": None,
+            "path": config["path"],
+            "source": config["source"],
+            "revision": config["revision"],
+            "values": config,
+            "defaults": owner.policy.defaults(),
+            "launch": launch,
+            "review": review,
+            "legacy": str(legacy),
+            "legacy_present": legacy.exists(),
+            "notice": "",
+        }
 
     def handle_stop(self, event: dict[str, Any], state: RootState) -> None:
         # Both hosts set this flag when re-entering Stop/SubagentStop after a hook
@@ -454,3 +532,44 @@ class EventDispatcher:
         allowed, reason = self.gate.receipt_covers(event, scoped=False)
         if not allowed:
             json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
+            return
+        self.review_on_stop(event, state)
+
+    def review_on_stop(self, event: dict[str, Any], state: RootState) -> None:
+        """Review the settled turn, leaving the findings for the next prompt.
+
+        A Stop reply may not block on a review, so the notice is recorded in
+        the receipt and delivered with the next prompt; a host that can also
+        show it immediately does so from the same text.
+        """
+        if self.agent not in ("claude", "codex"):
+            return
+        judge = ConventionJudge(state, self.gate)
+        try:
+            _, config = judge.configuration()
+            if not config["enabled"]:
+                return
+            prepared = {**event, "cursor": judge.cursor(event),
+                        "config_revision": config["revision"]}
+        except JudgeError as refusal:
+            # A refusal that only reached a `return` would disable the review
+            # silently, which is the one thing this judge must never do.
+            self.deliver_notice(event, f"convention judge: the review did not run ({refusal}).")
+            return
+        self.deliver_notice(event, judge.review(prepared).get("notice"))
+
+    def deliver_notice(self, event: dict[str, Any], notice: Any) -> None:
+        """Leave one notice for the next prompt, or show it now if it cannot wait.
+
+        The receipt is the durable channel; when it cannot be written the host's
+        own message field still carries the text, because losing a refusal is
+        worse than an extra line of output.
+        """
+        if not isinstance(notice, str) or not notice:
+            return
+        try:
+            self.gate.record_notice(event, notice)
+            return
+        except (OSError, ValueError):
+            pass
+        json.dump({"systemMessage": notice}, sys.stdout, separators=(",", ":"))

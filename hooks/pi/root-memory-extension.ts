@@ -234,6 +234,7 @@ export class RootMemoryBridge {
 		this.registerPreMemoryTool(pi);
 		this.registerMemoryUpdateTool(pi);
 		this.registerListerTool(pi);
+		new JudgeSettingsSurface(this).register(pi);
 		pi.on("session_start", async (_event: any, ctx: any) => {
 			const label = this.sessionId(ctx);
 			// The identity transition is a queued receipt operation like any other:
@@ -246,6 +247,10 @@ export class RootMemoryBridge {
 				// outlive the documents it points at.
 				this.firstTurn = true;
 			});
+			// Activation happens after the identity transition so the judge's
+			// baseline is stored under the session it belongs to. It reviews
+			// nothing; it only marks where this session's reviews begin.
+			await this.baselineJudge(ctx);
 		});
 
 		pi.on("before_agent_start", async (event: any) => this.onBeforeAgentStart(event));
@@ -818,6 +823,7 @@ export class RootMemoryBridge {
 		return {
 			phase: "review",
 			cursor: plan.cursor ?? null,
+			config_revision: plan.revision ?? null,
 			leaf_id: end,
 			session_leaf_id: leaf,
 			session_entries: entries,
@@ -860,6 +866,40 @@ export class RootMemoryBridge {
 		}
 	}
 
+	/** Establish the judge's watermark at session start, reviewing nothing.
+	 *
+	 * The window must end at the session leaf and stay contiguous, so it is
+	 * trimmed at its head: the oldest entries are exactly what activation
+	 * accepts as history the judge was not asked about. A brand new session
+	 * has no entries, and the hook then starts from the empty origin, so the
+	 * first completed turn is still reviewed. How much history activation
+	 * accepts belongs to the shipped policy, which the hook reports rather
+	 * than this file restating it.
+	 */
+	private async baselineJudge(ctx: any): Promise<void> {
+		const manager = ctx?.sessionManager;
+		const branch = typeof manager?.getBranch === "function" ? manager.getBranch() : [];
+		const leaf = typeof manager?.getLeafId === "function" ? manager.getLeafId() : null;
+		if (typeof leaf !== "string" || !leaf || !Array.isArray(branch) || branch.length === 0) return;
+		const settings = await this.judgeSettings({});
+		const bound = settings?.defaults?.baseline_entries;
+		if (typeof bound !== "number" || bound <= 0) return;
+		const result = await this.serialize(() => this.callHook("Judge", {
+			phase: "baseline",
+			leaf_id: leaf,
+			session_leaf_id: leaf,
+			session_entries: branch.slice(-bound),
+		}, DEFAULT_TIMEOUT_MS, this.sessionId(ctx)));
+		this.settleJudge(result as HookResult, this.sessionId(ctx));
+	}
+
+	/** One judge settings operation, validated and applied by the hook. */
+	async judgeSettings(extra: Record<string, unknown>): Promise<Record<string, any> | null> {
+		const result = await this.serialize(() => this.callHook(
+			"Judge", { phase: "settings", ...extra }, PREMEMORY_TIMEOUT_MS));
+		return this.judgeBody(result);
+	}
+
 	/** Turns one review into the notice the next turn of its session carries. */
 	private settleJudge(result: HookResult, session: string): void {
 		const body = this.judgeBody(result);
@@ -869,6 +909,152 @@ export class RootMemoryBridge {
 		}
 		const notice = body.notice;
 		if (typeof notice === "string" && notice) this.judgeNotice = { session, text: notice };
+	}
+}
+
+/**
+ * The `/judge-settings` command.
+ *
+ * One responsibility: the user-facing surface of the judge's settings - the
+ * listing, the accepted key forms, and where each value came from. The hook
+ * owns validation and persistence, so every change is applied once and the
+ * displayed state is always read back rather than assumed. There is no
+ * interactive dock: the command reports and edits in one step, which keeps
+ * this surface inside the managed copy the installer renders.
+ */
+class JudgeSettingsSurface {
+	private static readonly SETTABLE = [
+		"enabled", "command", "protocol", "timeout_s", "max_turns",
+		"max_input_bytes", "max_output_bytes", "hosts.<host>.command",
+		"hosts.<host>.extra_env",
+	];
+
+	constructor(private readonly bridge: RootMemoryBridge) {}
+
+	register(pi: any): void {
+		// A host without commands still gets the tools; the settings surface is
+		// optional by construction rather than a reason to fail registration.
+		if (typeof pi.registerCommand !== "function") return;
+		pi.registerCommand("judge-settings", {
+			description:
+				"View or change the convention judge settings (writes the " +
+				"agent-mem-struct judge.json that all three harnesses read).",
+			handler: async (args: string, ctx: any) => {
+				await this.handle(args.trim(), ctx);
+			},
+		});
+	}
+
+	private async handle(args: string, ctx: any): Promise<void> {
+		if (args === "" || args === "show" || args === "list") {
+			this.notify(ctx, this.listing(await this.bridge.judgeSettings({})));
+			return;
+		}
+		if (args === "reset" || args === "import") {
+			await this.edit(ctx, { operation: args });
+			return;
+		}
+		if (args.startsWith("unset ")) {
+			await this.edit(ctx, { operation: "unset", key: args.slice(6).trim() });
+			return;
+		}
+		const equals = args.indexOf("=");
+		if (equals > 0) {
+			await this.edit(ctx, {
+				operation: "set",
+				key: args.slice(0, equals).trim(),
+				value: args.slice(equals + 1).trim(),
+			});
+			return;
+		}
+		this.notify(ctx, "usage: /judge-settings [show | key=value | unset <key> | reset | import]");
+	}
+
+	/** Apply one change, then show the state the hook actually holds. */
+	private async edit(ctx: any, request: Record<string, unknown>): Promise<void> {
+		const current = await this.bridge.judgeSettings({});
+		const revision = typeof current?.revision === "string" ? current.revision : "";
+		const body = await this.bridge.judgeSettings({ ...request, revision });
+		if (typeof body?.error === "string" && body.error) {
+			this.notify(ctx, `convention judge: ${body.error}`, "error");
+			return;
+		}
+		this.notify(ctx, this.listing(body));
+	}
+
+	private listing(body: Record<string, any> | null): string {
+		if (body === null) {
+			return "convention judge: the settings reply could not be read.";
+		}
+		if (typeof body.error === "string" && body.error) {
+			return `convention judge: ${body.error}`;
+		}
+		const values = body.values ?? {};
+		// Provenance comes from what the document states, never from a comparison:
+		// an explicit value equal to the shipped default is still explicit.
+		const stated = new Set<string>(Array.isArray(values.stated) ? values.stated : []);
+		const lines = [`convention judge: ${values.enabled ? "on" : "off"}`];
+		for (const key of ["enabled", "command", "protocol", "timeout_s", "max_turns",
+			"max_input_bytes", "max_output_bytes"]) {
+			const shown = key === "command"
+				? (values.command === null ? "shipped adapter" : JSON.stringify(values.command))
+				: String(values[key]);
+			lines.push(`  ${key} = ${shown} (${stated.has(key) ? "explicit" : "default"})`);
+		}
+		lines.push(`  settings = ${body.path} (${body.source})`);
+		const launch = body.launch ?? {};
+		const hostCommand = Array.isArray(launch.host_command)
+			? launch.host_command.join(" ")
+			: (Array.isArray(launch.argv) ? launch.argv.join(" ") : "");
+		lines.push(`  launch (${launch.host}) = ${hostCommand}`);
+		if (launch.explicit === false && Array.isArray(launch.argv)) {
+			lines.push(`  adapter = ${launch.argv.join(" ")}`);
+		}
+		const env = Array.isArray(launch.extra_env) && launch.extra_env.length > 0
+			? launch.extra_env.join(", ")
+			: "(none)";
+		lines.push(`  command environment = ${env}`);
+		const defaults = body.defaults ?? {};
+		if (defaults.baseline_entries !== undefined) {
+			lines.push(`  baseline entries = ${defaults.baseline_entries} (shipped policy)`);
+		}
+		lines.push(`  ${this.reviewLine(body.review)}`);
+		lines.push(`  legacy document = ${body.legacy_present ? body.legacy : "none"}`);
+		lines.push(`settable: ${JudgeSettingsSurface.SETTABLE.join(", ")}`);
+		return lines.join("\n");
+	}
+
+	private reviewLine(review: any): string {
+		if (review === null || typeof review !== "object") {
+			return "last review = none in this session";
+		}
+		const notice = typeof review.notice === "string" && review.notice ? `, notice: ${review.notice}` : "";
+		if (typeof review.error === "string" && review.error) {
+			// A refusal keeps an error where an accepted review keeps its
+			// boundary, so it is reported first and never as an anchor.
+			const mark = review.anchored === true ? "anchored" : "not established";
+			return `last review = ${review.error} (watermark ${mark})${notice}`;
+		}
+		if (!review.reviewed) {
+			// Activation anchors the watermark and reviews nothing, so reporting
+			// it as an accepted review would claim work that never ran.
+			const at = typeof review.anchor === "string" && review.anchor
+				? ` at ${review.anchor}`
+				: " at the empty origin";
+			const mark = review.anchored === true ? `watermark anchored${at}` : "no watermark established";
+			return `last review = none (${mark})${notice}`;
+		}
+		const anchor = typeof review.anchor === "string" && review.anchor ? review.anchor : "activation";
+		const findings = typeof review.findings === "number" ? review.findings : 0;
+		return `last review = accepted through ${anchor}, ${findings} finding(s)${notice}`;
+	}
+
+	private notify(ctx: any, text: string, level: "info" | "error" = "info"): void {
+		try {
+			ctx.ui.notify(text, level);
+		} catch {
+			// No notification surface; nothing else to do.
+		}
 	}
 }
 

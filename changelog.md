@@ -4,6 +4,86 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T16:21:16-05:00 - the judge ships on, with one settings document for every host
+
+The judge was opt-in per agent: the authorization was the existence of
+`<agent-home>/.agent-mem-struct/judge.json`, so Pi, Claude, and Codex each
+needed their own file before anything ran, and no host offered a way to see or
+change what that file did. That is now inverted. The judge is on by default on
+all three, and one user-owned document,
+`<user-home>/.agent-mem-struct/judge.json`, is shared by every harness, so
+enabling, redirecting, narrowing, or disabling the judge is one edit.
+
+The document is optional again, in the other direction: an absent file is the
+shipped default rather than a refusal, and the installers still never create,
+replace, or remove it. Its defaults come from `hooks/judge-policy.json`, and it
+may carry `schema` (2), `enabled`, `command`, `protocol`, the four limits, and
+per-host `command` / `extra_env` overrides. `command: null` means the new
+`hooks/rm_judge_adapter.py`, which runs the host's own CLI in its most
+constrained non-interactive mode: `pi -p --no-session --no-tools --no-mcp
+--no-extensions --no-skills --no-prompt-templates --no-context-files`,
+`claude -p --safe-mode --tools "" --no-session-persistence --permission-mode
+dontAsk --permission-prompts none`, or `codex exec - --ephemeral -s read-only
+--disable hooks --disable plugins --disable apps`. Nothing else is passed, and
+the child sees only the environment names the policy allows.
+
+The wire protocol is 2 and the reply is one line of freedom. The request names
+a `chain`; the reply must begin with it, then either `pass` alone or one
+`<rule> <turn> "<quote>"` line per finding in strictly ascending order, each
+quote occurring exactly once in the turn it names. A wrong chain, `pass` beside
+findings, a reordering, an unquoted or repeated field, surrounding whitespace, a
+carriage return, or trailing material is `invalid_response` and leaves the
+watermark alone; so does a finding that names a turn the byte bound dropped,
+because a turn that was not transmitted is not evidence. The shipped defaults
+are 30 s, 32 turns, 64 KiB in, and 4 KiB out, so one review costs one bounded
+call rather than a conversation. The command's answer is bounded while it is
+read, and bytes that are not UTF-8 are refused rather than replaced.
+
+Continuity proves what the window can support rather than a fixed amount: the
+anchor record always, and the whole ordered history through it whenever the
+window begins at the branch root, which is what Claude's and Codex's transcripts
+do. Pi's window is trimmed at its head by the transport bound, so it proves the
+anchor alone and is not refused after the first review. Activation reads the
+policy's `baseline_entries` of history instead of a constant in the bridge, and
+`/judge-settings` reports the last review the session holds - acceptance or
+refusal code, the boundary reached, activation without a review, and any
+uncollected notice - because a receipt on disk is not an inspectable surface.
+The activation bound is Pi's, since only a bridge has to ship its branch inside
+the call; the lock's wait and poll interval are policy values too.
+
+Two integration points decide whether a default-on judge behaves: activation and
+the host's own deadline. The watermark is now established at session start, so
+the first completed turn is reviewed instead of exempted, and a session with no
+history starts at the empty origin. An empty inline window or an
+opened-but-unwritten transcript is that origin; a source that exists and cannot
+be read is `invalid_window`, recorded and reported rather than accepted as
+history the judge never saw. `timeout_s` is capped by the deadline the installed
+`Stop` and `SubagentStop` handlers carry, less the room the receipt write and
+teardown need, so a review that overruns reports its own timeout instead of
+being killed before it can persist a notice. That margin is `review_teardown_s`
+in the policy document, so the ceiling is derived from two owned values rather
+than from a constant beside its caller. A configuration
+refusal on Claude or Codex is recorded as a notice rather than returning
+silently.
+
+`/judge-settings` in Pi is the surface over that document: it lists the
+effective values with the origin the document states (an explicit value equal
+to the default still reads as explicit), the effective host command and the
+adapter's argv, the environment names, and any legacy per-harness file, and it applies `key=value`,
+`unset <key>`, `reset`, and `import` transactionally against the revision it
+read, so a concurrent edit reports `stale_config` instead of being overwritten.
+A review carries the revision it was prepared under and is refused the same way
+if the document moved in between. A document without `schema` is still read as
+the pre-schema five keys and keeps protocol 1, and `import` copies such a file
+verbatim, so an existing judge keeps working unchanged. An explicit
+`hosts.<host>.extra_env` replaces the shipped names instead of adding to them,
+so `[]` forwards nothing.
+
+The judge is on by default; that is a disclosure, not a determinism claim. Its
+validator is deterministic and local, and the command it runs is neither: the
+model it reaches, the endpoint behind that model, and the retention terms of
+both are the user's to choose with `command` and `hosts.<host>.*`.
+
 ## 2026-11-04T10:35:23-05:00 - review settled turns against the conventions an agent read
 
 The gate proves which convention sources a session read; it cannot show whether
