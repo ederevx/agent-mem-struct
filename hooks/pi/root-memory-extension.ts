@@ -216,9 +216,6 @@ export class ListerCommand {
  * this object; the event handlers are single-responsibility methods and no
  * module-level state is mutated.
  */
-/** How much history activation accepts as pre-activation, not as a review. */
-const BASELINE_ENTRIES = 64;
-
 export class RootMemoryBridge {
 	private sessionLabel = "";
 	private firstTurn = true; // emit the full root bundle on the next turn
@@ -875,18 +872,23 @@ export class RootMemoryBridge {
 	 * trimmed at its head: the oldest entries are exactly what activation
 	 * accepts as history the judge was not asked about. A brand new session
 	 * has no entries, and the hook then starts from the empty origin, so the
-	 * first completed turn is still reviewed.
+	 * first completed turn is still reviewed. How much history activation
+	 * accepts belongs to the shipped policy, which the hook reports rather
+	 * than this file restating it.
 	 */
 	private async baselineJudge(ctx: any): Promise<void> {
 		const manager = ctx?.sessionManager;
 		const branch = typeof manager?.getBranch === "function" ? manager.getBranch() : [];
 		const leaf = typeof manager?.getLeafId === "function" ? manager.getLeafId() : null;
 		if (typeof leaf !== "string" || !leaf || !Array.isArray(branch) || branch.length === 0) return;
+		const settings = await this.judgeSettings({});
+		const bound = settings?.defaults?.baseline_entries;
+		if (typeof bound !== "number" || bound <= 0) return;
 		await this.serialize(() => this.callHook("Judge", {
 			phase: "baseline",
 			leaf_id: leaf,
 			session_leaf_id: leaf,
-			session_entries: branch.slice(-BASELINE_ENTRIES),
+			session_entries: branch.slice(-bound),
 		}, DEFAULT_TIMEOUT_MS, this.sessionId(ctx)));
 	}
 
@@ -1011,9 +1013,26 @@ class JudgeSettingsSurface {
 			? launch.extra_env.join(", ")
 			: "(none)";
 		lines.push(`  command environment = ${env}`);
+		const defaults = body.defaults ?? {};
+		if (defaults.baseline_entries !== undefined) {
+			lines.push(`  baseline entries = ${defaults.baseline_entries} (shipped policy)`);
+		}
+		lines.push(`  ${this.reviewLine(body.review)}`);
 		lines.push(`  legacy document = ${body.legacy_present ? body.legacy : "none"}`);
 		lines.push(`settable: ${JudgeSettingsSurface.SETTABLE.join(", ")}`);
 		return lines.join("\n");
+	}
+
+	private reviewLine(review: any): string {
+		if (review === null || typeof review !== "object") {
+			return "last review = none in this session";
+		}
+		const anchor = typeof review.anchor === "string" && review.anchor ? review.anchor : "activation";
+		const verdict = typeof review.error === "string" && review.error
+			? review.error
+			: "accepted";
+		const notice = typeof review.notice === "string" && review.notice ? `, notice: ${review.notice}` : "";
+		return `last review = ${verdict} through ${anchor}, ${review.findings} finding(s)${notice}`;
 	}
 
 	private notify(ctx: any, text: string, level: "info" | "error" = "info"): void {

@@ -55,6 +55,9 @@ class Window:
     positions: tuple[str, ...]
     reviewable: dict[str, str]
     records: dict[str, Any]
+    # Whether this window starts at the branch root or was trimmed at its head
+    # by a transport bound, which decides how much continuity it can prove.
+    complete: bool = True
 
     def leaf(self) -> str:
         return self.positions[-1] if self.positions else ""
@@ -76,19 +79,37 @@ class Window:
     def digest(self, anchor: str) -> str:
         """Continuity evidence for one anchor: the anchor record itself.
 
-        A transport bound can make the window start at the anchor instead of at
-        the branch root, so evidence over "everything before the anchor" cannot
-        be recomputed from the window a later settle supplies. The anchor record
-        alone is present in every window that still contains the anchor, so it is
-        the part of the history both sides can always compare: a rewritten
-        anchor is detected, and the turns before it are outside the judge's scope
-        because the watermark already passed them.
+        Every window that still holds the anchor can prove this much, including
+        a window a transport bound trimmed at its head, so it is the part both
+        sides can always compare: a rewritten anchor is detected, and the turns
+        before it are outside the judge's scope because the watermark already
+        passed them.
         """
         if anchor not in self.records:
             raise JudgeError("invalid_window")
         return hashlib.sha256(
             canonical([FORMAT_VERSION, self.host, self.session, anchor,
                        self.records[anchor]]).encode("utf-8")
+        ).hexdigest()
+
+    def prefix_digest(self, anchor: str) -> str | None:
+        """Continuity evidence for every record through one anchor, in order.
+
+        A window that starts at the branch root can prove the whole history the
+        watermark passed; a trimmed one cannot, and reports None rather than a
+        digest that would refuse every legitimate review afterwards.
+        """
+        if anchor not in self.records:
+            raise JudgeError("invalid_window")
+        if not self.complete:
+            return None
+        prefix: list[Any] = []
+        for position in self.positions:
+            prefix.append([position, self.records[position]])
+            if position == anchor:
+                break
+        return hashlib.sha256(
+            canonical([FORMAT_VERSION, self.host, self.session, prefix]).encode("utf-8")
         ).hexdigest()
 
     def boundary(self, anchor: str) -> dict[str, Any]:
@@ -98,6 +119,7 @@ class Window:
             "session": self.session,
             "anchor": anchor,
             "digest": self.digest(anchor),
+            "prefix": self.prefix_digest(anchor),
             "format": FORMAT_VERSION,
         }
 
@@ -215,7 +237,8 @@ def pi_window(event: dict[str, Any]) -> Window:
             raise JudgeError("invalid_window")
     if positions[-1] != leaf:
         raise JudgeError("invalid_window")
-    return Window("pi", session_id(event), tuple(positions), reviewable, kept)
+    return Window("pi", session_id(event), tuple(positions), reviewable, kept,
+                  complete=not raw[0].get("parentId"))
 
 
 def entry_text(entry: dict[str, Any]) -> str:

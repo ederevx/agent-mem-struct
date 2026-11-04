@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from manage_common import EVENT_TIMEOUTS
 from rm_control import RootState
 from rm_support import read_text
 
@@ -40,10 +41,12 @@ LOCK_TIMEOUT_S = 2.0
 LOCK_POLL_S = 0.05
 # A review deadline has to fit inside the deadline the host installs for the
 # event that runs it, or the host kills the hook before its own timeout can
-# report anything. `manage_common.EVENT_TIMEOUTS` allows 90 s for Stop, and
-# 60 s leaves the remaining 30 s for the receipt write, the notice, and process
-# teardown. A larger value is refused here rather than silently never reported.
-TIMEOUT_MAX_S = min(60.0, threading.TIMEOUT_MAX, (2 ** 31 - 1) / 1000)
+# report anything. The installed bound is not restated here: it comes from
+# `manage_common`, and the margin left over is what the receipt write, the
+# notice, and process teardown need.
+REVIEW_TEARDOWN_S = 30.0
+TIMEOUT_MAX_S = min(EVENT_TIMEOUTS["Stop"] - REVIEW_TEARDOWN_S, threading.TIMEOUT_MAX,
+                    (2 ** 31 - 1) / 1000)
 
 
 class JudgeError(Exception):
@@ -166,10 +169,11 @@ class JudgePolicy:
     def defaults(self) -> dict[str, Any]:
         """The shipped values, validated exactly like a document's own."""
         raw = self.document["defaults"]
-        if not isinstance(raw, dict) or set(raw) != {"protocol", *NUMERIC_KEYS}:
+        if not isinstance(raw, dict) or set(raw) != {"protocol", "baseline_entries", *NUMERIC_KEYS}:
             raise JudgeError("invalid_config")
         return {
             "protocol": protocol(raw["protocol"]),
+            "baseline_entries": number("baseline_entries", raw["baseline_entries"]),
             **{key: number(key, raw[key], maximum=TIMEOUT_MAX_S if key == "timeout_s" else None)
                for key in NUMERIC_KEYS},
         }

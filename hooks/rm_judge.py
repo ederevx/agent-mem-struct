@@ -253,7 +253,7 @@ class ConventionJudge:
                 for entry_id in window.positions if entry_id in window.reviewable]
 
     def _continuity(self, window: Any, state: dict[str, Any]) -> None:
-        """Refuse an anchor whose own record the source has rewritten."""
+        """Refuse an anchor the source has rewritten, and any earlier record too."""
         recorded = state["source"]
         anchor = state["anchor"]
         if anchor is None:
@@ -265,6 +265,11 @@ class ConventionJudge:
         if window.digest(anchor) != recorded.get("digest"):
             # The same identifier over different content is not a new branch;
             # it is a rewritten source this judge will not review silently.
+            raise JudgeError("invalid_window")
+        prefix = recorded.get("prefix")
+        if prefix is not None and window.complete and window.prefix_digest(anchor) != prefix:
+            # A window that starts at the branch root holds every record the
+            # watermark passed, so it can prove more than the anchor alone.
             raise JudgeError("invalid_window")
 
     def rules(self, event: dict[str, Any]) -> list[dict[str, str]]:
@@ -623,7 +628,7 @@ class ConventionJudge:
         that begins with the judge on has no pre-activation turns at all.
         """
         try:
-            _, config = self.configuration()
+            owner, config = self.configuration()
             if not config["enabled"]:
                 return self.result("disabled", [])
             revision = event.get("config_revision")
@@ -632,6 +637,14 @@ class ConventionJudge:
             state = self._cursor_state(self.gate.read_receipt(event).get("judge"))
             if state["epoch"] is not None:
                 return self.result("noop", [])
+            # The bound on how much history activation accepts is policy, not a
+            # constant beside the code that ships it; trimming the head keeps
+            # the window contiguous to its leaf.
+            entries = event.get("session_entries")
+            if isinstance(entries, list):
+                bound = int(owner.policy.defaults()["baseline_entries"])
+                if len(entries) > bound:
+                    event = {**event, "session_entries": entries[-bound:]}
             try:
                 # Every host has a window source: inline entries from Pi, the
                 # transcript from Claude and Codex. Only a source that has
@@ -646,6 +659,25 @@ class ConventionJudge:
             return self.result(str(refusal), [])
         self._store(event, self._baseline(window))
         return self.result("baseline", [])
+
+    def status(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        """The last review this session holds, for the settings surface.
+
+        The receipt is the only durable record, so the surface reports what it
+        actually contains: the reviewed boundary, how far the chain has run, any
+        refusal, and the notice a turn has yet to collect.
+        """
+        recorded = self.gate.read_receipt(event).get("judge")
+        if not isinstance(recorded, dict):
+            return None
+        findings = recorded.get("findings")
+        return {
+            "anchor": recorded.get("anchor"),
+            "seq": recorded.get("seq"),
+            "findings": len(findings) if isinstance(findings, list) else 0,
+            "error": recorded.get("error"),
+            "notice": recorded.get("notice"),
+        }
 
     def _store(self, event: dict[str, Any], state: dict[str, Any]) -> None:
         """Record one judge state; the receipt writer bounds and refuses it.
