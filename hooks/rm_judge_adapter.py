@@ -25,7 +25,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from rm_judge_settings import JudgeError, JudgePolicy  # noqa: E402
+from rm_judge_settings import JudgeError, JudgePolicy, program  # noqa: E402
 
 # What the hook turns into a refusal code rather than `command_failed`.
 OVERFLOW = 3
@@ -73,6 +73,20 @@ def descriptor_from_environment() -> dict[str, Any] | None:
     if value["prompt"] not in ("stdin", "argv") or value["answer"] not in ("stdout", "file"):
         raise JudgeError("invalid_config")
     return value
+
+
+def descriptor(agent: str) -> dict[str, Any]:
+    """What to run: the hook's descriptor, else this host's own launch, resolved.
+
+    Standalone use has no hook to resolve the program, so the shared resolution
+    runs here rather than a second lookup of its own.
+    """
+    value = descriptor_from_environment()
+    if value is not None:
+        return value
+    host = JudgePolicy.load().host(agent)
+    host["command"][0] = program(host["command"][0])
+    return host
 
 
 def prompt(payload: str) -> str:
@@ -185,13 +199,11 @@ def main() -> int:
     if not payload:
         return 2
     try:
-        descriptor = descriptor_from_environment()
+        descriptor_value = descriptor(args.agent)
         limit = JudgePolicy.load().capture_bytes()
-        if descriptor is None:
-            descriptor = JudgePolicy.load().host(args.agent)
     except JudgeError:
         return 2
-    code, answer = run(descriptor, prompt(payload), limit, Path.cwd())
+    code, answer = run(descriptor_value, prompt(payload), limit, Path.cwd())
     if code != 0:
         return code
     try:

@@ -27,7 +27,7 @@
         "--no-prompt-templates",
         "--no-context-files"
       ],
-      "prompt": "argv",
+      "prompt": "stdin",
       "answer": "stdout",
       "extra_env": [],
       "extensions": [],

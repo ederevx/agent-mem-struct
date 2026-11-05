@@ -4,6 +4,17 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T22:34:12-05:00 - the judge's Pi prompt travels on standard input
+
+The shipped Pi descriptor handed the review to the host as a command-line
+argument. On Windows the `pi` shim is a `.cmd` file, so the prompt passed
+through `cmd.exe`, which refuses a command line beyond 8191 characters: every
+real review (well over 8 KB once the instructions, rules and turns are
+included) came back as `command_failed` while a small payload succeeded. Pi
+reads its prompt from standard input when argv carries none, so the descriptor
+now delivers it there. The adapter is unchanged; the test pins the shipped
+choice against the platform's command-line bound.
+
 ## 2026-11-04T21:12:26-05:00 - the judge hands the adapter an absolute scratch root
 
 On Windows, the default judge launch omitted the home variables needed to

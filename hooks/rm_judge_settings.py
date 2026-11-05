@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import sys
 import threading
 import time
@@ -89,6 +90,50 @@ def launch_argv(value: Any) -> list[str]:
     if not all(isinstance(part, str) for part in value):
         raise JudgeError("invalid_config")
     return list(value)
+
+
+def runnable_suffixes() -> set[str]:
+    """The suffixes this platform's loader will start, lower-cased."""
+    if os.name != "nt":
+        return {""}
+    configured = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+    return {suffix.lower() for suffix in configured.split(";") if suffix}
+
+
+def executable(path: str) -> bool:
+    """Whether one path is a file this host will run."""
+    try:
+        if not os.path.isfile(path):
+            return False
+        if os.name == "nt":
+            # `CreateProcess` starts only a file whose suffix names an
+            # executable type, and `os.access` cannot tell on Windows: the
+            # extensionless wrapper beside `pi.cmd` is a file it will not run.
+            return os.path.splitext(path)[1].lower() in runnable_suffixes()
+        return os.access(path, os.X_OK)
+    except (OSError, ValueError):
+        return False
+
+
+def program(value: str) -> str:
+    """One launchable program, resolved where the whole environment is visible.
+
+    A review's command runs with an environment filtered to `PATH`, `HOME`, and
+    `LANG`, which no longer resolves what a bare name means for the platform: on
+    Windows the shim that runs `pi` is `pi.cmd`, and an extensionless script of
+    the same name shadows it. The parent is the last place that sees the whole
+    environment, so the program is resolved here and carried absolute.
+    """
+    directory, _ = os.path.split(value)
+    if directory:
+        path = value if os.path.isabs(value) else os.path.join(os.getcwd(), value)
+        if not executable(path):
+            raise JudgeError("invalid_config")
+        return path
+    found = shutil.which(value)
+    if found is None or not executable(found):
+        raise JudgeError("invalid_config")
+    return found
 
 
 def names(value: Any) -> list[str]:
@@ -393,6 +438,7 @@ class JudgeSettings:
         for path in extensions:
             self._extension(path)
             command += [flag, path]
+        command[0] = program(command[0])
         # A host override states the whole list: forwarding cannot be narrowed
         # by addition, so `extra_env: []` has to mean "forward nothing" rather
         # than "keep the shipped credentials".

@@ -109,6 +109,11 @@ class JudgeCase(unittest.TestCase):
         self.previous_home = {name: os.environ.get(name)
                               for name in HOME_VARIABLES}
         set_home(self.root / "user")
+        # A review resolves its command's program in the parent, so the shipped
+        # names must exist on this `PATH` for a case to reach its own subject.
+        self.bin = self.staged_bin()
+        self.previous_path = os.environ.get("PATH")
+        os.environ["PATH"] = str(self.bin)
         self.state = RootControl(self.home, REPO).load(self.agent)
         self.gate = ConventionGate(self.state)
         self.settings_path = self.root / "user" / ".agent-mem-struct" / "judge.json"
@@ -119,6 +124,20 @@ class JudgeCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         restore_home(self.previous_home)
+        if self.previous_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = self.previous_path
+
+    def staged_bin(self) -> Path:
+        """One directory of runnable files named for the shipped host CLIs."""
+        directory = self.root / "bin"
+        directory.mkdir(exist_ok=True)
+        for name in ("pi", "claude", "codex"):
+            shim = directory / (name + ".CMD" if os.name == "nt" else name)
+            shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            shim.chmod(0o700)
+        return directory
 
     def stub(self, name: str, body: str) -> list[str]:
         path = self.root / name
@@ -342,6 +361,18 @@ class JudgeReviewTests(JudgeCase):
         body = self.review(self.event)
         self.assertEqual(body["error"], "invalid_response", body)
         self.assertEqual(self.gate.read_receipt(self.event)["judge"]["seq"], 0)
+
+    def test_an_unavailable_host_command_is_recorded_rather_than_run(self) -> None:
+        # A host CLI that the parent cannot find is a configuration refusal the
+        # receipt can name, not a transport failure that hides it.
+        self.settings({"schema": 2, "hosts": {"claude": {"command": ["no-such-judge-cli", "-p"]}}})
+        self.write([assistant("a1", None, "first")])
+        self.receipt(self.event)
+        with patch.dict(os.environ, {"PATH": str(self.root)}):
+            with patch("rm_judge.subprocess.Popen", side_effect=AssertionError("spawned")):
+                body = self.review(self.event)
+        self.assertEqual(body["error"], "invalid_config", body)
+        self.assertIsNone(self.gate.read_receipt(self.event)["judge"])
 
     def test_oversized_input_leaves_the_watermark_alone(self) -> None:
         self.settings({"schema": 2, "command": self.command, "max_input_bytes": 200})
@@ -618,6 +649,52 @@ class StopWiringTests(JudgeCase):
         self.assertEqual(output.getvalue(), "")
 
 
+class ChildEnvironmentTests(unittest.TestCase):
+    def launch(self, **overrides) -> dict:
+        launch = {"argv": ["x"], "host_command": ["x"], "prompt": "stdin",
+                  "answer": "stdout", "explicit": False, "extra_env": []}
+        launch.update(overrides)
+        return launch
+
+    def test_the_platform_names_travel_with_the_allowlist(self) -> None:
+        # A `.cmd` launcher runs through `cmd.exe`, found by `SystemRoot`: the
+        # filtered environment carries it, and still carries nothing else.
+        from rm_judge import child_environment
+
+        with patch.dict(os.environ, {"SystemRoot": "C:/WINDOWS", "SECRET_TOKEN": "x"}):
+            environment = child_environment(self.launch())
+        self.assertNotIn("SECRET_TOKEN", environment)
+        stored = "SYSTEMROOT" if os.name == "nt" else "SystemRoot"
+        self.assertEqual(stored in environment, os.name == "nt")
+        self.assertIn("AMS_JUDGE_LAUNCH", environment)
+
+    def test_one_name_is_forwarded_under_one_spelling(self) -> None:
+        # Windows stores variable names case-insensitively, so an override
+        # spelled its own way must land on the same entry the platform uses.
+        from rm_judge import child_environment
+
+        with patch.dict(os.environ, {"SECRET_TOKEN": "x"}):
+            forwarded = child_environment(self.launch(extra_env=["secret_token"]))
+        stored = "SECRET_TOKEN" if os.name == "nt" else "secret_token"
+        self.assertEqual(list(forwarded.values()).count("x"), 1)
+        self.assertEqual(forwarded.get(stored), "x")
+
+    def test_a_host_name_is_forwarded_only_when_it_names_it(self) -> None:
+        from rm_judge import child_environment
+
+        with patch.dict(os.environ, {"SECRET_TOKEN": "x"}):
+            self.assertNotIn("SECRET_TOKEN", child_environment(self.launch()))
+            forwarded = child_environment(self.launch(extra_env=["SECRET_TOKEN"]))
+        self.assertEqual(forwarded["SECRET_TOKEN"], "x")
+
+    def test_an_explicit_command_carries_no_adapter_descriptor(self) -> None:
+        from rm_judge import child_environment
+
+        environment = child_environment(self.launch(explicit=True))
+        self.assertNotIn("AMS_JUDGE_LAUNCH", environment)
+        self.assertNotIn("AMS_SCRATCH_ROOT", environment)
+
+
 class AdapterCaptureTests(unittest.TestCase):
     """The adapter refuses its own capture instead of repairing it."""
 
@@ -655,6 +732,22 @@ class AdapterCaptureTests(unittest.TestCase):
         completed = self.run_adapter(answer)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout, b"c\npass\n")
+
+    def test_a_standalone_launch_resolves_the_program(self) -> None:
+        # Without a hook there is no parent to resolve the program, so the
+        # adapter resolves it the same way rather than running a bare name.
+        from rm_judge_adapter import descriptor
+
+        directory = Path(tempfile.mkdtemp(prefix="adapter-bin-", dir=SCRATCH_ROOT))
+        program = directory / ("pi.CMD" if os.name == "nt" else "pi")
+        program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        program.chmod(0o700)
+        host = {"command": ["pi", "-p"], "prompt": "stdin", "answer": "stdout"}
+        with patch.dict(os.environ, {"PATH": str(directory), "AMS_JUDGE_LAUNCH": ""}):
+            with patch("rm_judge_adapter.JudgePolicy.load") as policy:
+                policy.return_value.host.return_value = host
+                resolved = descriptor("pi")
+        self.assertEqual(resolved["command"], [str(program), "-p"])
 
     def test_a_host_cli_exit_code_is_never_read_as_a_capture_verdict(self) -> None:
         for code in (1, 3, 4):
@@ -878,16 +971,34 @@ class JudgeSettingsTests(unittest.TestCase):
         self.assertTrue(launch["explicit"])
 
     def test_environment_override_replaces_the_shipped_names(self) -> None:
-        self.assertEqual(self.settings.launch(self.settings.read())["extra_env"],
-                         JudgePolicy.load().host("claude")["extra_env"])
-        self.settings.apply("set", "", "hosts.claude.extra_env", "[]")
-        self.assertEqual(self.settings.launch(self.settings.read())["extra_env"], [])
+        with self.staged("claude"):
+            self.assertEqual(self.settings.launch(self.settings.read())["extra_env"],
+                             JudgePolicy.load().host("claude")["extra_env"])
+            self.settings.apply("set", "", "hosts.claude.extra_env", "[]")
+            self.assertEqual(self.settings.launch(self.settings.read())["extra_env"], [])
 
     def test_host_command_override_is_carried_to_the_adapter(self) -> None:
-        self.settings.apply("set", "", "hosts.claude.command", '["my-cli", "-p"]')
-        launch = self.settings.launch(self.settings.read())
-        self.assertEqual(launch["host_command"], ["my-cli", "-p"])
+        with self.staged("my-cli") as directory:
+            self.settings.apply("set", "", "hosts.claude.command", '["my-cli", "-p"]')
+            launch = self.settings.launch(self.settings.read())
+        self.assertEqual(launch["host_command"], [str(directory / self.exename("my-cli")), "-p"])
         self.assertFalse(launch["explicit"])
+
+    def exename(self, name: str) -> str:
+        """The name a staged program is found by, on this platform."""
+        return name + ".CMD" if os.name == "nt" else name
+
+    @contextlib.contextmanager
+    def staged(self, *names: str):
+        """A `PATH` holding only the named programs, each a runnable file."""
+        directory = self.root / "bin"
+        directory.mkdir(exist_ok=True)
+        for name in names:
+            path = directory / self.exename(name)
+            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            path.chmod(0o700)
+        with patch.dict(os.environ, {"PATH": str(directory)}):
+            yield directory
 
     def pi_settings(self) -> JudgeSettings:
         return JudgeSettings(type("State", (), {"home": self.home, "agent": "pi"})())
@@ -897,13 +1008,81 @@ class JudgeSettingsTests(unittest.TestCase):
         path.write_text("export {};\n", encoding="utf-8")
         return path
 
+    def test_a_bare_program_is_resolved_before_the_adapter_is_started(self) -> None:
+        # The review's command runs with an environment filtered to PATH, HOME,
+        # and LANG, where a bare name need not name the file the platform runs.
+        with self.staged("claude") as directory:
+            launch = self.settings.launch(self.settings.read())
+            staged = str(directory / self.exename("claude"))
+            shipped = JudgePolicy.load().host("claude")["command"]
+        self.assertEqual(launch["host_command"], [staged, *shipped[1:]])
+
+    def test_an_unavailable_program_refuses_the_launch(self) -> None:
+        with self.staged():
+            self.settings.apply("set", "", "hosts.claude.command", '["no-such-judge-cli", "-p"]')
+            with self.assertRaises(JudgeError) as refused:
+                self.settings.launch(self.settings.read())
+        self.assertEqual(str(refused.exception), "invalid_config")
+
+    def test_an_absolute_program_keeps_its_spelling(self) -> None:
+        with self.staged("my-cli") as directory:
+            staged = str(directory / self.exename("my-cli"))
+            self.settings.apply("set", "", "hosts.claude.command", json.dumps([staged, "-p"]))
+            launch = self.settings.launch(self.settings.read())
+        self.assertEqual(launch["host_command"], [staged, "-p"])
+
+    def test_a_relative_program_is_resolved_against_the_working_directory(self) -> None:
+        with self.staged("my-cli") as directory:
+            relative = os.path.join("bin", self.exename("my-cli"))
+            self.settings.apply("set", "", "hosts.claude.command", json.dumps([relative, "-p"]))
+            with contextlib.chdir(self.root):
+                launch = self.settings.launch(self.settings.read())
+            self.assertEqual(launch["host_command"], [str(directory / self.exename("my-cli")), "-p"])
+
+    def test_a_directory_is_not_a_program(self) -> None:
+        self.settings.apply("set", "", "hosts.claude.command", json.dumps([str(self.root), "-p"]))
+        with self.assertRaises(JudgeError) as refused:
+            self.settings.launch(self.settings.read())
+        self.assertEqual(str(refused.exception), "invalid_config")
+
+    @unittest.skipUnless(os.name == "nt", "Windows loader semantics")
+    def test_a_file_the_loader_will_not_start_is_refused(self) -> None:
+        # The extensionless wrapper beside `pi.cmd` is a file, and `CreateProcess`
+        # will not start it; refusing here names the problem at configuration.
+        wrapper = self.root / "pi"
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.settings.apply("set", "", "hosts.claude.command", json.dumps([str(wrapper)]))
+        with self.assertRaises(JudgeError) as refused:
+            self.settings.launch(self.settings.read())
+        self.assertEqual(str(refused.exception), "invalid_config")
+
+    @unittest.skipUnless(os.name == "nt", "Windows loader semantics")
+    def test_an_executable_suffix_is_matched_whatever_its_case(self) -> None:
+        directory = self.root / "bin"
+        directory.mkdir(exist_ok=True)
+        shim = directory / "my-cli.CmD"
+        shim.write_text("@echo off\r\n", encoding="utf-8")
+        with patch.dict(os.environ, {"PATH": str(directory)}):
+            self.settings.apply("set", "", "hosts.claude.command", '["my-cli", "-p"]')
+            launch = self.settings.launch(self.settings.read())
+        self.assertEqual([part.lower() for part in launch["host_command"]],
+                         [str(shim).lower(), "-p"])
+
+    def test_an_explicit_command_is_never_resolved(self) -> None:
+        self.settings.apply("set", "", "command", '["my-judge", "--fast"]')
+        with self.staged():
+            launch = self.settings.launch(self.settings.read())
+        self.assertEqual(launch["argv"], ["my-judge", "--fast"])
+
     def test_extension_paths_are_composed_onto_the_shipped_command(self) -> None:
         settings = self.pi_settings()
         path = self.extension("provider.ts")
         settings.apply("set", "", "hosts.pi.extensions", json.dumps([str(path)]))
-        launch = settings.launch(settings.read())
+        with self.staged("pi") as directory:
+            launch = settings.launch(settings.read())
         shipped = JudgePolicy.load().host("pi")["command"]
-        self.assertEqual(launch["host_command"], [*shipped, "-e", str(path)])
+        self.assertEqual(launch["host_command"],
+                         [str(directory / self.exename("pi")), *shipped[1:], "-e", str(path)])
         self.assertEqual(launch["extensions"], [str(path)])
 
     def test_extension_paths_follow_a_host_command_override(self) -> None:
@@ -912,8 +1091,10 @@ class JudgeSettingsTests(unittest.TestCase):
         settings.apply("set", "", "hosts.pi.command", '["my-pi", "-p"]')
         settings.apply("set", settings.read()["revision"], "hosts.pi.extensions",
                        json.dumps([str(path)]))
-        self.assertEqual(settings.launch(settings.read())["host_command"],
-                         ["my-pi", "-p", "-e", str(path)])
+        with self.staged("my-pi") as directory:
+            launch = settings.launch(settings.read())
+        self.assertEqual(launch["host_command"],
+                         [str(directory / self.exename("my-pi")), "-p", "-e", str(path)])
 
     def test_extension_paths_must_be_absolute_and_distinct(self) -> None:
         settings = self.pi_settings()
@@ -939,6 +1120,15 @@ class JudgeSettingsTests(unittest.TestCase):
         with self.assertRaises(JudgeError) as refused:
             self.settings.launch(self.settings.read())
         self.assertEqual(str(refused.exception), "invalid_config")
+
+    def test_the_pi_host_carries_its_prompt_on_standard_input(self) -> None:
+        # An argv prompt travels through the platform's command line, which a
+        # Windows .cmd shim bounds at 8191 characters while the judge may send
+        # max_input_bytes of review; the shipped descriptor therefore does not
+        # put the prompt in argv at all.
+        policy = JudgePolicy.load()
+        self.assertEqual(policy.host("pi")["prompt"], "stdin")
+        self.assertGreater(policy.defaults()["max_input_bytes"], 8191)
 
     def test_a_stale_extension_path_refuses_the_launch_that_would_load_it(self) -> None:
         settings = self.pi_settings()

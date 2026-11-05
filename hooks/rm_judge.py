@@ -28,6 +28,11 @@ from rm_support import read_text
 
 SCHEMA = 2
 ENVIRONMENT_ALLOWLIST = ("PATH", "HOME", "LANG")
+# What the platform's own loader needs before it can start a program at all:
+# on Windows a `.cmd` launcher runs through `cmd.exe`, which is found by
+# `SystemRoot`, so a filtered environment without it fails with ERROR_DIRECTORY
+# rather than with anything about the command.
+PLATFORM_ALLOWLIST = (("SystemRoot", "ComSpec") if os.name == "nt" else ())
 # The section heading the protocol itself validates; a manifest without it is
 # not a convention manifest and contributes no rule unit.
 UNIT_HEADING = re.compile(r"(?m)^## Mandatory conventions[ \t]*$")
@@ -35,11 +40,52 @@ EMPTY_MARKER = "(none)"
 # A pipe buffer's size, not a policy: reads return as soon as the command writes.
 READ_CHUNK = 65536
 FINDING = re.compile(r"^([1-9][0-9]*) ([1-9][0-9]*) (.*)$", re.S)
+
+
 # What the adapter returns when it must refuse its own capture.
 ADAPTER_CODES = {3: "oversized_output", 4: "invalid_response"}
 # How long cleanup waits for a signalled command to be reaped; the deadline it
 # enforces has already passed, so this only bounds the reap itself.
 REAP_WAIT_S = 5.0
+
+
+def environment_name(name: str) -> str:
+    """The spelling this platform stores one variable name under."""
+    return name.upper() if os.name == "nt" else name
+
+
+def child_environment(launch: dict[str, Any]) -> dict[str, str]:
+    """The environment one review's command runs with: allowlisted, nothing more.
+
+    The platform names travel with it because the loader, not the command,
+    needs them; everything else is forwarded only when the host names it, and
+    under the spelling the platform stores so no two entries can collide.
+    """
+    environment = {}
+    for name in ENVIRONMENT_ALLOWLIST + PLATFORM_ALLOWLIST:
+        key = environment_name(name)
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    for name in launch.get("extra_env") or ():
+        key = environment_name(name)
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    if not launch.get("explicit"):
+        try:
+            environment["AMS_SCRATCH_ROOT"] = str(
+                Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser().resolve()
+            )
+        except (OSError, RuntimeError):
+            raise JudgeError("command_failed") from None
+        # The adapter is a fixed entry point, so the descriptor this hook
+        # already validated - host override included - travels beside it
+        # rather than being re-read from a policy the user cannot edit.
+        environment["AMS_JUDGE_LAUNCH"] = canonical({
+            "command": launch["host_command"],
+            "prompt": launch["prompt"],
+            "answer": launch["answer"],
+        })
+    return environment
 
 
 def digest(text: str) -> str:
@@ -373,27 +419,7 @@ class ConventionJudge:
 
     def _execute(self, config: dict[str, Any], launch: dict[str, Any], payload: str) -> str:
         """Run the configured argv without a shell, deadline-bound and byte-bounded."""
-        environment = {
-            name: os.environ[name] for name in ENVIRONMENT_ALLOWLIST if name in os.environ
-        }
-        for name in launch.get("extra_env") or ():
-            if name in os.environ:
-                environment[name] = os.environ[name]
-        if not launch.get("explicit"):
-            try:
-                environment["AMS_SCRATCH_ROOT"] = str(
-                    Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser().resolve()
-                )
-            except (OSError, RuntimeError):
-                raise JudgeError("command_failed") from None
-            # The adapter is a fixed entry point, so the descriptor this hook
-            # already validated - host override included - travels beside it
-            # rather than being re-read from a policy the user cannot edit.
-            environment["AMS_JUDGE_LAUNCH"] = canonical({
-                "command": launch["host_command"],
-                "prompt": launch["prompt"],
-                "answer": launch["answer"],
-            })
+        environment = child_environment(launch)
         try:
             process = subprocess.Popen(
                 launch["argv"],
