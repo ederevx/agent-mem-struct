@@ -380,6 +380,12 @@ class ConventionJudge:
             if name in os.environ:
                 environment[name] = os.environ[name]
         if not launch.get("explicit"):
+            try:
+                environment["AMS_SCRATCH_ROOT"] = str(
+                    Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser().resolve()
+                )
+            except (OSError, RuntimeError):
+                raise JudgeError("command_failed") from None
             # The adapter is a fixed entry point, so the descriptor this hook
             # already validated - host override included - travels beside it
             # rather than being re-read from a policy the user cannot edit.

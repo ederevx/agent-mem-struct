@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 HOOKS = REPO / "hooks"
@@ -415,6 +416,23 @@ class JudgeReviewTests(JudgeCase):
         self.assertIsNone(body["error"], body)
         self.assertIn(str(Path(recorder[1]).resolve()), json.loads(marker.read_text())[0])
 
+    def test_the_adapter_receives_the_resolved_scratch_root(self) -> None:
+        root = (self.root / "user" / "review-scratch").resolve()
+        marker = self.root / "scratch-root.json"
+        recorder = self.stub(
+            "scratch-root.py",
+            "import json, os\n"
+            f"open({str(marker)!r}, 'w').write("
+            "json.dumps(os.environ.get('AMS_SCRATCH_ROOT')))\n" + PASS)
+        self.settings({"schema": 2, "hosts": {"claude": {"command": recorder}}})
+        self.write([assistant("a1", None, "first")])
+        self.receipt(self.event)
+        with patch.dict(os.environ, {"AMS_SCRATCH_ROOT": "~/review-scratch"}):
+            body = self.review(self.event)
+        self.assertIsNone(body["error"], body)
+        self.assertEqual(json.loads(marker.read_text()), str(root))
+        self.assertTrue(root.is_dir())
+
     def test_adapter_capture_codes_become_local_refusals(self) -> None:
         for code, expected in ((3, "oversized_output"), (4, "invalid_response")):
             with self.subTest(code):
@@ -658,6 +676,13 @@ class AdapterCaptureTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertTrue(Path(record.read_text()).resolve().is_relative_to(root.resolve()))
 
+    def test_an_unresolvable_scratch_home_is_a_failure(self) -> None:
+        from rm_judge_adapter import scratch_root
+
+        with patch.dict(os.environ, {"AMS_SCRATCH_ROOT": ""}):
+            with patch.object(Path, "expanduser", side_effect=RuntimeError):
+                self.assertIsNone(scratch_root())
+
     @unittest.skipIf(
         os.name == "nt",
         "Windows has no process groups for the hook to kill",
@@ -892,8 +917,14 @@ class JudgeSettingsTests(unittest.TestCase):
 
     def test_extension_paths_must_be_absolute_and_distinct(self) -> None:
         settings = self.pi_settings()
-        for value in ('["relative/index.ts"]', '["/a/b.ts", "/a/b.ts"]', '[""]',
-                      '"/a/b.ts"', '["/a\\u0000b.ts"]'):
+        path = str((self.root / "provider.ts").resolve())
+        for value in (
+            json.dumps(["relative/index.ts"]),
+            json.dumps([path, path]),
+            json.dumps([""]),
+            json.dumps(path),
+            json.dumps([path + "\0"]),
+        ):
             with self.assertRaises(JudgeError) as refused:
                 settings.apply("set", "", "hosts.pi.extensions", value)
             self.assertEqual(str(refused.exception), "invalid_settings_request", value)
@@ -902,7 +933,9 @@ class JudgeSettingsTests(unittest.TestCase):
     def test_a_host_without_an_extension_flag_cannot_load_one(self) -> None:
         # Claude's shipped descriptor states no flag, so a stored list never
         # becomes a launch rather than being silently dropped.
-        self.settings.apply("set", "", "hosts.claude.extensions", '["/a/b.ts"]')
+        path = self.extension("provider.ts").resolve()
+        self.settings.apply("set", "", "hosts.claude.extensions",
+                            json.dumps([str(path)]))
         with self.assertRaises(JudgeError) as refused:
             self.settings.launch(self.settings.read())
         self.assertEqual(str(refused.exception), "invalid_config")

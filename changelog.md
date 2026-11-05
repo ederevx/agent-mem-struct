@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T21:12:26-05:00 - the judge hands the adapter an absolute scratch root
+
+On Windows, the default judge launch omitted the home variables needed to
+expand the adapter's `~/tmp` scratch fallback, causing `command_failed`.
+The judge now resolves the scratch root before filtering the environment
+and passes its absolute path to the adapter. A configured `AMS_SCRATCH_ROOT`
+therefore reaches the adapter without requiring an `extra_env` entry.
+The adapter retains its standalone fallback and reports an unresolvable
+root as an ordinary command failure.
+
 ## 2026-11-04T20:01:07-05:00 - the adapter keeps its scratch out of the system temporary directory
 
 The adapter asked for a temporary directory without saying where, so it took

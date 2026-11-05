@@ -103,10 +103,10 @@ def scratch_root() -> Path | None:
     temporary directory is not an option, since the conventions exclude it and
     it is what an absent `TMPDIR` would otherwise select.
     """
-    root = Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser()
     try:
+        root = Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser()
         root.mkdir(parents=True, exist_ok=True)
-    except OSError:
+    except (OSError, RuntimeError):
         return None
     return root
 

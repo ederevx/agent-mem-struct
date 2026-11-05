@@ -376,7 +376,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   host CLI's own non-zero exit is reported as `1`, so its `3` or `4` is never
   read as a verdict this adapter gave. Scratch a host answers through, as Codex
   does, lives under `AMS_SCRATCH_ROOT` or else `~/tmp` - never the system
-  temporary directory an absent `TMPDIR` would select. An argv `command` replaces
+  temporary directory an absent `TMPDIR` would select. The judge resolves that
+  root itself and passes it absolute, because the filtered environment it
+  launches the adapter under need not carry whatever a platform reads a home
+  from. An argv `command` replaces
   the adapter and runs under protocol 1 unless the document also declares
   `protocol: 2`; a document without `schema` is read exactly as the pre-schema
   five keys, and `import` copies such a file verbatim, protocol included.
