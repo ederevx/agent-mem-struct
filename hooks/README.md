@@ -369,32 +369,37 @@ The bridge maps Pi events onto the hook's event vocabulary:
   --disable hooks --disable plugins --disable apps`. The hook passes the
   descriptor it already validated - the host override included - in
   `AMS_JUDGE_LAUNCH`, so the adapter runs what the settings say rather than
-  re-reading a policy file the user cannot edit. The adapter bounds its own
-  capture while reading, and exits `3` for output beyond the policy's capture
-  bound and `4` for bytes that are not UTF-8; the hook maps those to
-  `oversized_output` and `invalid_response` instead of repairing the answer. A
-  host CLI's own non-zero exit is reported as `1`, so its `3` or `4` is never
-  read as a verdict this adapter gave. Scratch a host answers through, as Codex
-  does, lives under `AMS_SCRATCH_ROOT` or else `~/tmp` - never the system
-  temporary directory an absent `TMPDIR` would select. The judge resolves that
-  root itself and passes it absolute, because the filtered environment it
-  launches the adapter under need not carry whatever a platform reads a home
-  from. An argv `command` replaces
-  the adapter and runs under protocol 1 unless the document also declares
+  re-reading a policy file the user cannot edit. Shipped host descriptors send
+  the prompt on stdin. On Windows, bare program names are resolved at spawn
+  time, and batch launchers run through `%COMSPEC%`. Batch command components,
+  including executable paths, reject C0 control characters (U+0000-U+001F) and
+  `"`, `%`, `!`, `^`, `&`, `|`, `<`, `>`, `(` and `)`. This conservative
+  restriction does not apply to native executables or POSIX commands. The
+  adapter bounds its own capture while reading, and exits `3` for output
+  beyond the policy's capture bound and `4` for bytes that are not UTF-8; the
+  hook maps those to `oversized_output` and `invalid_response` instead of
+  repairing the answer. A host CLI's own non-zero exit is reported as `1`, so
+  its `3` or `4` is never read as a verdict this adapter gave. Scratch a host
+  answers through, as Codex does, lives under `AMS_SCRATCH_ROOT` or else
+  `~/tmp` - never the system temporary directory an absent `TMPDIR` would
+  select. The judge resolves that root itself and passes it absolute, because
+  the filtered environment it launches the adapter under need not carry
+  whatever a platform reads a home from. An argv `command` replaces the
+  adapter and runs under protocol 1 unless the document also declares
   `protocol: 2`; a document without `schema` is read exactly as the pre-schema
   five keys, and `import` copies such a file verbatim, protocol included.
-  `hosts.<host>.extra_env` states the whole forwarded list for that host, so an
-  explicit `[]` forwards nothing: names cannot be removed by adding to the
+  `hosts.<host>.extra_env` states the whole forwarded list for that host, so
+  an explicit `[]` forwards nothing: names cannot be removed by adding to the
   shipped set. `hosts.<host>.extensions` adds `-e <path>` pairs to the host
   command, and only a host whose shipped descriptor names an extension flag
-  accepts it - Pi's does, Claude's and Codex's do not, so a list stored for them
-  refuses at launch instead of being dropped. Paths are kept as written:
+  accepts it - Pi's does, Claude's and Codex's do not, so a list stored for
+  them refuses at launch instead of being dropped. Paths are kept as written:
   absolute, unexpanded, and distinct, and each one is checked to be a readable
   regular file only for the launch that would load it, so a Pi entrypoint that
   has gone stale never refuses Claude or Codex. `enabled: false` is the only
-  way to turn the judge off. A document that is
-  unreadable, is not a regular file, or is malformed is reported as
-  `invalid_config` rather than running or silently disabling the judge.
+  way to turn the judge off. A document that is unreadable, is not a regular
+  file, or is malformed is reported as `invalid_config` rather than running or
+  silently disabling the judge.
 
   Protocol 2 keeps the command's freedom to a single line. The request names a
   `chain` and the reply must begin with that chain followed by either `pass`

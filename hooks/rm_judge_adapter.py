@@ -25,6 +25,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from rm_judge_process import spawn_args  # noqa: E402
 from rm_judge_settings import JudgeError, JudgePolicy  # noqa: E402
 
 # What the hook turns into a refusal code rather than `command_failed`.
@@ -134,7 +135,7 @@ def run(descriptor: dict[str, Any], text: str, limit: int, cwd: Path) -> tuple[i
             stdin_text = b""
         try:
             completed = subprocess.Popen(
-                argv,
+                **spawn_args(argv, dict(os.environ)),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE if answer_file is None else subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

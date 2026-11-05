@@ -12,7 +12,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 REPO = Path(__file__).resolve().parents[1]
 HOOKS = REPO / "hooks"
@@ -699,6 +700,177 @@ class AdapterCaptureTests(unittest.TestCase):
             "sys.stdout.write('c\\npass\\n')\n")
         self.assertEqual(self.run_adapter(probe).returncode, 0)
         self.assertEqual(int((Path(probe[1]).parent / "pgid.txt").read_text()), os.getpgrp())
+
+
+class JudgeLaunchTests(JudgeCase):
+    """Program resolution belongs to both process-launch boundaries."""
+
+    def test_windows_cmd_is_spawned_through_comspec(self) -> None:
+        from rm_judge_adapter import run
+
+        environment = {
+            "PATH": r"C:\tools",
+            "PATHEXT": ".EXE;.CMD;.BAT",
+            "COMSPEC": r"C:\system tools\cmd.exe",
+        }
+        process = Mock()
+        process.stdin = io.BytesIO()
+        process.stdout = io.BytesIO(b"c\npass\n")
+        process.returncode = 0
+
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+            patch("rm_judge_process.shutil.which",
+                  return_value=r"C:\tool dir\pi.cmd") as which,
+            patch("rm_judge_adapter.scratch_root", return_value=self.root),
+            patch("rm_judge_adapter.subprocess.Popen",
+                  return_value=process) as popen,
+        ):
+            result = run(
+                {"command": ["pi", "-p", "", "two words"],
+                 "prompt": "stdin", "answer": "stdout"},
+                'instructions\n{"text":"%PATH% & !value!"}\n',
+                4096,
+                self.root,
+            )
+
+        self.assertEqual(result, (0, b"c\npass\n"))
+        which.assert_called_once_with("pi", path=environment["PATH"])
+        options = popen.call_args.kwargs
+        self.assertEqual(
+            options["args"],
+            '"C:\\system tools\\cmd.exe" /d /v:off /s /c '
+            '""C:\\tool dir\\pi.cmd" -p "" "two words""',
+        )
+        self.assertEqual(options["executable"], environment["COMSPEC"])
+        self.assertFalse(options["shell"])
+        self.assertEqual(options["cwd"], str(self.root))
+
+    def test_windows_resolution_failure_keeps_adapter_127(self) -> None:
+        from rm_judge_adapter import run
+
+        environment = {
+            "PATH": r"C:\tools",
+            "PATHEXT": ".EXE;.CMD;.BAT",
+            "COMSPEC": r"C:\system\cmd.exe",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+            patch("rm_judge_process.shutil.which", return_value=None),
+            patch("rm_judge_adapter.scratch_root", return_value=self.root),
+            patch("rm_judge_adapter.subprocess.Popen") as popen,
+        ):
+            result = run(
+                {"command": ["missing"], "prompt": "stdin",
+                 "answer": "stdout"},
+                "request",
+                4096,
+                self.root,
+            )
+
+        self.assertEqual(result, (127, b""))
+        popen.assert_not_called()
+
+    def test_posix_executable_argv_is_unchanged(self) -> None:
+        from rm_judge_process import spawn_args
+
+        command = ["pi", "-p", 'text\nwith "%PATH%" & !characters!']
+        with (
+            patch("rm_judge_process.os", SimpleNamespace(name="posix")),
+            patch("rm_judge_process.shutil.which") as which,
+        ):
+            options = spawn_args(command, {"PATH": "/configured/bin"})
+
+        self.assertEqual(options, {"args": command})
+        self.assertIs(options["args"], command)
+        which.assert_not_called()
+
+    def test_explicit_command_uses_shared_spawn_resolution(self) -> None:
+        judge = ConventionJudge(self.state, self.gate)
+        launch = {"argv": ["missing"], "explicit": True, "extra_env": []}
+        with (
+            patch("rm_judge.spawn_args",
+                  side_effect=FileNotFoundError("missing")) as resolve,
+            patch("rm_judge.subprocess.Popen") as popen,
+        ):
+            with self.assertRaises(JudgeError) as raised:
+                judge._execute({}, launch, "request")
+
+        self.assertEqual(str(raised.exception), "command_failed")
+        self.assertEqual(resolve.call_args.args[0], ["missing"])
+        popen.assert_not_called()
+
+    def test_windows_batch_refuses_expansion_and_control_syntax(self) -> None:
+        from rm_judge_process import spawn_args
+
+        environment = {
+            "PATH": r"C:\tools",
+            "PATHEXT": ".EXE;.CMD;.BAT",
+            "COMSPEC": r"C:\system\cmd.exe",
+        }
+        with (
+            patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+            patch("rm_judge_process.shutil.which",
+                  return_value=r"C:\tools\pi.cmd"),
+        ):
+            for argument in (
+                "%PATH%", "!value!", '"quoted"', "a&b", "a|b",
+                "a<b", "a>b", "a^b", "(value)", "a\nb", "a\rb", "\0",
+            ):
+                with self.subTest(argument=argument):
+                    with self.assertRaises(OSError):
+                        spawn_args(["pi", argument], environment)
+
+    def test_windows_batch_requires_comspec(self) -> None:
+        from rm_judge_process import spawn_args
+
+        environment = {"PATH": r"C:\tools", "PATHEXT": ".EXE;.CMD"}
+        with (
+            patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+            patch("rm_judge_process.shutil.which",
+                  return_value=r"C:\tools\pi.cmd"),
+        ):
+            with self.assertRaises(FileNotFoundError):
+                spawn_args(["pi"], environment)
+
+    def test_windows_explicit_native_path_needs_no_lookup_environment(self) -> None:
+        from rm_judge_process import spawn_args
+
+        command = [r"C:\tools\python.exe", "%value%", "(argument)"]
+        with (
+            patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+            patch("rm_judge_process.shutil.which") as which,
+        ):
+            options = spawn_args(command, {})
+
+        self.assertEqual(options, {"args": command})
+        which.assert_not_called()
+
+    def test_windows_qualified_extensionless_command_uses_pathext(self) -> None:
+        from rm_judge_process import spawn_args
+
+        environment = {
+            "PATHEXT": ".EXE;.CMD;.BAT",
+            "COMSPEC": r"C:\system\cmd.exe",
+        }
+        with (
+            patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+            patch("rm_judge_process.shutil.which",
+                  return_value=r"C:\tools\pi.cmd") as which,
+        ):
+            options = spawn_args([r"C:\tools\pi", "-p"], environment)
+
+        which.assert_called_once_with(r"C:\tools\pi", path="")
+        self.assertEqual(options["executable"], environment["COMSPEC"])
+        self.assertEqual(
+            options["args"],
+            r'C:\system\cmd.exe /d /v:off /s /c "C:\tools\pi.cmd -p"',
+        )
+
+    def test_shipped_pi_prompt_uses_stdin(self) -> None:
+        self.assertEqual(JudgePolicy.load().host("pi")["prompt"], "stdin")
 
 
 class JudgeSettingsTests(unittest.TestCase):

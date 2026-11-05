@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from rm_control import RootState
+from rm_judge_process import spawn_args
 from rm_judge_settings import JudgeError, JudgeSettings
 from rm_judge_window import canonical, window as build_window
 from rm_receipts import ConventionGate, ReceiptTooLarge
@@ -372,9 +373,13 @@ class ConventionJudge:
         return digest(canonical([previous, state.get("epoch"), seq, anchor, digest(bound)]))
 
     def _execute(self, config: dict[str, Any], launch: dict[str, Any], payload: str) -> str:
-        """Run the configured argv without a shell, deadline-bound and byte-bounded."""
+        """Run the configured command, deadline-bound and byte-bounded."""
+        # The adapter needs the same Windows lookup and processor environment.
+        names = ENVIRONMENT_ALLOWLIST
+        if os.name == "nt":
+            names += ("PATHEXT", "COMSPEC")
         environment = {
-            name: os.environ[name] for name in ENVIRONMENT_ALLOWLIST if name in os.environ
+            name: os.environ[name] for name in names if name in os.environ
         }
         for name in launch.get("extra_env") or ():
             if name in os.environ:
@@ -396,7 +401,7 @@ class ConventionJudge:
             })
         try:
             process = subprocess.Popen(
-                launch["argv"],
+                **spawn_args(launch["argv"], environment),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
