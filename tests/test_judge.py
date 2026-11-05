@@ -636,6 +636,11 @@ class AdapterCaptureTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout, b"c\npass\n")
 
+    def test_a_host_cli_exit_code_is_never_read_as_a_capture_verdict(self) -> None:
+        for code in (1, 3, 4):
+            failing = self.program(f"import sys\nsys.stdin.read()\nsys.exit({code})\n")
+            self.assertEqual(self.run_adapter(failing).returncode, 1, code)
+
     @unittest.skipIf(
         os.name == "nt",
         "Windows has no process groups for the hook to kill",
@@ -841,6 +846,57 @@ class JudgeSettingsTests(unittest.TestCase):
         launch = self.settings.launch(self.settings.read())
         self.assertEqual(launch["host_command"], ["my-cli", "-p"])
         self.assertFalse(launch["explicit"])
+
+    def pi_settings(self) -> JudgeSettings:
+        return JudgeSettings(type("State", (), {"home": self.home, "agent": "pi"})())
+
+    def extension(self, name: str) -> Path:
+        path = self.root / name
+        path.write_text("export {};\n", encoding="utf-8")
+        return path
+
+    def test_extension_paths_are_composed_onto_the_shipped_command(self) -> None:
+        settings = self.pi_settings()
+        path = self.extension("provider.ts")
+        settings.apply("set", "", "hosts.pi.extensions", json.dumps([str(path)]))
+        launch = settings.launch(settings.read())
+        shipped = JudgePolicy.load().host("pi")["command"]
+        self.assertEqual(launch["host_command"], [*shipped, "-e", str(path)])
+        self.assertEqual(launch["extensions"], [str(path)])
+
+    def test_extension_paths_follow_a_host_command_override(self) -> None:
+        settings = self.pi_settings()
+        path = self.extension("provider.ts")
+        settings.apply("set", "", "hosts.pi.command", '["my-pi", "-p"]')
+        settings.apply("set", settings.read()["revision"], "hosts.pi.extensions",
+                       json.dumps([str(path)]))
+        self.assertEqual(settings.launch(settings.read())["host_command"],
+                         ["my-pi", "-p", "-e", str(path)])
+
+    def test_extension_paths_must_be_absolute_and_distinct(self) -> None:
+        settings = self.pi_settings()
+        for value in ('["relative/index.ts"]', '["/a/b.ts", "/a/b.ts"]', '[""]',
+                      '"/a/b.ts"', '["/a\\u0000b.ts"]'):
+            with self.assertRaises(JudgeError) as refused:
+                settings.apply("set", "", "hosts.pi.extensions", value)
+            self.assertEqual(str(refused.exception), "invalid_settings_request", value)
+        self.assertEqual(settings.read()["hosts"], {})
+
+    def test_a_host_without_an_extension_flag_cannot_load_one(self) -> None:
+        # Claude's shipped descriptor states no flag, so a stored list never
+        # becomes a launch rather than being silently dropped.
+        self.settings.apply("set", "", "hosts.claude.extensions", '["/a/b.ts"]')
+        with self.assertRaises(JudgeError) as refused:
+            self.settings.launch(self.settings.read())
+        self.assertEqual(str(refused.exception), "invalid_config")
+
+    def test_a_stale_extension_path_refuses_the_launch_that_would_load_it(self) -> None:
+        settings = self.pi_settings()
+        gone = self.root / "gone.ts"
+        settings.apply("set", "", "hosts.pi.extensions", json.dumps([str(gone)]))
+        with self.assertRaises(JudgeError) as refused:
+            settings.launch(settings.read())
+        self.assertEqual(str(refused.exception), "invalid_config")
 
 
 if __name__ == "__main__":

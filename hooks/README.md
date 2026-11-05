@@ -357,7 +357,9 @@ The bridge maps Pi events onto the hook's event vocabulary:
   The defaults come from `hooks/judge-policy.json` - protocol 2, `timeout_s` 30,
   `max_turns` 32, `max_input_bytes` 65536, `max_output_bytes` 4096 - and the
   document may carry `schema` (2), `enabled`, `command`, `protocol`, those four
-  limits, and per-host `hosts.<host>.command` / `hosts.<host>.extra_env`.
+  limits, and per-host `hosts.<host>.command` / `hosts.<host>.extra_env`, plus
+  `hosts.<host>.extensions` for a host whose launch descriptor states how it
+  spells one.
   `command: null`, the default, means the shipped adapter
   `hooks/rm_judge_adapter.py`, which turns one review request into a single
   constrained prompt for the host CLI named in the policy: `pi -p --no-session
@@ -370,13 +372,22 @@ The bridge maps Pi events onto the hook's event vocabulary:
   re-reading a policy file the user cannot edit. The adapter bounds its own
   capture while reading, and exits `3` for output beyond the policy's capture
   bound and `4` for bytes that are not UTF-8; the hook maps those to
-  `oversized_output` and `invalid_response` instead of repairing the answer. An argv `command` replaces
+  `oversized_output` and `invalid_response` instead of repairing the answer. A
+  host CLI's own non-zero exit is reported as `1`, so its `3` or `4` is never
+  read as a verdict this adapter gave. An argv `command` replaces
   the adapter and runs under protocol 1 unless the document also declares
   `protocol: 2`; a document without `schema` is read exactly as the pre-schema
   five keys, and `import` copies such a file verbatim, protocol included.
   `hosts.<host>.extra_env` states the whole forwarded list for that host, so an
   explicit `[]` forwards nothing: names cannot be removed by adding to the
-  shipped set. `enabled: false` is the only way to turn the judge off. A document that is
+  shipped set. `hosts.<host>.extensions` adds `-e <path>` pairs to the host
+  command, and only a host whose shipped descriptor names an extension flag
+  accepts it - Pi's does, Claude's and Codex's do not, so a list stored for them
+  refuses at launch instead of being dropped. Paths are kept as written:
+  absolute, unexpanded, and distinct, and each one is checked to be a readable
+  regular file only for the launch that would load it, so a Pi entrypoint that
+  has gone stale never refuses Claude or Codex. `enabled: false` is the only
+  way to turn the judge off. A document that is
   unreadable, is not a regular file, or is malformed is reported as
   `invalid_config` rather than running or silently disabling the judge.
 
@@ -466,7 +477,7 @@ The bridge maps Pi events onto the hook's event vocabulary:
   Provenance is what the document states, not what a value looks like: an
   explicit `max_turns: 32` reads as explicit. The listing shows the effective
   host command, the adapter's argv when it is in use, the activation bound the
-  shipped policy sets, and the last review this session actually holds - its
+  shipped policy sets, the resolved extensions, and the last review this session actually holds - its
   refusal code or its acceptance, the boundary it reached, whether activation
   established a watermark at all, and any notice a turn has yet to collect.
 

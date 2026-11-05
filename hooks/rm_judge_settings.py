@@ -35,7 +35,12 @@ NUMERIC_KEYS = ("timeout_s", "max_turns", "max_input_bytes", "max_output_bytes")
 # while a count of turns, bytes, or entries cannot.
 FRACTIONAL_KEYS = frozenset({"timeout_s", "lock_timeout_s", "lock_poll_s",
                              "review_teardown_s"})
-HOST_KEYS = ("command", "extra_env")
+HOST_KEYS = ("command", "extra_env", "extensions")
+# A descriptor states these; a host CLI that can load an extension path adds the
+# flag it spells one with and the shipped default, so no host name decides here
+# whether a path may be handed to it.
+HOST_FIELDS = ("command", "prompt", "answer", "extra_env")
+EXTENSION_FIELDS = ("extensions", "extension_flag")
 # A pre-schema document: exactly these five, all numbers or an argv.
 LEGACY_KEYS = frozenset({"command", *NUMERIC_KEYS})
 # What `reset` may remove: the numeric overrides, never the authorization.
@@ -90,6 +95,23 @@ def names(value: Any) -> list[str]:
     """A list of environment variable names, empty allowed."""
     if not isinstance(value, list) or not all(isinstance(name, str) and name for name in value):
         raise JudgeError("invalid_config")
+    return list(value)
+
+
+def paths(value: Any) -> list[str]:
+    """Absolute extension paths, taken as written: no expansion, no duplicates.
+
+    Whether a path resolves is not decided here: a document must stay readable
+    and editable on a host that will never load it.
+    """
+    if not isinstance(value, list):
+        raise JudgeError("invalid_config")
+    stored: set[str] = set()
+    for path in value:
+        if (not isinstance(path, str) or not path or "\0" in path
+                or not Path(path).is_absolute() or path in stored):
+            raise JudgeError("invalid_config")
+        stored.add(path)
     return list(value)
 
 
@@ -217,17 +239,33 @@ class JudgePolicy:
     @classmethod
     def descriptor(cls, name: str, entry: dict[str, Any]) -> dict[str, Any]:
         """A launch descriptor, refused unless every field is one we implement."""
-        if set(entry) != {"command", "prompt", "answer", "extra_env"}:
+        fields = set(entry)
+        if (not set(HOST_FIELDS) <= fields
+                or fields - set(HOST_FIELDS) - set(EXTENSION_FIELDS)):
             raise JudgeError("invalid_config")
         if entry["prompt"] not in ("stdin", "argv") or entry["answer"] not in ("stdout", "file"):
             raise JudgeError("invalid_config")
-        return {
+        descriptor = {
             "name": name,
             "command": launch_argv(entry["command"]),
             "prompt": entry["prompt"],
             "answer": entry["answer"],
             "extra_env": names(entry["extra_env"]),
+            "extensions": [],
+            "extension_flag": None,
         }
+        if "extension_flag" in entry:
+            flag = entry["extension_flag"]
+            if not isinstance(flag, str) or not flag.startswith("-") or flag.split() != [flag]:
+                raise JudgeError("invalid_config")
+            descriptor["extension_flag"] = flag
+        if "extensions" in entry:
+            # A path with no flag to carry it could only be ignored, which would
+            # read as a host that loaded an extension it never received.
+            if "extension_flag" not in entry:
+                raise JudgeError("invalid_config")
+            descriptor["extensions"] = paths(entry["extensions"])
+        return descriptor
 
 
 class JudgeSettings:
@@ -333,6 +371,8 @@ class JudgeSettings:
             override["command"] = argv(entry["command"])
         if "extra_env" in entry:
             override["extra_env"] = names(entry["extra_env"])
+        if "extensions" in entry:
+            override["extensions"] = paths(entry["extensions"])
         return override
 
     # -- launch resolution -------------------------------------------------
@@ -345,6 +385,14 @@ class JudgeSettings:
                     "extra_env": []}
         override = config["hosts"].get(host) or {}
         descriptor = self.policy.host(host)
+        extensions = override.get("extensions", descriptor["extensions"])
+        flag = descriptor["extension_flag"]
+        if extensions and flag is None:
+            raise JudgeError("invalid_config")
+        command = list(override.get("command") or descriptor["command"])
+        for path in extensions:
+            self._extension(path)
+            command += [flag, path]
         # A host override states the whole list: forwarding cannot be narrowed
         # by addition, so `extra_env: []` has to mean "forward nothing" rather
         # than "keep the shipped credentials".
@@ -353,11 +401,27 @@ class JudgeSettings:
             "argv": [sys.executable, str(self.policy.adapter()), "--agent", host],
             "host": host,
             "explicit": False,
-            "host_command": override.get("command") or descriptor["command"],
+            "host_command": command,
             "prompt": descriptor["prompt"],
             "answer": descriptor["answer"],
             "extra_env": list(descriptor["extra_env"] if extra_env is None else extra_env),
+            "extensions": list(extensions),
+            "extension_flag": flag,
         }
+
+    @staticmethod
+    def _extension(path: str) -> None:
+        """One entry the launch can load: a readable regular file.
+
+        Only the active host's launch is resolved here, so a path that has gone
+        stale refuses the review that would load it rather than every host.
+        """
+        try:
+            usable = os.path.isfile(path) and os.access(path, os.R_OK)
+        except (OSError, ValueError):
+            usable = False
+        if not usable:
+            raise JudgeError("invalid_config")
 
     # -- edits -------------------------------------------------------------
 
@@ -480,6 +544,8 @@ class JudgeSettings:
                 return None if value is None or value.strip() == "null" else argv(self._json(value))
             if leaf == "extra_env":
                 return names(self._json(value))
+            if leaf == "extensions":
+                return paths(self._json(value))
             if leaf == "timeout_s":
                 return number(leaf, self._decimal(value),
                               maximum=self.policy.deadline_ceiling())

@@ -29,7 +29,9 @@
       ],
       "prompt": "argv",
       "answer": "stdout",
-      "extra_env": []
+      "extra_env": [],
+      "extensions": [],
+      "extension_flag": "-e"
     },
     "claude": {
       "command": [
