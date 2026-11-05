@@ -369,7 +369,12 @@ The bridge maps Pi events onto the hook's event vocabulary:
   --disable hooks --disable plugins --disable apps`. The hook passes the
   descriptor it already validated - the host override included - in
   `AMS_JUDGE_LAUNCH`, so the adapter runs what the settings say rather than
-  re-reading a policy file the user cannot edit. The adapter bounds its own
+  re-reading a policy file the user cannot edit. Shipped host descriptors send
+  the prompt on stdin. On Windows, bare program names are resolved at spawn
+  time, and batch launchers run through `%COMSPEC%`. Batch command components,
+  including executable paths, reject control characters and `"`, `%`, `!`,
+  `^`, `&`, `|`, `<`, `>`, `(` and `)`. This conservative restriction does not
+  apply to native executables or POSIX commands. The adapter bounds its own
   capture while reading, and exits `3` for output beyond the policy's capture
   bound and `4` for bytes that are not UTF-8; the hook maps those to
   `oversized_output` and `invalid_response` instead of repairing the answer. A
