@@ -926,7 +926,7 @@ class JudgeSettingsSurface {
 	private static readonly SETTABLE = [
 		"enabled", "command", "protocol", "timeout_s", "max_turns",
 		"max_input_bytes", "max_output_bytes", "hosts.<host>.command",
-		"hosts.<host>.extra_env",
+		"hosts.<host>.extra_env", "hosts.<host>.extensions",
 	];
 
 	constructor(private readonly bridge: RootMemoryBridge) {}
@@ -1014,6 +1014,12 @@ class JudgeSettingsSurface {
 			? launch.extra_env.join(", ")
 			: "(none)";
 		lines.push(`  command environment = ${env}`);
+		if (typeof launch.extension_flag === "string") {
+			const extensions = Array.isArray(launch.extensions) && launch.extensions.length > 0
+				? launch.extensions.join(", ")
+				: "(none)";
+			lines.push(`  command extensions = ${extensions}`);
+		}
 		const defaults = body.defaults ?? {};
 		if (defaults.baseline_entries !== undefined) {
 			lines.push(`  baseline entries = ${defaults.baseline_entries} (shipped policy)`);

@@ -145,7 +145,10 @@ def run(descriptor: dict[str, Any], text: str, limit: int, cwd: Path) -> tuple[i
             output = captured
         completed.wait()
         if completed.returncode != 0:
-            return completed.returncode, b""
+            # An ordinary failure is 1: codes 3 and 4 are this adapter's own
+            # capture verdicts, and a host CLI that exits with one of them has
+            # still only failed to answer.
+            return 1, b""
         if answer_file is not None:
             try:
                 with open(answer_file, "rb") as handle:

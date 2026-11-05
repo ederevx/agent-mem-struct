@@ -4,6 +4,25 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T19:53:26-05:00 - the judge can load the host CLI's own extension entrypoint
+
+Pi's shipped launch passes `--no-extensions`, which also removes the only thing
+that registers this host's model providers, so a review ended as an opaque
+`command_failed`. A host whose CLI accepts an extension path now states how it
+spells one - `extension_flag` in `hooks/judge-policy.json` - and the settings
+document may carry `hosts.pi.extensions`: `JudgeSettings.launch` appends one
+`-e <path>` pair per entry, to the shipped command or to a `hosts.pi.command`
+override alike. Paths are stored as written, absolute and distinct; each is
+checked to be a readable regular file only for the launch that would load it, so
+an entrypoint that moves refuses that review and leaves Claude and Codex alone.
+A list stored for a host whose descriptor names no flag is `invalid_config`
+rather than a silent drop.
+
+The adapter also stops passing a child's exit code through: `3` and `4` are its
+own capture verdicts, so any non-zero exit of the host CLI is `1`, and an
+ordinary failure can no longer read as `oversized_output` or
+`invalid_response`.
+
 ## 2026-11-04T16:21:16-05:00 - the judge ships on, with one settings document for every host
 
 The judge was opt-in per agent: the authorization was the existence of
