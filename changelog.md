@@ -4,6 +4,15 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T20:01:07-05:00 - the adapter keeps its scratch out of the system temporary directory
+
+The adapter asked for a temporary directory without saying where, so it took
+whatever the environment selected - the system temporary directory whenever
+`TMPDIR` was unset, which is exactly what the hook's allowlisted environment
+leaves out. A review now makes its scratch under `AMS_SCRATCH_ROOT`, or the
+shared `~/tmp` default when that variable is absent, and a root it cannot create
+is an ordinary command failure rather than a directory chosen elsewhere.
+
 ## 2026-11-04T19:53:26-05:00 - the judge can load the host CLI's own extension entrypoint
 
 Pi's shipped launch passes `--no-extensions`, which also removes the only thing

@@ -96,6 +96,21 @@ def bounded(stream: Any, limit: int) -> bytes | None:
             return None
 
 
+def scratch_root() -> Path | None:
+    """Where one review's scratch lives, or None when it cannot be made.
+
+    The hook's own scratch root, else the shared `~/tmp` default: the system
+    temporary directory is not an option, since the conventions exclude it and
+    it is what an absent `TMPDIR` would otherwise select.
+    """
+    root = Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return root
+
+
 def run(descriptor: dict[str, Any], text: str, limit: int, cwd: Path) -> tuple[int, bytes]:
     """Run one host CLI, returning its exit code and bounded captured output.
 
@@ -106,7 +121,10 @@ def run(descriptor: dict[str, Any], text: str, limit: int, cwd: Path) -> tuple[i
     """
     argv = list(descriptor["command"])
     stdin_text = text.encode("utf-8")
-    with tempfile.TemporaryDirectory(prefix="judge-") as scratch:
+    root = scratch_root()
+    if root is None:
+        return 1, b""
+    with tempfile.TemporaryDirectory(prefix="judge-", dir=root) as scratch:
         answer_file = None
         if descriptor["answer"] == "file":
             answer_file = Path(scratch) / "answer.txt"
