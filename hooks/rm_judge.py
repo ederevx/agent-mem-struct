@@ -37,6 +37,9 @@ READ_CHUNK = 65536
 FINDING = re.compile(r"^([1-9][0-9]*) ([1-9][0-9]*) (.*)$", re.S)
 # What the adapter returns when it must refuse its own capture.
 ADAPTER_CODES = {3: "oversized_output", 4: "invalid_response"}
+# How long cleanup waits for a signalled command to be reaped; the deadline it
+# enforces has already passed, so this only bounds the reap itself.
+REAP_WAIT_S = 5.0
 
 
 def digest(text: str) -> str:
@@ -469,14 +472,17 @@ class ConventionJudge:
         process groups to signal, so only the leader is killed there; the
         readers are daemons, so a lingering descendant cannot hold the hook.
         """
-        if os.name == "nt":
-            process.kill()
-        else:
-            try:
+        try:
+            if os.name == "nt":
+                process.kill()
+            else:
                 os.killpg(process.pid, signal.SIGKILL)
-            except OSError:
-                pass
-        process.wait()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=REAP_WAIT_S)
+        except subprocess.TimeoutExpired:
+            pass
 
     def _validate(
         self,
