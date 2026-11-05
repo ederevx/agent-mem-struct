@@ -4,6 +4,23 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-05T00:11:00-05:00 - the judge says why it failed, and can start a batch launcher without COMSPEC
+
+A failed review recorded only `command_failed`: the child's stderr went to
+the null device, so the stage and the child's own words were lost. Every run
+now overwrites one bounded record at `<scratch root>/ams-judge/judge-last-run.json`
+with the outcome, the stage it reached, the return code, exception type and
+Windows error, timing, the resolved command processor, and - for a failure only -
+the last 8192 bytes of stderr. A clean run writes the record without any child
+output, and the stderr capture file is always removed. Writing a record is best
+effort and never turns a review into a different failure.
+
+A batch launcher also no longer requires an inherited `COMSPEC`: when the
+variable is absent the system directory is asked for the command processor and
+that absolute, existing path is used. A stated `COMSPEC` is still never
+replaced - an empty or relative value stays a launch-environment failure rather
+than being silently corrected.
+
 ## 2026-11-04T22:35:28-05:00 - the judge starts a Windows batch launcher through the command processor
 
 The default Pi launch on a Windows host failed with `command_failed` because
