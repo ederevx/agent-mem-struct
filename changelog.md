@@ -4,6 +4,15 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-04T22:35:28-05:00 - the judge starts a Windows batch launcher through the command processor
+
+The default Pi launch on a Windows host failed with `command_failed` because
+the configured name was not resolved to its batch launcher. Both spawn sites
+now prepare Windows commands through one helper, using `%COMSPEC%` for batch
+launchers and refusing unsupported batch command components. Shipped host
+descriptors send review text on stdin. Native executables bypass batch handling;
+POSIX launch behavior is unchanged.
+
 ## 2026-11-04T21:12:26-05:00 - the judge hands the adapter an absolute scratch root
 
 On Windows, the default judge launch omitted the home variables needed to
