@@ -465,12 +465,17 @@ class ConventionJudge:
         """Kill the command's whole session, not only its leader.
 
         A descendant that inherited the pipes outlives the leader and would
-        otherwise hold this hook open past the deadline.
+        otherwise hold this hook open past the deadline. Windows has no
+        process groups to signal, so only the leader is killed there; the
+        readers are daemons, so a lingering descendant cannot hold the hook.
         """
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            pass
+        if os.name == "nt":
+            process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
         process.wait()
 
     def _validate(
