@@ -10,6 +10,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +28,7 @@ SCRATCH_ROOT = Path(
 from manage_common import EVENT_TIMEOUTS  # noqa: E402
 from rm_control import RootControl  # noqa: E402
 from rm_events import EventDispatcher  # noqa: E402
-from rm_judge import ConventionJudge, digest  # noqa: E402
+from rm_judge import BoundedTail, ConventionJudge, digest  # noqa: E402
 from rm_judge_settings import (  # noqa: E402
     JudgeError,
     JudgePolicy,
@@ -791,6 +793,8 @@ class JudgeLaunchTests(JudgeCase):
         judge = ConventionJudge(self.state, self.gate)
         launch = {"argv": ["missing"], "explicit": True, "extra_env": []}
         with (
+            patch("rm_judge.ConventionJudge._scratch_root",
+                  return_value=self.root / "scratch"),
             patch("rm_judge.spawn_args",
                   side_effect=FileNotFoundError("missing")) as resolve,
             patch("rm_judge.subprocess.Popen") as popen,
@@ -801,6 +805,14 @@ class JudgeLaunchTests(JudgeCase):
         self.assertEqual(str(raised.exception), "command_failed")
         self.assertEqual(resolve.call_args.args[0], ["missing"])
         popen.assert_not_called()
+        record = json.loads(
+            (self.root / "scratch" / "ams-judge" / "judge-last-run.json")
+            .read_text(encoding="utf-8"))
+        self.assertEqual(record["outcome"], "failure")
+        self.assertEqual(record["error"], "command_failed")
+        self.assertEqual(record["stage"], "spawn")
+        self.assertEqual(record["exception"]["type"], "FileNotFoundError")
+        self.assertIsNone(record["stderr_tail"])
 
     def test_windows_batch_refuses_expansion_and_control_syntax(self) -> None:
         from rm_judge_process import spawn_args
@@ -823,7 +835,28 @@ class JudgeLaunchTests(JudgeCase):
                     with self.assertRaises(OSError):
                         spawn_args(["pi", argument], environment)
 
-    def test_windows_batch_requires_comspec(self) -> None:
+    def test_windows_batch_falls_back_to_the_system_processor(self) -> None:
+        # A process with no console session inherits no COMSPEC; the API answer
+        # is used instead of resolving a processor through PATH.
+        from rm_judge_process import spawn_args
+
+        derived = r"C:\Windows\System32\cmd.exe"
+        environment = {"PATH": r"C:\tools", "PATHEXT": ".EXE;.CMD"}
+        with (
+            patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+            patch("rm_judge_process.shutil.which",
+                  return_value=r"C:\tools\pi.cmd"),
+            patch("rm_judge_process.system_command_processor",
+                  return_value=derived) as derived_api,
+        ):
+            options = spawn_args(["pi", "-p"], environment)
+
+        derived_api.assert_called_once_with()
+        self.assertEqual(options["executable"], derived)
+        self.assertIn(derived, options["args"])
+        self.assertIn("/d /v:off /s /c", options["args"])
+
+    def test_windows_batch_without_any_processor_is_refused(self) -> None:
         from rm_judge_process import spawn_args
 
         environment = {"PATH": r"C:\tools", "PATHEXT": ".EXE;.CMD"}
@@ -831,9 +864,30 @@ class JudgeLaunchTests(JudgeCase):
             patch("rm_judge_process.os", SimpleNamespace(name="nt")),
             patch("rm_judge_process.shutil.which",
                   return_value=r"C:\tools\pi.cmd"),
+            patch("rm_judge_process.system_command_processor", return_value=None),
         ):
             with self.assertRaises(FileNotFoundError):
                 spawn_args(["pi"], environment)
+
+    def test_windows_stated_comspec_is_never_replaced(self) -> None:
+        # An empty or relative value is a broken environment, not a request for
+        # the system processor: replacing it would hide the misconfiguration.
+        from rm_judge_process import spawn_args
+
+        for stated in ("", "cmd.exe", r"system32\cmd.exe"):
+            with self.subTest(stated=stated):
+                environment = {
+                    "PATH": r"C:\tools", "PATHEXT": ".EXE;.CMD", "COMSPEC": stated,
+                }
+                with (
+                    patch("rm_judge_process.os", SimpleNamespace(name="nt")),
+                    patch("rm_judge_process.shutil.which",
+                          return_value=r"C:\tools\pi.cmd"),
+                    patch("rm_judge_process.system_command_processor") as derived_api,
+                ):
+                    with self.assertRaises(FileNotFoundError):
+                        spawn_args(["pi"], environment)
+                derived_api.assert_not_called()
 
     def test_windows_explicit_native_path_needs_no_lookup_environment(self) -> None:
         from rm_judge_process import spawn_args
@@ -1119,6 +1173,348 @@ class JudgeSettingsTests(unittest.TestCase):
         with self.assertRaises(JudgeError) as refused:
             settings.launch(settings.read())
         self.assertEqual(str(refused.exception), "invalid_config")
+
+
+class SystemProcessorTests(unittest.TestCase):
+    """The fallback processor is only used when the API answer is usable."""
+
+    @staticmethod
+    def answered(text: str):
+        def call(buffer, size):
+            buffer.value = text
+            return len(text)
+        return call
+
+    def derive(self, answer, **patches):
+        from rm_judge_process import system_command_processor
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("ctypes.windll.kernel32.GetSystemDirectoryW",
+                                      side_effect=answer))
+            for name, value in patches.items():
+                stack.enter_context(patch(name, **value))
+            return system_command_processor()
+
+    def test_the_api_answer_is_joined_with_cmd_exe(self) -> None:
+        self.assertEqual(
+            self.derive(self.answered(r"C:\Windows\System32"),
+                        **{"rm_judge_process.os.path.isfile": {"return_value": True}}),
+            r"C:\Windows\System32\cmd.exe")
+
+    def test_an_answer_that_names_no_directory_is_refused(self) -> None:
+        self.assertIsNone(self.derive(self.answered("")))
+        self.assertIsNone(self.derive(self.answered("system32")))
+
+    def test_a_failed_or_short_api_call_is_a_refusal(self) -> None:
+        self.assertIsNone(self.derive(lambda buffer, size: 0))
+        self.assertIsNone(self.derive(lambda buffer, size: size))
+        self.assertIsNone(self.derive(OSError("no api")))
+        self.assertIsNone(self.derive(AttributeError("no windll")))
+
+    def test_a_processor_that_is_not_a_file_is_refused(self) -> None:
+        for fake in ({"return_value": False}, {"side_effect": OSError("denied")}):
+            with self.subTest(isfile=fake):
+                self.assertIsNone(
+                    self.derive(self.answered(r"C:\Windows\System32"),
+                                **{"rm_judge_process.os.path.isfile": fake}))
+
+
+class FakeProcess:
+    """A command that ends at once, having produced the streams it was given."""
+
+    def __init__(self, code: int, stdout: bytes = b"", stderr: bytes = b"") -> None:
+        self.code = code
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.stdin = io.BytesIO()
+        self.pid = 4242
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.code
+
+    def kill(self) -> None:
+        pass
+
+
+class StalledProcess(FakeProcess):
+    """A command whose output never arrives, so only the deadline ends it."""
+
+    def __init__(self) -> None:
+        super().__init__(0)
+        self.stdout = self
+
+    def read(self, size: int) -> bytes:
+        time.sleep(2.0)
+        return b""
+
+
+class LateStderr(io.BytesIO):
+    """Stderr whose last words arrive only after the command has exited."""
+
+    def __init__(self, data: bytes, delay: float = 0.3) -> None:
+        super().__init__(data)
+        self.delay = delay
+
+    def read(self, size: int = -1) -> bytes:
+        time.sleep(self.delay)
+        return super().read(size)
+
+
+class HeldStderr(io.BytesIO):
+    """Stderr a descendant keeps open, so the reader never reaches its end."""
+
+    def read(self, size: int = -1) -> bytes:
+        time.sleep(3.0)
+        return b""
+
+
+class ErrorStderr:
+    """Stderr whose reader fails before its end, so no end is ever seen."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.sent = False
+
+    def read(self, size: int = -1) -> bytes:
+        if not self.sent:
+            self.sent = True
+            return self.data
+        raise OSError("the pipe broke")
+
+
+class GatedStderr:
+    """Stderr held until it is released, so its end can be ordered exactly."""
+
+    def __init__(self, gate: threading.Event, data: bytes,
+                 ended: threading.Event | None = None) -> None:
+        self.gate = gate
+        self.data = data
+        self.ended = ended or threading.Event()
+        self.sent = False
+
+    def read(self, size: int = -1) -> bytes:
+        if self.sent:
+            self.ended.set()
+            return b""
+        self.gate.wait(timeout=10.0)
+        self.sent = True
+        return self.data
+
+
+class JudgeDiagnosticTests(JudgeCase):
+    """One bounded record per run, so a silent failure is readable afterwards."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.scratch = self.root / "scratch"
+        self.record_path = self.scratch / "ams-judge" / "judge-last-run.json"
+        self.launch = {"argv": [sys.executable, "-c", "pass"],
+                       "explicit": True, "extra_env": []}
+        # The scratch root is replaced without touching the environment: a
+        # patch of os.environ here would restore the environment a later test
+        # already changed, and the home its git commits rely on with it.
+        scoped = patch("rm_judge.ConventionJudge._scratch_root",
+                       return_value=self.scratch)
+        scoped.start()
+        self.addCleanup(scoped.stop)
+
+    def record(self) -> dict:
+        return json.loads(self.record_path.read_text(encoding="utf-8"))
+
+    def run_command(self, process, timeout_s: float = 30.0) -> str:
+        judge = ConventionJudge(self.state, self.gate)
+        with patch("rm_judge.subprocess.Popen", return_value=process):
+            with self.assertRaises(JudgeError) as raised:
+                judge._execute(
+                    {"max_output_bytes": 4096, "timeout_s": timeout_s},
+                    self.launch, "payload")
+        return str(raised.exception)
+
+    def test_a_failing_child_keeps_its_own_last_words(self) -> None:
+        error = self.run_command(FakeProcess(5, stderr=b"boom\n"))
+
+        self.assertEqual(error, "command_failed")
+        record = self.record()
+        self.assertEqual(record["outcome"], "failure")
+        self.assertEqual(record["error"], "command_failed")
+        self.assertEqual(record["stage"], "child_exit")
+        self.assertEqual(record["returncode"], 5)
+        self.assertEqual(record["stderr_tail"], "boom\n")
+        self.assertFalse(record["stderr_truncated"])
+        # The capture is a diagnostic, never litter: nothing is left beside it.
+        self.assertEqual(
+            [path.name for path in self.record_path.parent.iterdir()],
+            [self.record_path.name])
+
+    def test_a_clean_run_overwrites_the_record_and_keeps_no_output(self) -> None:
+        judge = ConventionJudge(self.state, self.gate)
+        with patch("rm_judge.subprocess.Popen",
+                   side_effect=lambda **options: FakeProcess(0, stdout=b"answer\n")):
+            answer = judge._execute(
+                {"max_output_bytes": 4096, "timeout_s": 30}, self.launch, "payload")
+
+        self.assertEqual(answer, "answer\n")
+        record = self.record()
+        self.assertEqual(record["outcome"], "success")
+        self.assertIsNone(record["error"])
+        self.assertEqual(record["returncode"], 0)
+        self.assertIsNone(record["stderr_tail"])
+
+    def test_a_flooding_child_leaves_a_bounded_tail_and_record(self) -> None:
+        self.run_command(FakeProcess(2, stderr=b"x" * 200_000))
+
+        record = self.record()
+        self.assertEqual(record["stage"], "child_exit")
+        self.assertEqual(record["returncode"], 2)
+        self.assertEqual(len(record["stderr_tail"]), 8192)
+        self.assertTrue(record["stderr_truncated"])
+        self.assertLessEqual(self.record_path.stat().st_size, 32768)
+
+    def test_an_escaped_flood_still_writes_one_bounded_record(self) -> None:
+        # Escaping expands the tail several times over; the record is bounded by
+        # the bytes it writes, not by the tail it was handed.
+        self.run_command(FakeProcess(2, stderr="\u0001" .encode() * 200_000))
+
+        self.assertLessEqual(self.record_path.stat().st_size, 32768)
+        self.assertTrue(self.record()["stderr_truncated"])
+
+    def test_oversized_metadata_still_fits_the_record(self) -> None:
+        launch = {**self.launch, "argv": [sys.executable, "y" * 40_000], "explicit": True}
+        judge = ConventionJudge(self.state, self.gate)
+        with patch("rm_judge.subprocess.Popen",
+                   return_value=FakeProcess(7, stderr=b"boom\n")):
+            with self.assertRaises(JudgeError):
+                judge._execute({"max_output_bytes": 4096, "timeout_s": 30}, launch, "payload")
+
+        self.assertLessEqual(self.record_path.stat().st_size, 32768)
+        record = self.record()
+        self.assertEqual(record["stage"], "child_exit")
+        self.assertEqual(record["returncode"], 7)
+        # Only the metadata is clipped; the tail is bounded on its own.
+        self.assertEqual(len(record["adapter"]), 1024)
+        self.assertEqual(record["stderr_tail"], "boom\n")
+
+    def test_a_run_that_cannot_be_recorded_is_not_a_second_failure(self) -> None:
+        # Losing the diagnostic must not change the review's own outcome.
+        judge = ConventionJudge(self.state, self.gate)
+        with (
+            patch("rm_judge.subprocess.Popen",
+                  return_value=FakeProcess(0, stdout=b"answer\n")),
+            patch("rm_judge.tempfile.mkstemp", side_effect=OSError("no room")),
+            patch("rm_judge.json.dumps", side_effect=TypeError("unserializable")),
+        ):
+            answer = judge._execute(
+                {"max_output_bytes": 4096, "timeout_s": 30}, self.launch, "payload")
+
+        self.assertEqual(answer, "answer\n")
+        self.assertFalse(self.record_path.exists())
+
+    def test_a_recorded_failure_still_survives_a_broken_record(self) -> None:
+        judge = ConventionJudge(self.state, self.gate)
+        with (
+            patch("rm_judge.subprocess.Popen", return_value=FakeProcess(5)),
+            patch("rm_judge.tempfile.mkstemp", side_effect=OSError("no room")),
+        ):
+            with self.assertRaises(JudgeError) as raised:
+                judge._execute(
+                    {"max_output_bytes": 4096, "timeout_s": 30}, self.launch, "payload")
+
+        self.assertEqual(str(raised.exception), "command_failed")
+
+    def test_an_undecodable_answer_keeps_the_child_stderr(self) -> None:
+        # The answer cannot be trusted, but the child's own words still explain
+        # why - so the tail outlives the exit code that looked clean.
+        error = self.run_command(FakeProcess(0, stdout=b"\xff\xfe", stderr=b"why\n"))
+
+        self.assertEqual(error, "invalid_response")
+        record = self.record()
+        self.assertEqual(record["stage"], "decode")
+        self.assertEqual(record["stderr_tail"], "why\n")
+
+    def test_stderr_still_in_flight_is_read_before_the_tail_is_taken(self) -> None:
+        # The command has exited, but its reader has not: the tail is taken
+        # only after the reader ended, so no last words are lost to the race.
+        process = FakeProcess(5)
+        process.stderr = LateStderr(b"late\n")
+        error = self.run_command(process)
+
+        self.assertEqual(error, "command_failed")
+        record = self.record()
+        self.assertEqual(record["stderr_tail"], "late\n")
+        self.assertTrue(record["stderr_complete"])
+
+    def test_a_pipe_a_descendant_holds_does_not_delay_the_run(self) -> None:
+        process = FakeProcess(5)
+        process.stderr = HeldStderr()
+        started = time.monotonic()
+        error = self.run_command(process)
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(error, "command_failed")
+        self.assertLess(elapsed, 4.0)
+        record = self.record()
+        self.assertFalse(record["stderr_complete"])
+        self.assertIsNone(record["stderr_tail"])
+
+    def test_a_reader_that_finishes_late_is_still_incomplete(self) -> None:
+        # The reader ends *inside* the snapshot, and the record must still say
+        # the collection was incomplete: the gate orders it, not a sleep.
+        gate = threading.Event()
+        ended = threading.Event()
+        process = FakeProcess(5)
+        process.stderr = GatedStderr(gate, b"late\n", ended)
+        write_into = BoundedTail.write_into
+
+        def snapshot(tail, report):
+            outcome = write_into(tail, report)
+            gate.set()  # the reader finishes only after the tail was read
+            # And it is finished before the snapshot returns, so a record that
+            # asked the reader afterwards would claim a complete collection.
+            self.assertTrue(ended.wait(5.0), "the reader never ended")
+            return outcome
+
+        with (
+            patch("rm_judge.STDERR_COLLECT_S", 0.0),
+            patch.object(BoundedTail, "write_into", autospec=True,
+                         side_effect=snapshot),
+        ):
+            error = self.run_command(process)
+
+        self.assertEqual(error, "command_failed")
+        self.assertFalse(self.record()["stderr_complete"])
+
+    def test_a_reader_that_fails_early_is_not_a_complete_collection(self) -> None:
+        process = FakeProcess(5)
+        process.stderr = ErrorStderr(b"boom\n")
+        error = self.run_command(process)
+
+        self.assertEqual(error, "command_failed")
+        record = self.record()
+        self.assertEqual(record["stderr_tail"], "boom\n")
+        self.assertFalse(record["stderr_complete"])
+
+    def test_a_failed_record_write_closes_its_descriptor(self) -> None:
+        judge = ConventionJudge(self.state, self.gate)
+        with (
+            patch("rm_judge.subprocess.Popen", return_value=FakeProcess(5)),
+            patch("rm_judge.os.fdopen", side_effect=OSError("no descriptor")),
+        ):
+            with self.assertRaises(JudgeError):
+                judge._execute(
+                    {"max_output_bytes": 4096, "timeout_s": 30}, self.launch, "payload")
+
+        self.assertFalse(self.record_path.exists())
+        # A handle left open would block this, so an empty directory is the proof.
+        self.assertEqual(list(self.record_path.parent.iterdir()), [])
+
+    def test_a_silent_command_is_a_deadline_not_a_missing_result(self) -> None:
+        error = self.run_command(StalledProcess(), timeout_s=0.05)
+
+        self.assertEqual(error, "timeout")
+        record = self.record()
+        self.assertEqual(record["outcome"], "failure")
+        self.assertEqual(record["error"], "timeout")
+        self.assertEqual(record["stage"], "deadline")
 
 
 if __name__ == "__main__":

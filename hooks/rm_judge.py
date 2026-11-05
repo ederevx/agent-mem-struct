@@ -14,6 +14,8 @@ import os
 import re
 import signal
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -41,6 +43,104 @@ ADAPTER_CODES = {3: "oversized_output", 4: "invalid_response"}
 # How long cleanup waits for a signalled command to be reaped; the deadline it
 # enforces has already passed, so this only bounds the reap itself.
 REAP_WAIT_S = 5.0
+# How long the diagnostic waits for the stderr reader to finish once the command
+# is gone: its tail is only the command's last words if the reader ended too.
+STDERR_COLLECT_S = 1.0
+# The one record every run overwrites: where the child's own words are kept when
+# the receipt can only say that the review was unavailable.
+DIAGNOSTIC_DIRECTORY = "ams-judge"
+DIAGNOSTIC_NAME = "judge-last-run.json"
+DIAGNOSTIC_TAIL_BYTES = 8192
+# JSON escaping expands an 8 KiB tail, so the whole record is bounded as written.
+DIAGNOSTIC_MAX_BYTES = 32768
+# Every string the record carries is clipped to one field bound, so no single
+# path or error text can push the serialized record over its own limit.
+DIAGNOSTIC_FIELD_CHARS = 1024
+
+
+class BoundedTail:
+    """The last bytes of a stream, kept in memory under one bound.
+
+    The child's stderr is read through this rather than written to a file: a
+    pipe that is read cannot block the command, and only the tail is retained,
+    so nothing grows on disk with the command's own output.
+    """
+
+    def __init__(self, limit: int = DIAGNOSTIC_TAIL_BYTES) -> None:
+        self.limit = limit
+        self._tail = bytearray()
+        self._total = 0
+        self._lock = threading.Lock()
+
+    def add(self, chunk: bytes) -> None:
+        with self._lock:
+            self._total += len(chunk)
+            self._tail.extend(chunk)
+            excess = len(self._tail) - self.limit
+            if excess > 0:
+                del self._tail[:excess]
+
+    def write_into(self, report: dict[str, Any]) -> None:
+        """Hand the retained tail to a report, decoded without raising."""
+        with self._lock:
+            tail = bytes(self._tail)
+            total = self._total
+        if tail:
+            report["stderr_tail"] = tail.decode("utf-8", "replace")
+            report["stderr_truncated"] = total > self.limit
+
+
+def short_record(record: dict[str, Any]) -> dict[str, Any]:
+    """The record with every string clipped to one field bound."""
+    clipped: dict[str, Any] = {}
+    for name, value in record.items():
+        # The tail has its own byte bound; clipping it again would silently
+        # shrink the "last 8 KiB" the record promises.
+        if name == "stderr_tail":
+            clipped[name] = value
+            continue
+        if isinstance(value, str) and len(value) > DIAGNOSTIC_FIELD_CHARS:
+            value = value[:DIAGNOSTIC_FIELD_CHARS]
+        elif isinstance(value, dict):
+            value = {
+                key: (item[:DIAGNOSTIC_FIELD_CHARS] if isinstance(item, str) else item)
+                for key, item in value.items()
+            }
+        clipped[name] = value
+    return clipped
+
+
+def bounded_record(record: dict[str, Any]) -> str:
+    """The record as JSON, never longer than its limit once written."""
+    def measure(text: str) -> int:
+        return len(text.encode("utf-8")) + 1
+
+    text = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    if measure(text) <= DIAGNOSTIC_MAX_BYTES:
+        return text
+    # The tail is the only part that grows with the child's own words, so it
+    # goes first; the fact of its loss stays visible.
+    kept_tail = record.get("stderr_tail")
+    record = {
+        **record,
+        "stderr_tail": None,
+        "stderr_truncated": bool(record.get("stderr_truncated") or kept_tail),
+    }
+    text = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    if measure(text) <= DIAGNOSTIC_MAX_BYTES:
+        return text
+    # A record that still cannot fit keeps only what names the failure.
+    minimal = short_record({
+        "schema": record.get("schema"),
+        "outcome": record.get("outcome"),
+        "error": record.get("error"),
+        "stage": record.get("stage"),
+        "returncode": record.get("returncode"),
+        "exception": record.get("exception"),
+        "stderr_tail": None,
+        "stderr_truncated": True,
+    })
+    return json.dumps(minimal, sort_keys=True, separators=(",", ":"))
 
 
 def digest(text: str) -> str:
@@ -373,7 +473,53 @@ class ConventionJudge:
         return digest(canonical([previous, state.get("epoch"), seq, anchor, digest(bound)]))
 
     def _execute(self, config: dict[str, Any], launch: dict[str, Any], payload: str) -> str:
-        """Run the configured command, deadline-bound and byte-bounded."""
+        """Run the configured command, deadline-bound and byte-bounded.
+
+        Every run leaves one bounded record beside the scratch root, so a stage
+        the receipt cannot distinguish - and the child's own last words - is
+        still readable by whoever owns the host.
+        """
+        argv = list(launch.get("argv") or ())
+        report: dict[str, Any] = {
+            "stage": "scratch_resolve",
+            "returncode": None,
+            "stderr_tail": None,
+            "stderr_truncated": False,
+            "exception": None,
+            "comspec": None,
+            "adapter": argv[1] if len(argv) > 1 else None,
+            "interpreter": sys.executable,
+        }
+        started = time.time()
+        root: Path | None = None
+        try:
+            root = self._scratch_root()
+            answer = self._run(config, launch, payload, report, root)
+        except JudgeError as error:
+            self._diagnose(root, started, "failure", str(error), report)
+            raise
+        self._diagnose(root, started, "success", None, report)
+        return answer
+
+    @staticmethod
+    def _scratch_root() -> Path:
+        """The validated task-local scratch root the child inherits as well."""
+        try:
+            return Path(
+                os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp"
+            ).expanduser().resolve()
+        except (OSError, RuntimeError):
+            raise JudgeError("command_failed") from None
+
+    def _run(
+        self,
+        config: dict[str, Any],
+        launch: dict[str, Any],
+        payload: str,
+        report: dict[str, Any],
+        root: Path,
+    ) -> str:
+        """One bounded run, reporting the stage it reached as it goes."""
         # The adapter needs the same Windows lookup and processor environment.
         names = ENVIRONMENT_ALLOWLIST
         if os.name == "nt":
@@ -385,12 +531,7 @@ class ConventionJudge:
             if name in os.environ:
                 environment[name] = os.environ[name]
         if not launch.get("explicit"):
-            try:
-                environment["AMS_SCRATCH_ROOT"] = str(
-                    Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser().resolve()
-                )
-            except (OSError, RuntimeError):
-                raise JudgeError("command_failed") from None
+            environment["AMS_SCRATCH_ROOT"] = str(root)
             # The adapter is a fixed entry point, so the descriptor this hook
             # already validated - host override included - travels beside it
             # rather than being re-read from a policy the user cannot edit.
@@ -399,17 +540,28 @@ class ConventionJudge:
                 "prompt": launch["prompt"],
                 "answer": launch["answer"],
             })
+        report["stage"] = "spawn"
+        stderr = BoundedTail()
+        stderr_drained = threading.Event()
+        stderr_eof = threading.Event()
         try:
+            spawned = spawn_args(launch["argv"], environment)
+            report["comspec"] = spawned.get("executable") or environment.get("COMSPEC")
             process = subprocess.Popen(
-                **spawn_args(launch["argv"], environment),
+                **spawned,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 env=environment,
                 shell=False,
                 start_new_session=True,
             )
-        except OSError:
+        except OSError as error:
+            report["exception"] = {
+                "type": type(error).__name__,
+                "errno": error.errno,
+                "winerror": getattr(error, "winerror", None),
+            }
             raise JudgeError("command_failed") from None
         limit = int(config["max_output_bytes"])
         collected = bytearray()
@@ -430,6 +582,21 @@ class ConventionJudge:
                     break
             closed.set()
 
+        def drain_stderr() -> None:
+            # A pipe this thread keeps reading cannot block the child, and only
+            # the tail is retained, so a flood cannot grow with its words.
+            try:
+                while True:
+                    chunk = process.stderr.read(READ_CHUNK)
+                    if not chunk:
+                        stderr_eof.set()
+                        break
+                    stderr.add(chunk)
+            except (OSError, ValueError):
+                pass
+            finally:
+                stderr_drained.set()
+
         def feed() -> None:
             try:
                 process.stdin.write(payload.encode("utf-8"))
@@ -445,6 +612,7 @@ class ConventionJudge:
 
         deadline = time.monotonic() + float(config["timeout_s"])
         threading.Thread(target=drain, daemon=True).start()
+        threading.Thread(target=drain_stderr, daemon=True).start()
         threading.Thread(target=feed, daemon=True).start()
         threading.Thread(target=supervise, daemon=True).start()
 
@@ -453,11 +621,15 @@ class ConventionJudge:
 
         try:
             if not closed.wait(timeout=remaining()):
+                report["stage"] = "deadline"
                 raise JudgeError("timeout")
             if overflow.is_set():
                 # The output is already rejected; its exit code cannot change that.
+                report["stage"] = "capture"
                 raise JudgeError("oversized_output")
             code = process.wait(timeout=remaining())
+            report["returncode"] = code
+            report["stage"] = "child_exit"
             if code in ADAPTER_CODES:
                 # The adapter reports capture problems with codes of its own,
                 # because it must refuse an oversized or undecodable answer
@@ -465,14 +637,95 @@ class ConventionJudge:
                 raise JudgeError(ADAPTER_CODES[code])
             if code != 0:
                 raise JudgeError("command_failed")
+            try:
+                return bytes(collected).decode("utf-8")
+            except UnicodeDecodeError:
+                # The stage is recorded before the tail is decided, so an answer
+                # that cannot be decoded still keeps what the child said.
+                report["stage"] = "decode"
+                raise JudgeError("invalid_response") from None
         except subprocess.TimeoutExpired:
+            report["stage"] = "deadline"
             raise JudgeError("timeout") from None
         finally:
             self._terminate(process)
+            # A clean run keeps no child output at all: only a failed one has
+            # last words worth reading.
+            clean = report["stage"] == "child_exit" and report["returncode"] == 0
+            if not clean:
+                # The child's exit does not mean its words are all read: one
+                # chunk may still be in flight, so the tail is taken only after
+                # the reader ended - bounded, because a descendant can hold the
+                # pipe open past the command itself.
+                # The wait's own answer decides: read after it and a reader
+                # that finished late would make an old tail look complete.
+                complete = stderr_drained.wait(timeout=STDERR_COLLECT_S)
+                stderr.write_into(report)
+                report["stderr_complete"] = complete and stderr_eof.is_set()
+
+    def _diagnose(
+        self,
+        root: Path | None,
+        started: float,
+        outcome: str,
+        error: str | None,
+        report: dict[str, Any],
+    ) -> None:
+        """Record one bounded run, atomically, and never raise out of it.
+
+        Losing a diagnostic is not allowed to become a second failure or to hide
+        the first one, so the whole operation is one best-effort boundary.
+        """
+        if root is None:
+            return
+        temporary: str | None = None
+        descriptor: int | None = None
         try:
-            return bytes(collected).decode("utf-8")
-        except UnicodeDecodeError:
-            raise JudgeError("invalid_response") from None
+            finished = time.time()
+            record = short_record({
+                "schema": 1,
+                "run": uuid.uuid4().hex,
+                "pid": os.getpid(),
+                "started": round(started, 3),
+                "finished": round(finished, 3),
+                "elapsed_ms": int(round((finished - started) * 1000)),
+                "outcome": outcome,
+                "error": error,
+                "stage": report.get("stage"),
+                "returncode": report.get("returncode"),
+                "exception": report.get("exception"),
+                "stderr_tail": report.get("stderr_tail"),
+                "stderr_truncated": bool(report.get("stderr_truncated")),
+                "stderr_complete": bool(report.get("stderr_complete", True)),
+                "comspec": report.get("comspec"),
+                "adapter": report.get("adapter"),
+                "interpreter": report.get("interpreter"),
+            })
+            text = bounded_record(record)
+            directory = root / DIAGNOSTIC_DIRECTORY
+            directory.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".judge-run-")
+            # The descriptor is closed only once the stream owns it, so a failed
+            # fdopen cannot leave a handle behind that blocks the unlink.
+            stream = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
+            descriptor = None
+            with stream:
+                stream.write(text + "\n")
+            os.replace(temporary, directory / DIAGNOSTIC_NAME)
+            temporary = None
+        except Exception:
+            pass
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     @staticmethod
     def _terminate(process: subprocess.Popen[bytes]) -> None:
