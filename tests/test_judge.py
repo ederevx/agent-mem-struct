@@ -603,13 +603,15 @@ class StopWiringTests(JudgeCase):
 class AdapterCaptureTests(unittest.TestCase):
     """The adapter refuses its own capture instead of repairing it."""
 
-    def run_adapter(self, command: list[str]) -> subprocess.CompletedProcess:
-        environment = dict(os.environ)
-        environment["AMS_JUDGE_LAUNCH"] = json.dumps(
-            {"command": command, "prompt": "stdin", "answer": "stdout"})
+    def run_adapter(self, command: list[str], answer: str = "stdout",
+                    environment: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["AMS_JUDGE_LAUNCH"] = json.dumps(
+            {"command": command, "prompt": "stdin", "answer": answer})
+        env.update(environment or {})
         return subprocess.run(
             [sys.executable, str(ADAPTER), "--agent", "claude"],
-            input=b'{"chain":"c"}', capture_output=True, env=environment, timeout=120,
+            input=b'{"chain":"c"}', capture_output=True, env=env, timeout=120,
         )
 
     def program(self, body: str) -> list[str]:
@@ -640,6 +642,21 @@ class AdapterCaptureTests(unittest.TestCase):
         for code in (1, 3, 4):
             failing = self.program(f"import sys\nsys.stdin.read()\nsys.exit({code})\n")
             self.assertEqual(self.run_adapter(failing).returncode, 1, code)
+
+    def test_scratch_lives_in_the_configured_root(self) -> None:
+        # The system temporary directory is excluded by convention, and an absent
+        # TMPDIR is what used to select it.
+        root = Path(tempfile.mkdtemp(prefix="adapter-root-", dir=SCRATCH_ROOT))
+        record = root / "answer-path.txt"
+        program = self.program(
+            "import pathlib, sys\n"
+            "sys.stdin.read()\n"
+            f"pathlib.Path({str(record)!r}).write_text(sys.argv[-1])\n"
+            "pathlib.Path(sys.argv[-1]).write_text('c\\npass\\n')\n")
+        completed = self.run_adapter(program, answer="file",
+                                     environment={"AMS_SCRATCH_ROOT": str(root)})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(Path(record.read_text()).resolve().is_relative_to(root.resolve()))
 
     @unittest.skipIf(
         os.name == "nt",
