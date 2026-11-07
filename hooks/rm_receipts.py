@@ -75,13 +75,10 @@ class ConventionGate:
         return self.dir() / f"{identity}.json"
 
     def reset_receipt(self, event: dict[str, Any]) -> None:
-        """A session starting over drops its read evidence but keeps its judge
-        watermark, which describes the transcript rather than the context."""
+        """A session starting over drops its read evidence."""
         if self.identity(event) is None:
             return
-        self._store_receipt(
-            event, {}, {}, tree=None, judge=self._judge(self.read_receipt(event))
-        )
+        self._store_receipt(event, {}, {}, tree=None)
 
     def prune_receipts(self) -> None:
         directory = self.dir()
@@ -343,7 +340,6 @@ class ConventionGate:
                 "root": os.path.normcase(str(shared.resolve(strict=False))),
                 "digest": digest,
             },
-            judge=self._judge(current),
         )
 
     def clear_reads(self, event: dict[str, Any]) -> None:
@@ -357,7 +353,6 @@ class ConventionGate:
             sources if isinstance(sources, dict) else {},
             {},
             tree=None,
-            judge=self._judge(current),
         )
 
     def _is_convention_source(self, resolved: Path) -> bool:
@@ -470,7 +465,6 @@ class ConventionGate:
                 sources if isinstance(sources, dict) else {},
                 reads,
                 tree=tree if isinstance(tree, dict) else None,
-                judge=self._judge(current),
             )
 
     def _digest(
@@ -544,67 +538,13 @@ class ConventionGate:
             sources,
             reads,
             tree=prior_tree if isinstance(prior_tree, dict) else None,
-            judge=self._judge(prior),
         )
-
-    def notification(self, event: dict[str, Any]) -> str:
-        """The judge notice waiting for this session's next prompt, or empty."""
-        judge = self.read_receipt(event).get("judge")
-        text = judge.get("notice") if isinstance(judge, dict) else None
-        return text if isinstance(text, str) else ""
-
-    def record_notice(self, event: dict[str, Any], text: str) -> None:
-        """Set or clear the judge notice the next prompt carries, keeping the rest."""
-        current = self.read_receipt(event)
-        judge = current.get("judge")
-        sources = current.get("sources")
-        reads = current.get("reads")
-        tree = current.get("tree")
-        if isinstance(judge, dict):
-            recorded = dict(judge)
-            if text:
-                recorded["notice"] = text
-            else:
-                recorded.pop("notice", None)
-        else:
-            if not text:
-                return
-            recorded = {"notice": text}
-        self._store_receipt(
-            event,
-            sources if isinstance(sources, dict) else {},
-            reads if isinstance(reads, dict) else {},
-            tree=tree if isinstance(tree, dict) else None,
-            judge=recorded,
-        )
-
-    def record_judge(self, event: dict[str, Any], judge: dict[str, Any] | None) -> None:
-        """Replace the judge state, preserving every other receipt field."""
-        current = self.read_receipt(event)
-        sources = current.get("sources")
-        reads = current.get("reads")
-        tree = current.get("tree")
-        self._store_receipt(
-            event,
-            sources if isinstance(sources, dict) else {},
-            reads if isinstance(reads, dict) else {},
-            tree=tree if isinstance(tree, dict) else None,
-            judge=judge,
-        )
-
-    @staticmethod
-    def _judge(current: dict[str, Any]) -> dict[str, Any] | None:
-        """The judge state a rewrite must carry forward, never one it invents."""
-        judge = current.get("judge")
-        return judge if isinstance(judge, dict) else None
 
     def payload(
         self,
         sources: dict[str, str],
         reads: dict[str, str],
         tree: dict[str, str] | None = None,
-        *,
-        judge: dict[str, Any] | None = None,
     ) -> str:
         """The exact text of one receipt, so its size is measured as written."""
         return json.dumps({
@@ -612,7 +552,6 @@ class ConventionGate:
             "sources": sources,
             "reads": reads,
             "tree": tree,
-            "judge": judge,
         }, separators=(",", ":")) + "\n"
 
     def _store_receipt(
@@ -621,8 +560,6 @@ class ConventionGate:
         sources: dict[str, str],
         reads: dict[str, str],
         tree: dict[str, str] | None = None,
-        *,
-        judge: dict[str, Any] | None = None,
     ) -> None:
         """Atomically write one session receipt; the only receipt writer."""
         directory = self.dir()
@@ -637,7 +574,7 @@ class ConventionGate:
         path = self.path(event)
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise OSError(f"unsafe convention receipt path: {path}")
-        text = self.payload(sources, reads, tree, judge=judge)
+        text = self.payload(sources, reads, tree)
         # The reader discards a larger receipt, so the writer refuses one here:
         # the previous receipt stays in place and every mutator is bound alike.
         if len(text.encode("utf-8")) > RECEIPT_MAX_BYTES:

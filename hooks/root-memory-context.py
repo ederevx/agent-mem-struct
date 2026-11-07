@@ -8,7 +8,6 @@ active, reads the hook event, and composes the worker modules:
 - rm_scan     — the tool-call mutation scanner behind the PreToolUse gate
 - rm_control  — root memory/rules/structure validation and context rendering
 - rm_receipts — convention acknowledgment receipts and the convention gate
-- rm_judge   — the opt-in bounded convention judge over settled turns
 - rm_checkpoints — pre-compaction continuity checkpoints
 
 This hook does not create a second memory authority. It reads the existing
@@ -60,7 +59,7 @@ SUPPORTED_EVENTS = {
     "PreToolUse",
     "PreMemory",
     "MemoryUpdate",
-    "Judge",
+    "ConventionReminder",
     "Stop",
 }
 
@@ -192,8 +191,8 @@ def main() -> int:
         return dispatcher.handle_memory_update(event, state)
     if event_name == "PreCompact":
         return dispatcher.handle_precompact(event, state)
-    if event_name == "Judge":
-        return dispatcher.handle_judge(event, state)
+    if event_name == "ConventionReminder":
+        return dispatcher.handle_convention_reminder(event, state)
     if event_name in {"Stop", "SubagentStop"}:
         dispatcher.handle_stop(event, state)
         return 0

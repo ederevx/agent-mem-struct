@@ -4,6 +4,46 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-07T02:20:00-05:00 - a conventions reminder is delivered before settlement
+
+Pi's settle boundary now drives a `ConventionReminder` event. The reminder is a
+`custom_message` the bridge proposes in the same `agent_before_settle` result as
+the claim that answers an ordinary-input generation, with `continue: true`, so
+the check runs before final settlement and a completion observer never sees a
+run end before the conventions check happened. This is a timing adjustment: the
+same reminder used to run after `agent_settled`, which can neither inject
+context nor answer, and a separate run started there would land after the
+daemon had already observed completion.
+
+Each ordinary input opens one generation on the session branch, recorded as a
+durable custom entry when a user message starts the run and when the owner
+steers or queues a prompt mid-run. A boundary answers the newest generation at
+most once: the claim and the reminder travel together, so the reminder's own
+response, prose or tool use, finds the generation claimed and settles normally.
+State is reconstructed from the active branch, so a restart keeps a consumed
+reminder, a fork answers its parent's unclaimed generation instead of repeating
+it, a session switch reads only its destination, and compaction neither creates
+nor consumes a generation. A failed or aborted run delivers nothing and claims
+nothing; a hook failure leaves one operational notice for the next turn rather
+than looping. The text names the gates and the one required `Convention audit:`
+line, repeating no convention content, and it blocks nothing.
+
+## 2026-11-07T01:14:00-05:00 - the bounded convention judge is removed
+
+The judge reviewed settled turns out of process: `hooks/rm_judge.py` with its
+adapter, process launcher, settings document, transcript window, and
+`hooks/judge-policy.json`; its `Judge` hook event; its review on
+Stop/SubagentStop; its baseline activation at session start; the `notice` it
+kept in the convention receipt; its `/judge-settings` Pi surface; and
+`tests/test_judge.py`. Nothing it produced could block a tool call or a turn,
+so enforcement is unchanged: the PreToolUse convention gate and the
+Stop/SubagentStop receipt gate remain the only blocking points, and a receipt
+now carries read evidence and the shared-tree digest alone. The
+Stop/SubagentStop handler timeout returns to the five-second default the other
+events use, because the review's own deadline no longer has to fit inside it.
+Settled turns are answered by the convention reminder described in the next
+entry.
+
 ## 2026-11-05T00:11:00-05:00 - the judge says why it failed, and can start a batch launcher without COMSPEC
 
 A failed review recorded only `command_failed`: the child's stderr went to
