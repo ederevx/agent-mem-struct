@@ -4,6 +4,21 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-07T01:14:00-05:00 - the bounded convention judge is removed
+
+The judge reviewed settled turns out of process: `hooks/rm_judge.py` with its
+adapter, process launcher, settings document, transcript window, and
+`hooks/judge-policy.json`; its `Judge` hook event; its review on
+Stop/SubagentStop; its baseline activation at session start; the `notice` it
+kept in the convention receipt; its `/judge-settings` Pi surface; and
+`tests/test_judge.py`. Nothing it produced could block a tool call or a turn,
+so enforcement is unchanged: the PreToolUse convention gate and the
+Stop/SubagentStop receipt gate remain the only blocking points, and a receipt
+now carries read evidence and the shared-tree digest alone. The
+Stop/SubagentStop handler timeout returns to the five-second default the other
+events use, because the review's own deadline no longer has to fit inside it.
+Settled turns are answered by a settle-time reminder instead.
+
 ## 2026-11-05T00:11:00-05:00 - the judge says why it failed, and can start a batch launcher without COMSPEC
 
 A failed review recorded only `command_failed`: the child's stderr went to

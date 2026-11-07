@@ -1970,10 +1970,8 @@ class InstallerTests(unittest.TestCase):
                 if str(hook.get("statusMessage", "")).startswith("agent-mem-struct root memory:")
             ]
             self.assertEqual(len(owned), 1, event)
-            # The judge runs from Stop and SubagentStop, so those handlers carry
-            # a bound above its own 60 s deadline; every other event keeps the
-            # short default.
-            expected = {"PreCompact": 60, "Stop": 90, "SubagentStop": 90}.get(event, 5)
+            # Only a checkpoint needs room beyond the short default.
+            expected = {"PreCompact": 60}.get(event, 5)
             self.assertEqual(owned[0]["timeout"], expected, event)
             if manager in {CODEX_MANAGER, CLAUDE_MANAGER}:
                 self.assertIn("--config-home", owned[0]["command"])
