@@ -59,6 +59,7 @@ SUPPORTED_EVENTS = {
     "PreToolUse",
     "PreMemory",
     "MemoryUpdate",
+    "ConventionReminder",
     "Stop",
 }
 
@@ -190,6 +191,8 @@ def main() -> int:
         return dispatcher.handle_memory_update(event, state)
     if event_name == "PreCompact":
         return dispatcher.handle_precompact(event, state)
+    if event_name == "ConventionReminder":
+        return dispatcher.handle_convention_reminder(event, state)
     if event_name in {"Stop", "SubagentStop"}:
         dispatcher.handle_stop(event, state)
         return 0

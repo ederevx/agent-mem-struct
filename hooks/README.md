@@ -238,8 +238,11 @@ The bridge maps Pi events onto the hook's event vocabulary:
   first turn of a session and the turn after any compaction, the compact
   per-turn reminder otherwise) telling the model to call `pre_memory`; the full
   root bundle is never injected. This is the only hook-context injectable
-  point Pi offers; `session_start` and `agent_settled` carry no context of
-  their own, so a bridge notice rides the next turn instead.
+  point Pi offers; `session_start` carries no context of its own, so a bridge
+  notice rides the next turn instead. The same event records the ordinary-input
+  generation the settle boundary answers: a user message that starts a run
+  opens one, and an `input` carrying a `streamingBehavior` opens one for a
+  prompt the owner queues mid-run, which starts no run of its own.
 - `session_compact` marks the session for continuity restoration and steers
   the same one-line pointer into the ongoing context immediately. A mid-run
   compaction (threshold, overflow retry) resumes without another
@@ -343,13 +346,21 @@ The bridge maps Pi events onto the hook's event vocabulary:
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an
   overflow recovery would wedge the session at its context ceiling).
+- `agent_before_settle` drives `ConventionReminder`: before a completed run may
+  settle, the hook returns the conventions reminder and the bridge proposes it
+  together with the claim that answers the current ordinary-input generation,
+  setting `continue: true`. The reminder is extension-authored user-role
+  context, so it cannot re-arm the generation it answers, and a later boundary
+  finds it claimed and settles normally. A failed or aborted run asks for
+  nothing and claims nothing; a hook failure leaves one operational notice for
+  the next turn instead of looping.
 
 Limitations: Pi exposes no subagent identity on events, so the bridge cannot
 mark a spawned child as read-only the way `SubagentStart` does for the other
 hosts — a Pi subagent session must report memory additions back to its parent
 (enforced only by instruction, not by the hook). Turn-end convention checking
-(`Stop`) has no Pi surface and is intentionally absent; the PreToolUse gate
-remains the enforcement point. A project-local `.pi/extensions/agent-mem-struct.ts`
+(`Stop`) has no Pi surface: the settle boundary leaves a reminder before a run
+ends but blocks nothing, so the PreToolUse gate remains the enforcement point. A project-local `.pi/extensions/agent-mem-struct.ts`
 shadows the managed copy; remove it if the managed bridge seems inert.
 
 Uninstall removes only the owned bridge and its state:

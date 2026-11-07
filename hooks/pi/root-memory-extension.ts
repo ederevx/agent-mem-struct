@@ -10,11 +10,16 @@
 //   session_before_compact -> PreCompact (cancel manual compaction on failure)
 //   session_compact      -> inject the memory/convention pointer immediately
 //                           (a mid-run compaction has no before_agent_start)
+//   input                -> a prompt queued during a run opens a new
+//                           conventions generation
+//   agent_before_settle  -> ConventionReminder; the claim and the reminder are
+//                           proposed together, then the run continues
 //
 // Pi's session_start and agent_settled events cannot inject or block anything,
 // so they carry no gate: turn-end enforcement relies on the PreToolUse gate.
-// All context reaches the model through the single injectable point,
-// before_agent_start.
+// The settle boundary is the one place this bridge can still reach the model
+// before completion, and it only adds a reminder - it never blocks.
+// All other context reaches the model through before_agent_start.
 //
 // Two deployment modes share this one implementation:
 //
@@ -36,6 +41,10 @@ import { Type } from "typebox";
 
 const PYTHON = "__AMS_PYTHON__";
 const HOOK = "__AMS_HOOK__";
+/** The convention entry types this bridge owns. The state entry never reaches
+ *  the model; the reminder entry is extension-authored user-role context. */
+const CONVENTION_STATE_TYPE = "agent-mem-struct-convention-state";
+const CONVENTION_REMINDER_TYPE = "agent-mem-struct-convention-reminder";
 const MEMORY_HOME = "__AMS_HOME__";
 const CONFIG_HOME = "__AMS_CONFIG_HOME__";
 const CANONICAL_ROOT = "__AMS_CANONICAL_ROOT__";
@@ -84,6 +93,13 @@ interface HookResult {
 	timedOut?: boolean;
 	stdout: string;
 	stderr: string;
+}
+
+/** Pi's conventions state: one ordinary-input generation and the boundary that
+ *  answered it. Both live in durable session entries, never in this process. */
+interface ConventionState {
+	generation: string | null;
+	claimed: string | null;
 }
 
 /** The one `rm_tree.py` invocation form the PreToolUse gate credits
@@ -214,6 +230,7 @@ export class RootMemoryBridge {
 	private turnCounter = 0;
 	private turnId = "bootstrap";
 	private pendingNotice = "";
+	private api: any = undefined;
 	/** The tail of every hook task, so receipt-changing calls can wait it out. */
 	private hookQueue: Promise<void> = Promise.resolve();
 
@@ -221,11 +238,13 @@ export class RootMemoryBridge {
 
 	/** Registers every Pi lifecycle handler this bridge owns. */
 	register(pi: any): void {
+		this.api = pi;
 		this.registerPreMemoryTool(pi);
 		this.registerMemoryUpdateTool(pi);
 		this.registerListerTool(pi);
-		pi.on("session_start", async (_event: any, ctx: any) => {
+		pi.on("session_start", async (event: any, ctx: any) => {
 			const label = this.sessionId(ctx);
+			const fork = event?.reason === "fork";
 			// The identity transition is a queued receipt operation like any other:
 			// enqueued rather than awaited, it cannot run between a request that
 			// already captured the old session and the reply that request records.
@@ -235,13 +254,16 @@ export class RootMemoryBridge {
 				// pointer and any continuity checkpoint so a stale runtime cannot
 				// outlive the documents it points at.
 				this.firstTurn = true;
+				if (fork) this.suppressInheritedConventions(ctx);
 			});
 		});
 
-		pi.on("before_agent_start", async (event: any) => this.onBeforeAgentStart(event));
+		pi.on("input", async (event: any, ctx: any) => this.onInput(event, ctx));
+		pi.on("before_agent_start", async (event: any, ctx: any) => this.onBeforeAgentStart(event, ctx));
 		pi.on("tool_call", async (event: any, ctx: any) => this.onToolCall(event, ctx));
 		pi.on("session_compact", async () => this.onSessionCompact(pi));
 		pi.on("session_before_compact", async (event: any) => this.onBeforeCompact(event));
+		pi.on("agent_before_settle", async (event: any, ctx: any) => this.onBeforeSettle(event, ctx));
 	}
 
 	/** Registers `pre_memory`, the one call that pulls the shared worktree,
@@ -582,10 +604,13 @@ export class RootMemoryBridge {
 	}
 
 	/** The single injectable point: the full bundle on a session's first turn
-	 *  or after a compaction, the turn reminder otherwise. */
-	private async onBeforeAgentStart(event: any): Promise<unknown> {
+	 *  or after a compaction, the turn reminder otherwise. A run started by a
+	 *  user message also opens the conventions generation the settle boundary
+	 *  answers; compaction and custom starts never do. */
+	private async onBeforeAgentStart(event: any, ctx: any): Promise<unknown> {
 		this.turnCounter += 1;
 		this.turnId = `turn-${Date.now()}-${this.turnCounter}`;
+		if (event?.messageType === "user") this.recordOrdinaryInput(ctx);
 		const eventName = this.firstTurn || this.afterCompaction
 			? "SessionStart"
 			: "UserPromptSubmit";
@@ -718,6 +743,123 @@ export class RootMemoryBridge {
 				"next action from the transcript or user.";
 		}
 		return undefined;
+	}
+
+	/** A settle asks for the conventions reminder, unless the run failed, no
+	 *  ordinary input is unclaimed, or the hook cannot supply the text. The claim
+	 *  and the reminder travel in one boundary proposal, so the reminder's own
+	 *  response finds its generation already claimed and cannot repeat. */
+	private async onBeforeSettle(event: any, ctx: any): Promise<unknown> {
+		return this.serialize(async () => {
+			// A hard exit is not a place to reopen work the owner just ended.
+			if (event?.outcome !== "completed") return undefined;
+			const state = this.conventionState(ctx);
+			if (state.generation === null || state.claimed === state.generation) {
+				return undefined;
+			}
+			const reminder = await this.conventionReminder();
+			if (reminder === null) return undefined;
+			return {
+				entries: [
+					...(Array.isArray(event.entries) ? event.entries : []),
+					{
+						type: "custom",
+						customType: CONVENTION_STATE_TYPE,
+						data: {
+							version: 1,
+							kind: "reminder-claimed",
+							generation: state.generation,
+						},
+					},
+					{
+						type: "custom_message",
+						customType: CONVENTION_REMINDER_TYPE,
+						content: reminder,
+						display: false,
+					},
+				],
+				continue: true,
+			};
+		});
+	}
+
+	/** A prompt queued during a run starts no run of its own, so
+	 *  before_agent_start never sees it; the input event is the verified ingress
+	 *  for owner input that arrives mid-run. A prompt that starts a run, and any
+	 *  message another extension sends, is left to the run-start rule. */
+	private onInput(event: any, ctx: any): void {
+		if (!event?.streamingBehavior) return;
+		if (event.source === "extension") return;
+		this.recordOrdinaryInput(ctx);
+	}
+
+	/** The conventions state of the active branch: the newest ordinary-input
+	 *  generation and the generation a boundary already answered. Rebuilt from
+	 *  session entries, so a restart preserves a consumed reminder and an
+	 *  abandoned branch never arms this one. */
+	private conventionState(ctx: any): ConventionState {
+		const state: ConventionState = { generation: null, claimed: null };
+		for (const entry of ctx?.sessionManager?.getBranch?.() ?? []) {
+			if (entry?.type !== "custom" || entry.customType !== CONVENTION_STATE_TYPE) continue;
+			const data = entry.data as any;
+			if (!data || data.version !== 1 || typeof data.generation !== "string") continue;
+			if (data.kind === "ordinary-input") state.generation = data.generation;
+			if (data.kind === "reminder-claimed") state.claimed = data.generation;
+		}
+		return state;
+	}
+
+	/** Every observed ordinary input opens a new generation; compaction never
+	 *  does, and claiming a generation never re-arms it. */
+	private recordOrdinaryInput(ctx: any): void {
+		try {
+			this.api.appendEntry(CONVENTION_STATE_TYPE, {
+				version: 1,
+				kind: "ordinary-input",
+				generation: randomUUID(),
+			});
+		} catch (error) {
+			this.pendingNotice =
+				"agent-mem-struct: the conventions reminder could not be armed: " +
+				`${error instanceof Error ? error.message : String(error)}`;
+		}
+	}
+
+	/** A fork inherits the parent's branch, including a generation its parent had
+	 *  not answered. The child claims it, so only the child's own input can arm a
+	 *  reminder there. */
+	private suppressInheritedConventions(ctx: any): void {
+		const state = this.conventionState(ctx);
+		if (state.generation === null || state.claimed === state.generation) return;
+		try {
+			this.api.appendEntry(CONVENTION_STATE_TYPE, {
+				version: 1,
+				kind: "reminder-claimed",
+				generation: state.generation,
+			});
+		} catch (error) {
+			this.pendingNotice =
+				"agent-mem-struct: the conventions reminder could not be suppressed " +
+				`for this fork: ${error instanceof Error ? error.message : String(error)}`;
+		}
+	}
+
+	/** The hook's reminder text, or null after a notice the next turn carries. */
+	private async conventionReminder(): Promise<string | null> {
+		const result = await this.callHook("ConventionReminder", {}, DEFAULT_TIMEOUT_MS);
+		if (result.ok) {
+			try {
+				const text = JSON.parse(result.stdout)?.reminder;
+				if (typeof text === "string" && text.trim()) return text;
+			} catch {
+				// a reply without reminder text is the failure case below
+			}
+		}
+		this.pendingNotice =
+			"agent-mem-struct: the conventions reminder could not be loaded" +
+			`${result.timedOut ? " (the hook timed out)" : ""}; call ` +
+			"`pre_memory` and read its sources before finishing.";
+		return null;
 	}
 
 	/** The single writer queue: every hook call runs alone, in arrival order, so

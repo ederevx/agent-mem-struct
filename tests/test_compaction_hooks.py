@@ -245,6 +245,38 @@ class CompactionHookTests(unittest.TestCase):
         event.update({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
         return event
 
+    def test_the_convention_reminder_event_returns_the_reminder_the_bridge_injects(
+        self,
+    ) -> None:
+        # Pi's settle boundary is the only point that can still reach the model,
+        # so the hook supplies text there instead of leaving a receipt behind.
+        self.assertEqual(
+            invoke("codex", self.home, self.event("SessionStart")).returncode, 0
+        )
+        receipts = list(
+            (self.home / ".agent-mem-struct" / "convention-receipts").glob("*.json")
+        )
+        self.assertEqual(len(receipts), 1)
+        before = receipts[0].read_bytes()
+
+        settled = invoke("codex", self.home, self.event("ConventionReminder"))
+        self.assertEqual(settled.returncode, 0)
+        reminder = json.loads(settled.stdout)["reminder"]
+        self.assertIn("call `pre_memory`", reminder)
+        self.assertIn("`Convention audit:` line", reminder)
+        self.assertIn("`Consultant verdict:` line", reminder)
+        # The reminder names gates, never convention content, and it neither
+        # judges nor blocks: Pi alone decides whether the run continues.
+        self.assertNotIn("decision", settled.stdout)
+        self.assertNotIn("hookSpecificOutput", settled.stdout)
+        self.assertEqual(receipts[0].read_bytes(), before)
+
+        # The next prompt carries no reminder: the boundary already delivered it.
+        prompt = json.loads(
+            invoke("codex", self.home, self.event("UserPromptSubmit")).stdout
+        )["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("`Convention audit:`", prompt)
+
     def test_declared_external_shared_directory_is_loaded_for_both_agents(self) -> None:
         self.assertFalse((self.home / "memory" / "shared").exists())
         for agent in ("claude", "codex"):
