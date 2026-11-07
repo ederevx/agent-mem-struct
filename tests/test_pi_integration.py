@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -961,6 +962,64 @@ class PiHookTests(unittest.TestCase):
         self.assertNotIn("multiple branches", result.stdout)
         self.assertIn("Pulled rule.", (shared / "MEMORY.md").read_text(encoding="utf-8"))
         self.assertFalse((shared / "extra.md").exists())
+
+    def test_pre_memory_pull_survives_a_raced_fetch_head(self) -> None:
+        origin = self.temp / "origin.git"
+        shared = make_git_shared(origin, self.temp / "git shared")
+        home, _ = make_home(self.temp / "raced-home", shared)
+        writer = self.temp / "origin.git-seed"
+        with open(writer / "MEMORY.md", "a", encoding="utf-8") as handle:
+            handle.write("- Pulled rule.\n")
+        git_run("add", "MEMORY.md", cwd=writer)
+        git_run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "advance", cwd=writer)
+        self.assertEqual(git_run("push", "origin", "main", cwd=writer).returncode, 0)
+        expected = git_run("rev-parse", "HEAD", cwd=writer).stdout.strip()
+
+        # A second session's fetch lands between this one's fetch and its merge,
+        # leaving two for-merge records in the shared FETCH_HEAD.
+        fetch_head = shared / ".git" / "FETCH_HEAD"
+        marker = self.temp / "fetch-head-injected"
+        record = f"{expected}\t\traced\n".encode("ascii")
+        helper = self.temp / "append-fetch-head.py"
+        helper.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "updates = [line.split() for line in sys.stdin]\n"
+            "if sys.argv[1] == 'committed' and any(\n"
+            "    len(fields) == 3 and fields[2] == 'refs/remotes/origin/main'\n"
+            "    for fields in updates\n"
+            "):\n"
+            f"    with Path({str(fetch_head)!r}).open('ab') as handle:\n"
+            f"        handle.write({record!r} * 2)\n"
+            f"    Path({str(marker)!r}).write_text('injected', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        hooks = shared / ".git" / "hooks"
+        configured = git_run("config", "--local", "core.hooksPath", str(hooks), cwd=shared)
+        self.assertEqual(configured.returncode, 0, configured.stderr)
+        hook = hooks / "reference-transaction"
+        command = " ".join(
+            shlex.quote(value.replace("\\", "/"))
+            for value in (sys.executable, str(helper))
+        )
+        with hook.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(f'#!/bin/sh\nexec {command} "$@"\n')
+        hook.chmod(hook.stat().st_mode | 0o111)
+
+        result = invoke_pi(home, {
+            "hook_event_name": "PreMemory",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        })
+        self.assertTrue(marker.exists(), result.stdout + result.stderr)
+        heads = fetch_head.read_text(encoding="utf-8").splitlines()
+        self.assertGreaterEqual(sum("\t\t" in line for line in heads), 2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("shared synchronization failed", result.stdout)
+        self.assertEqual(git_run("rev-parse", "HEAD", cwd=shared).stdout.strip(), expected)
+        self.assertIn("Pulled rule.", (shared / "MEMORY.md").read_text(encoding="utf-8"))
+        for name in ("MERGE_HEAD", "MERGE_MSG", "MERGE_MODE"):
+            self.assertFalse((shared / ".git" / name).exists(), name)
 
     def test_config_is_active_matches_pi_environment(self) -> None:
         spec = importlib.util.spec_from_file_location("pi_hook_module", HOOK)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -146,15 +147,24 @@ class EventDispatcher:
     def pull_shared(self, state: RootState) -> tuple[bool, str]:
         """Fast-forward the declared shared worktree; report verified success.
 
-        The upstream is named explicitly, so a `branch.<name>.merge` the
-        environment adds cannot turn the pull into a multi-head one and make
-        `--ff-only` refuse.
+        One upstream ref is fetched into its own tracking ref and that ref is
+        merged, so nothing reads the shared FETCH_HEAD: a session fetching the
+        same worktree at the same moment appends its own for-merge records to
+        that file, and merging them would refuse a multi-head fast-forward.
         """
-        worktree = GitWorktree(state.shared_resolved)
-        target = worktree.upstream()
-        completed = worktree.run(
-            "pull", "--ff-only", *(target or ()), budget=GIT_PULL_TIMEOUT
+        deadline = time.monotonic() + GIT_PULL_TIMEOUT
+        worktree = GitWorktree(
+            state.shared_resolved, window=lambda: deadline - time.monotonic()
         )
+        target = worktree.upstream()
+        tracking = worktree.upstream_ref()
+        if target is None or tracking is None:
+            return False, "the shared worktree has no single resolvable upstream"
+        completed = worktree.run(
+            "fetch", "--no-write-fetch-head", target[0], f"+{target[1]}:{tracking}"
+        )
+        if completed.returncode == 0:
+            completed = worktree.run("merge", "--ff-only", tracking)
         if completed.returncode == 0:
             return True, ""
         return False, worktree.detail(completed)
