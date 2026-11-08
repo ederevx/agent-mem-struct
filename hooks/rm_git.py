@@ -176,3 +176,19 @@ class GitWorktree:
                 return None
             values.append(lines[0])
         return values[0], values[1]
+
+    def upstream_ref(self, budget: float | None = None) -> str | None:
+        """The full local ref Git maps the current branch's upstream to.
+
+        Git owns the mapping, so a renamed remote namespace or a custom fetch
+        refspec needs no second implementation here. None when the upstream is
+        unresolvable or does not name exactly one ref.
+        """
+        result = self.run(
+            "rev-parse", "--symbolic-full-name", "@{u}",
+            budget=self.limit(budget, QUERY_BUDGET),
+        )
+        lines = result.stdout.splitlines()
+        if result.returncode != 0 or len(lines) != 1 or not lines[0].startswith("refs/"):
+            return None
+        return lines[0]
