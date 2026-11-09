@@ -72,11 +72,13 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
 9. **Keep this checkout current.** This is convention, not a hook-enforced
    gate. Confirm this checkout sits on the latest `v1.x` tag reachable from
    `origin/main`, and check for stale branches against `origin/main`; carry
-   anything with unmerged value into a PR, then drop the stale branch. Never
-   push to or merge into `main` yourself: open a PR and let the user land it.
-   A change is done only after the user merges it, the next `v1.x` tag is cut
-   on the merged `main` HEAD, and the actual host(s) are reinstalled from that
-   tag; an isolated test checkout never counts on its own.
+   anything with unmerged value into the released line, then drop the stale
+   branch. Land a change yourself, in this order: commit on `main`, cut the
+   next `v1.x` tag, review the result comprehensively, install it, and clean
+   up the byproducts. No pull request, and never ask the user to merge or to
+   land anything. A change is done only after the tag is cut on that HEAD and
+   the actual host(s) are reinstalled from the tag; an isolated test checkout
+   never counts on its own.
 
 ---
 

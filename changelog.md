@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-08T20:22:00-05:00 - the owner lands changes without pull requests
+
+Owner directive: no pull request and no merge permission ask stands between a
+change and the released line. Step 9 now has the agent land its own work -
+commit on `main`, cut the next `v1.x` tag, review the result comprehensively,
+install it, clean up the byproducts - and the shared half's landing convention
+drops the exception that routed this repository's own changes through a pull
+request. The completion gate is unchanged: a change is done only once the tag
+is cut on that HEAD and the host is reinstalled from the tag.
+
 ## 2026-11-07T02:20:00-05:00 - a conventions reminder is delivered before settlement
 
 Pi's settle boundary now drives a `ConventionReminder` event. The reminder is a
