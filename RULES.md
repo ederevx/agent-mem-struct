@@ -75,10 +75,11 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
    anything with unmerged value into the released line, then drop the stale
    branch. Land a change yourself, in this order: commit on `main`, cut the
    next `v1.x` tag, review the result comprehensively, install it, and clean
-   up the byproducts. No pull request, and never ask the user to merge or to
-   land anything. A change is done only after the tag is cut on that HEAD and
-   the actual host(s) are reinstalled from the tag; an isolated test checkout
-   never counts on its own.
+   up the byproducts. A review finding lands as a further commit and the next
+   tag; never move a published tag. No pull request, and never ask the user to
+   merge or to land anything. A change is done only after the tag is cut on
+   that HEAD and the actual host(s) are reinstalled from the tag; an isolated
+   test checkout never counts on its own.
 
 ---
 

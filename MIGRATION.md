@@ -27,6 +27,21 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-11-08T20:22:00-05:00 — land changes without a pull request
+
+No memory-tree content migration is required: this entry changes only
+`RULES.md` rule 9 and supersedes the pull-request landing in the
+2026-10-15T23:26:00-04:00 entry below.
+
+1. Read `RULES.md` rule 9 and confirm it matches the canonical text. No memory
+   file, log, node, attachment, or convention is rewritten.
+2. Close any pull request the agent opened under the former rule after carrying
+   its value onto `main`; never ask the user to merge it.
+3. Reinstall the applicable integration from the release tag, then confirm the
+   managed root `RULES.md` and `STRUCTURE.md` match canonical.
+4. Advance only this agent's root `Structure-Version:` marker to
+   `2026-11-08T20:22:00-05:00`.
+
 ## 2026-10-29T01:53:03-04:00 — sign memory entries with an available session id
 
 No bulk memory-tree migration is required: signatures apply to entries written
