@@ -12,7 +12,11 @@ commit on `main`, cut the next `v1.x` tag, review the result comprehensively,
 install it, clean up the byproducts - and the shared half's landing convention
 drops the exception that routed this repository's own changes through a pull
 request. The completion gate is unchanged: a change is done only once the tag
-is cut on that HEAD and the host is reinstalled from the tag.
+is cut on that HEAD and the host is reinstalled from the tag. A review finding
+on a cut tag lands as a further commit and the next tag, and a published tag is
+never moved. The shared half's tag-until-verified override is scoped to
+experimental fixes, so it no longer reads as forbidding the commit-then-review
+order.
 
 ## 2026-11-07T02:20:00-05:00 - a conventions reminder is delivered before settlement
 
