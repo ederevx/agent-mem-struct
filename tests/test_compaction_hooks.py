@@ -263,10 +263,11 @@ class CompactionHookTests(unittest.TestCase):
         self.assertEqual(settled.returncode, 0)
         reminder = json.loads(settled.stdout)["reminder"]
         self.assertIn("call `pre_memory`", reminder)
-        # The settled conclusion is stated before the check and repeated after
-        # it, so the verdict reads as a summary under the task's own result.
         self.assertIn("state the conclusion of the task as it settled", reminder)
         self.assertIn("Repeat that conclusion after the check", reminder)
+        self.assertIn(
+            "summarize the convention-compliance verdict beneath it", reminder
+        )
         self.assertIn("`Convention audit:` line", reminder)
         self.assertIn("`Consultant verdict:` line", reminder)
         # The reminder names gates, never convention content, and it neither
