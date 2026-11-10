@@ -2502,6 +2502,15 @@ class MemoryUpdateCommitTests(unittest.TestCase):
                                side_effect=subprocess.TimeoutExpired("git", 5)):
             self.assertFalse(worktree.has_sync_target())
 
+    def test_git_answers_are_decoded_as_utf8_whatever_the_locale(self) -> None:
+        module = load_hook_module("rm_git")
+        worktree = module.GitWorktree(self.shared)
+        answered = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(module.subprocess, "run", return_value=answered) as run:
+            worktree.head()
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "surrogateescape")
+
     def test_shared_write_pushes_despite_an_environment_merge_ref(self) -> None:
         # A second merge ref stops a bare `git push` even when it names no
         # fetched branch, because push counts every configured merge value.
@@ -2699,6 +2708,35 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.origin).stdout
         self.assertIn("nodes/note.md", files)
         self.assertIn("nodes/log/note.md", files)
+
+    def test_a_hand_edit_keeps_non_ascii_displaced_text_byte_exact(self) -> None:
+        displaced = "earlier \u2014 caf\u00e9 \u6f22\u5b57"
+        self.create_note(body=f"alpha\n{displaced}\ngamma")
+        self.leaf.write_text("alpha\ngamma\n", encoding="utf-8")
+        message = "commit: hand edit\n\nMoves the displaced line into the log."
+        result = self.call(operation="commit", commit_message=message)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("verified: paired log carries the appended lines", self.text(result))
+        logged = self.log.read_bytes()
+        self.assertIn(displaced.encode("utf-8"), logged)
+        published = subprocess.run(
+            ["git", "show", "HEAD:nodes/log/note.md"], cwd=str(self.shared),
+            capture_output=True, check=False,
+        )
+        self.assertEqual(published.stdout.replace(b"\r\n", b"\n"),
+                         logged.replace(b"\r\n", b"\n"))
+
+    def test_reordered_lines_displace_nothing_of_their_own(self) -> None:
+        self.create_note(body="alpha\nbeta\ngamma")
+        before = self.log.read_bytes()
+        self.leaf.write_text(
+            "beta\ngamma\nalpha\ninserted\nbeta\nother\ngamma\n", encoding="utf-8"
+        )
+        result = self.call(
+            operation="commit", commit_message="commit: reorder\n\nKeeps every line."
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.log.read_bytes(), before)
 
     def test_a_clean_set_reports_nothing_to_commit(self) -> None:
         self.create_note()

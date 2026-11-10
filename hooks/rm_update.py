@@ -796,7 +796,11 @@ class MemoryUpdater:
         return changed
 
     def superseded_text(self, previous: str, body: str) -> str:
-        """The lines of `previous` that `body` drops, grouped by section."""
+        """The lines of `previous` that `body` drops, grouped by section.
+
+        Only a line that is gone counts as displaced: the alignment leaves a
+        line unmatched when the same text reappears elsewhere in `body`.
+        """
         old, new = previous.split("\n"), body.split("\n")
         matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
         displaced = set(range(len(old)))
@@ -807,7 +811,7 @@ class MemoryUpdater:
         for index, line in enumerate(old):
             if line.startswith("## "):
                 heading = line[3:].strip()
-            elif index in displaced:
+            elif index in displaced and line.strip() and line not in new:
                 sections.setdefault(heading, []).append(line)
         parts: list[str] = []
         for heading, lines in sections.items():

@@ -68,6 +68,8 @@ class GitWorktree:
                 input=input_text,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="surrogateescape",
                 check=False,
                 env=environment,
                 timeout=limit,

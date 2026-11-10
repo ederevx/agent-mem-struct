@@ -4,6 +4,20 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-10T16:45:00-05:00 - git answers are read as UTF-8, and only a vanished line is displaced
+
+The hooks read every memory file as UTF-8 but left git's own answers to the
+host locale, so on a non-UTF-8 host a leaf's non-ASCII text reached the paired
+log double-encoded, and the attestation compared that mangled blob against the
+text it had just appended: a publish reported `unverified-log` after it was
+already pushed. `GitWorktree.run` now decodes as UTF-8 with surrogate escaping,
+which keeps undecodable bytes reversible instead of replacing them.
+
+A displacement is now a line that is gone: the line-level alignment leaves a
+line unmatched when the same text reappears further down, so a plain append
+could log a fragment of text the leaf still carried. Unmatched lines that still
+appear in the new body, and blank lines, are no longer written.
+
 ## 2026-11-08T20:22:00-05:00 - the owner lands changes without pull requests
 
 Owner directive: no pull request and no merge permission ask stands between a
