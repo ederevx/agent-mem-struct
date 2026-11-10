@@ -353,7 +353,9 @@ The bridge maps Pi events onto the hook's event vocabulary:
   context, so it cannot re-arm the generation it answers, and a later boundary
   finds it claimed and settles normally. A failed or aborted run asks for
   nothing and claims nothing; a hook failure leaves one operational notice for
-  the next turn instead of looping.
+  the next turn instead of looping. The reminder asks for the task's settled
+  conclusion before the check and again after it, with the convention verdict
+  summarized beneath the repeated conclusion.
 
 Limitations: Pi exposes no subagent identity on events, so the bridge cannot
 mark a spawned child as read-only the way `SubagentStart` does for the other

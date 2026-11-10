@@ -4,6 +4,15 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-10T18:15:15-05:00 - the conventions check repeats the conclusion it closed
+
+The settle-boundary reminder now asks for the task's settled conclusion before
+the conventions check and again after it, with the convention-compliance
+verdict summarized beneath the repeated conclusion. A check that only reports
+its own findings leaves the reader without the result it was run against, and
+the two halves belong in that order: conclusion, then the verdict on it. The
+text still names gates and carries no convention content.
+
 ## 2026-11-10T16:45:00-05:00 - git answers are read as UTF-8, and only a vanished line is displaced
 
 The hooks read every memory file as UTF-8 but left git's own answers to the
