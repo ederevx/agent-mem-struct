@@ -371,7 +371,7 @@ class ConventionGate:
 
     @staticmethod
     def _source_digest(path: Path) -> str | None:
-        """The sha256 of one source's bytes, or None when unreadable."""
+        """The sha256 of one source's text, or None when unreadable."""
         text, error = read_text(path)
         if error or text is None:
             return None

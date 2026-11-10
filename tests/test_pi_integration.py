@@ -76,6 +76,11 @@ def git_run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def source_digest(path: Path) -> str:
+    """The receipt digest of one convention source: the text the hook reads."""
+    return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+
+
 def load_hook_module(name: str):
     """Import one hook module directly for a deterministic unit-level call."""
     hooks = str(REPO / "hooks")
@@ -823,9 +828,9 @@ class PiHookTests(unittest.TestCase):
 
         receipts = list((home / ".agent-mem-struct" / "convention-receipts").glob("*.json"))
         self.assertEqual(len(receipts), 1)
-        # The receipt must hash the pulled bytes, not the pre-pull snapshot.
+        # The receipt must hash the pulled text, not the pre-pull snapshot.
         recorded = json.loads(receipts[0].read_text(encoding="utf-8"))["sources"]
-        pulled = hashlib.sha256((shared / "MEMORY.md").read_bytes()).hexdigest()
+        pulled = source_digest(shared / "MEMORY.md")
         self.assertEqual(recorded[os.path.normcase(str(shared / "MEMORY.md"))], pulled)
         # The receipt is session-scoped: a later turn reuses the same one.
         again = invoke_pi(home, {
@@ -866,7 +871,7 @@ class PiHookTests(unittest.TestCase):
         receipts = list((home / ".agent-mem-struct" / "convention-receipts").glob("*.json"))
         self.assertEqual(len(receipts), 1)
         recorded = json.loads(receipts[0].read_text(encoding="utf-8"))["sources"]
-        local = hashlib.sha256((shared / "MEMORY.md").read_bytes()).hexdigest()
+        local = source_digest(shared / "MEMORY.md")
         self.assertEqual(recorded[os.path.normcase(str(shared / "MEMORY.md"))], local)
         # A divergent shared history still blocks the mutation itself.
         update = invoke_pi(home, {

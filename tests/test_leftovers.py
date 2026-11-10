@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,20 @@ def make_repo(path: Path) -> Path:
     git("add", "f.txt", cwd=path)
     git("commit", "-m", "seed", cwd=path)
     return path
+
+
+def ledger_paths(ledger: Path) -> list[str]:
+    """The repository paths a ledger file records."""
+    return [entry["path"] for entry in json.loads(ledger.read_text(encoding="utf-8"))]
+
+
+def remove_tree(path: Path) -> None:
+    """Delete a scratch tree, clearing the read-only bits Git writes on Windows."""
+    if os.name == "nt":
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                os.chmod(Path(root) / name, stat.S_IWRITE)
+    shutil.rmtree(path)
 
 
 def add_origin(repo: Path, origin: Path) -> None:
@@ -182,8 +197,9 @@ class RepoLedgerUnitTests(unittest.TestCase):
         repo = self.temp / "repo"
         repo.mkdir()
         ledger.record(repo)
-        self.assertEqual(oct(ledger.path().stat().st_mode & 0o777), "0o600")
-        self.assertEqual(oct(ledger.path().parent.stat().st_mode & 0o777), "0o700")
+        if os.name != "nt":
+            self.assertEqual(oct(ledger.path().stat().st_mode & 0o777), "0o600")
+            self.assertEqual(oct(ledger.path().parent.stat().st_mode & 0o777), "0o700")
         self.assertEqual(ledger.path().name, LEDGER_NAME)
 
 
@@ -225,7 +241,7 @@ class LeftoverReportUnitTests(unittest.TestCase):
     def test_a_deleted_repo_is_pruned_silently(self) -> None:
         ledger = RepoLedger(self.state)
         ledger.record(self.repo)
-        shutil.rmtree(self.repo)
+        remove_tree(self.repo)
         self.assertEqual(self.report().text(ledger), "")
         self.assertEqual(ledger.entries(), [])
 
@@ -285,7 +301,7 @@ class LeftoverHookTests(unittest.TestCase):
     def test_a_pretool_git_commit_records_the_repository(self) -> None:
         result = self.record_commit()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(str(self.repo.resolve()), self.ledger.read_text(encoding="utf-8"))
+        self.assertIn(str(self.repo.resolve()), ledger_paths(self.ledger))
 
     def test_a_chained_commit_records_the_repository(self) -> None:
         open_gate("codex", self.home, self.shared, environment=self.env)
@@ -299,7 +315,7 @@ class LeftoverHookTests(unittest.TestCase):
             },
         }, environment=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(str(self.repo.resolve()), self.ledger.read_text(encoding="utf-8"))
+        self.assertIn(str(self.repo.resolve()), ledger_paths(self.ledger))
 
     def test_an_unpushed_commit_is_reported_at_session_start(self) -> None:
         self.record_commit()
@@ -314,7 +330,7 @@ class LeftoverHookTests(unittest.TestCase):
         add_origin(self.repo, self.temp / "origin.git")
         context = self.session_start()
         self.assertNotIn("LEFTOVERS", context)
-        self.assertNotIn(str(self.repo.resolve()), self.ledger.read_text(encoding="utf-8"))
+        self.assertNotIn(str(self.repo.resolve()), ledger_paths(self.ledger))
 
     def test_a_compact_session_start_has_no_report(self) -> None:
         self.record_commit()
