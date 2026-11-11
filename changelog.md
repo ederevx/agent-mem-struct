@@ -10,8 +10,8 @@ The second check now names the completed task beside the memory draft, because
 a check run only against the draft's prose reads none of the files, refs and
 messages the task actually produced. The reminder's steps are also asserted in
 order rather than merely present, since a reminder that lists the steps out of
-order names no order at all, and the entry below carries the moment it was
-released instead of a later guess at it.
+order names no order at all, and the entry below uses the implementation
+commit's timestamp instead of a later guess at it.
 
 ## 2026-11-10T19:27:31-05:00 - the reminder orders the work around the conventions check
 

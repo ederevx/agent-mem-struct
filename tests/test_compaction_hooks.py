@@ -262,8 +262,6 @@ class CompactionHookTests(unittest.TestCase):
         settled = invoke("codex", self.home, self.event("ConventionReminder"))
         self.assertEqual(settled.returncode, 0)
         reminder = json.loads(settled.stdout)["reminder"]
-        # Each step must be present and in this order, not merely present:
-        # a reminder that names the steps out of order names nothing.
         ordered_steps = (
             "call `pre_memory`",
             "then prepare, then execute, then draft the memory update",
