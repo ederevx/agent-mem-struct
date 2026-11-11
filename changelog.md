@@ -4,6 +4,17 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-11T00:20:00-05:00 - the reminder orders the work around the conventions check
+
+The settle-boundary reminder now describes the shape of a task instead of only
+its ending: the conventions check first, then preparation and execution, then
+the memory update drafted and the check run again against that draft, and only
+then the memory update written and the run settled with the task's settled
+conclusion above the convention-compliance verdict. A check that runs only at
+the boundary catches a convention missed the whole way through, and a memory
+update written before it is checked has already landed. The text still names
+gates and carries no convention content.
+
 ## 2026-11-10T18:15:15-05:00 - the conventions check repeats the conclusion it closed
 
 The settle-boundary reminder now asks for the task's settled conclusion before

@@ -263,10 +263,14 @@ class CompactionHookTests(unittest.TestCase):
         self.assertEqual(settled.returncode, 0)
         reminder = json.loads(settled.stdout)["reminder"]
         self.assertIn("call `pre_memory`", reminder)
-        self.assertIn("state the conclusion of the task as it settled", reminder)
-        self.assertIn("Repeat that conclusion after the check", reminder)
+        self.assertIn("then prepare, then execute, then draft the memory update", reminder)
         self.assertIn(
-            "summarize the convention-compliance verdict beneath it", reminder
+            "Run the conventions check again against that draft", reminder
+        )
+        self.assertIn("only then write the memory update and settle", reminder)
+        self.assertIn("the conclusion of the task as it settled", reminder)
+        self.assertIn(
+            "convention-compliance verdict summarized beneath it", reminder
         )
         self.assertIn("`Convention audit:` line", reminder)
         self.assertIn("`Consultant verdict:` line", reminder)

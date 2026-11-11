@@ -35,13 +35,15 @@ COMMIT_CREATING_SUBCOMMANDS = (
 # The conventions reminder Pi injects at the settle boundary. It names the gates
 # and the one required line, never the convention content itself.
 CONVENTION_REMINDER = (
-    "Before finishing, state the conclusion of the task as it settled, then "
-    "perform the conventions check: call `pre_memory`, "
-    "read the applicable sources it lists, and follow the applicable "
-    "memory-tree protocol. Resolve any findings within the current task's "
-    "authorized scope. Repeat that conclusion after the check and summarize "
-    "the convention-compliance verdict beneath it. When acting as an "
-    "implementation consultant reviewing finished work, include the required "
+    "Work the task in this order: run the conventions check - call "
+    "`pre_memory`, read the applicable sources it lists, and follow the "
+    "applicable memory-tree protocol - then prepare, then execute, then draft "
+    "the memory update. Run the conventions check again against that draft, "
+    "resolve what it finds within the current task's authorized scope, and "
+    "only then write the memory update and settle. Settle by stating the "
+    "conclusion of the task as it settled, with the convention-compliance "
+    "verdict summarized beneath it. When acting as an implementation "
+    "consultant reviewing finished work, include the required "
     "`Convention audit:` line immediately before the `Consultant verdict:` "
     "line."
 )
