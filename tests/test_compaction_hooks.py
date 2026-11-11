@@ -262,18 +262,27 @@ class CompactionHookTests(unittest.TestCase):
         settled = invoke("codex", self.home, self.event("ConventionReminder"))
         self.assertEqual(settled.returncode, 0)
         reminder = json.loads(settled.stdout)["reminder"]
-        self.assertIn("call `pre_memory`", reminder)
-        self.assertIn("then prepare, then execute, then draft the memory update", reminder)
-        self.assertIn(
-            "Run the conventions check again against that draft", reminder
+        # Each step must be present and in this order, not merely present:
+        # a reminder that names the steps out of order names nothing.
+        ordered_steps = (
+            "call `pre_memory`",
+            "then prepare, then execute, then draft the memory update",
+            "Run the conventions check again against the completed task and",
+            "only then write the memory update and settle",
+            "Settle by stating the conclusion of the task as it settled",
         )
-        self.assertIn("only then write the memory update and settle", reminder)
-        self.assertIn("the conclusion of the task as it settled", reminder)
+        for step in ordered_steps:
+            self.assertIn(step, reminder)
+        positions = [reminder.index(step) for step in ordered_steps]
+        self.assertEqual(positions, sorted(positions))
         self.assertIn(
             "convention-compliance verdict summarized beneath it", reminder
         )
-        self.assertIn("`Convention audit:` line", reminder)
-        self.assertIn("`Consultant verdict:` line", reminder)
+        self.assertIn(
+            "`Convention audit:` line immediately before the "
+            "`Consultant verdict:` line",
+            reminder,
+        )
         # The reminder names gates, never convention content, and it neither
         # judges nor blocks: Pi alone decides whether the run continues.
         self.assertNotIn("decision", settled.stdout)

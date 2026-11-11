@@ -355,9 +355,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   nothing and claims nothing; a hook failure leaves one operational notice for
   the next turn instead of looping. The reminder names the order of the work:
   the conventions check first, then preparation and execution, then the memory
-  update drafted and the conventions check run again against it, and only then
-  the memory update written and the run settled, with the task's settled
-  conclusion stated above the convention-compliance verdict.
+  update drafted and the conventions check run again against that draft and the
+  finished work, and only then the memory update written and the run settled,
+  with the task's settled conclusion stated above the convention-compliance
+  verdict.
 
 Limitations: Pi exposes no subagent identity on events, so the bridge cannot
 mark a spawned child as read-only the way `SubagentStart` does for the other
