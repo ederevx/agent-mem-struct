@@ -85,7 +85,11 @@ checklist.
 
 Every `memory_update` is judged before it writes. The hook records the mutation
 as a write-free plan - every file's bytes, every move, rename and removal -
-and asks one judge, `pi -p` with no session, tools, MCP servers, skills,
+and then shows the judge that plan as the change it makes: both whole states by
+size and digest, and every changed line with three lines of context, its line
+ranges and its section, so an unchanged body is never sent twice and a small
+edit stays small however large the file is. It asks one judge, `pi -p` with no
+session, tools, MCP servers, skills,
 context files or extensions, which answers exactly `yes` or `no`. Only `yes`
 reaches the disk; a crash, a deadline, an unreadable answer or a missing
 document refuses the write, so a broken judge costs a retried tool call and
@@ -120,7 +124,10 @@ shipped `hooks/judge-policy.json`; a host overrides them in
 `PI_PROVIDER` and `PI_MODEL` override the provider and model; otherwise the
 host's own `defaultProvider` and `defaultModel` are used, read from
 `pi_settings`. A `limits` block states all five limits; a partial one is
-refused instead of being merged with the policy defaults. A host whose models
+refused instead of being merged with the policy defaults. The governing
+documents are part of every draft, so a host whose own `RULES.md`,
+`STRUCTURE.md` and indexes are large raises `max_input_bytes` to the room it
+needs rather than relying on the default. A host whose models
 are registered by an extension must name
 that extension in `launchers.pi.extensions`: the launcher keeps
 `--no-extensions` so the judge never loads the agent's own extensions, and

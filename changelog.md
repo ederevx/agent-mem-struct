@@ -4,6 +4,34 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T00:15:00-05:00 - the judge reads the change, not two copies of the file
+
+The draft shown to the judge printed both sides of every write in full, so a
+write was bounded by twice the size of the files it touched rather than by the
+size of the change. On a store whose index and paired logs are tens of
+kilobytes that made ordinary writes impossible: the first judged commit on a
+host with a 70 KB leaf and a 134 KB log produced a 481504 byte draft against
+the 65536 byte default, and even a one-line write to a new leaf had almost no
+room once the governing documents - `RULES.md`, `STRUCTURE.md` and the two
+indexes, about 57 KB there - were included. Nothing was truncated and nothing
+was written, because an over-limit draft is a refusal, so the effect was a
+store that could not be updated at all rather than one updated unjudged.
+
+A write is now shown as the change it makes: both whole states by byte length
+and SHA-256, then every changed line with three lines of context, its before
+and after line ranges, and the Markdown section it sits in. Each row is a JSON
+`[tag, string]` pair carrying the line exactly as it is, endings included, so
+a CRLF line and a last line with no newline stay visible and the rows rebuild
+the approved bytes. A created file is still shown by all of its bytes and a
+deleted one by all of its removed bytes; a side that is not UTF-8 falls back to
+both sides encoded, and a write that changes nothing says so. The snapshot
+checks are untouched - the judge is bound to the digests it was shown and the
+publication still carries those bytes - and an over-limit draft is still
+refused rather than shortened, so no changed line can be dropped to fit. The
+same edit on the measured host now drafts 78734 bytes, of which 67574 are the
+governing documents and 8357 the change, and a host whose own documents fill
+the default bound is expected to raise `max_input_bytes` to the room it needs.
+
 ## 2026-11-11T20:46:00-05:00 - a publication is checked against what the commit holds
 
 Three states were being flattened into one, and each flattening let a write

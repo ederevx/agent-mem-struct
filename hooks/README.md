@@ -267,7 +267,12 @@ The bridge maps Pi events onto the hook's event vocabulary:
   directory - and written nowhere; `rm_judge.MemoryJudge` then reviews that
   plan against the requirement (the root and shared conventions plus the
   policy) with the agent's own model, and only a clean `yes` lets
-  `rm_update.MemoryUpdater.apply` materialize it. Before applying, the bytes
+  `rm_update.MemoryUpdater.apply` materialize it. A write reaches the judge as
+  the change it makes - both whole states by size and SHA-256, then every
+  changed line with three lines of context, its line ranges and its section,
+  each row an exact JSON `[tag, string]` pair - so an unchanged body is never
+  printed twice and a large store does not push a small edit out of the input
+  bound; an over-limit draft is refused, never shortened. Before applying, the bytes
   each path held when the plan was recorded, and every document the judge
   read, are compared again; a change to either returns `judge-stale-draft`
   with no planned change applied. A refusal, an unreachable launcher, an
