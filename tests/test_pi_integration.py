@@ -1535,7 +1535,7 @@ class PiPackageTests(unittest.TestCase):
             "  Union: (anyOf) => ({ anyOf }),\n"
             "  Null: () => schema('null'),\n"
             "  Literal: (value) => {\n"
-            "    if (!['string', 'number', 'boolean'].includes(typeof value))\n"
+            "    if (!['string', 'number', 'boolean', 'bigint'].includes(typeof value))\n"
             "      throw new Error('Invalid Literal value');\n"
             "    return { const: value };\n"
             "  },\n"
@@ -2080,25 +2080,23 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
 
     def host_typebox(self) -> Path | None:
-        """The installed pi release's own typebox, when this host has one."""
-        releases = Path.home() / ".pi" / "agent" / "install" / "releases"
-        if not releases.is_dir():
+        """The typebox entry selected for the optional host contract check."""
+        configured = os.environ.get("AGENT_MEM_STRUCT_TEST_TYPEBOX")
+        if configured is None:
             return None
-        found = sorted(releases.glob("*/node_modules/typebox/build/index.mjs"))
-        return found[-1] if found else None
+        entry = Path(configured).expanduser().resolve()
+        self.assertTrue(entry.is_file(), str(entry))
+        return entry
 
     def test_a_nullable_digest_needs_type_null_for_the_host_typebox(self) -> None:
-        # The host's typebox rejects Literal(null) with "Invalid Literal value",
-        # and that exception aborts registration before any tool exists: no
-        # memory_update, no rm_tree_exec, no tool_call gate. So the readings
-        # schema must express an absent source's digest with the null schema.
         content = EXTENSION_TEMPLATE.read_text(encoding="utf-8")
         self.assertNotIn("Type.Literal(null)", content)
         self.assertIn("Type.Union([Type.String(), Type.Null()]", content)
         host = self.host_typebox()
+        if host is None:
+            self.skipTest("AGENT_MEM_STRUCT_TEST_TYPEBOX is not set")
         node = shutil.which("node")
-        if host is None or node is None:
-            self.skipTest("no installed pi release to borrow typebox from")
+        self.assertIsNotNone(node, "a configured host contract check needs node")
         script = (
             "const {Type} = await import(process.argv[1]);\n"
             "const union = JSON.stringify(Type.Union([Type.String(), Type.Null()]));\n"

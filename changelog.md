@@ -17,10 +17,12 @@ an unrepresentable literal.
 
 Registration failures are now caught by the suite rather than by a session.
 The package test's TypeBox stand-in refuses unsupported literal values, as the
-host does, so a schema that throws at registration fails the bridge test, and
-a second test borrows the installed release's own TypeBox to record the two
-halves of that contract together: the union it accepts, and the literal it
-rejects.
+host does, so a schema that throws at registration fails the bridge test. A
+second test records the two halves of the host contract together, the union it
+accepts and the literal it rejects, against the TypeBox entry named by
+`AGENT_MEM_STRUCT_TEST_TYPEBOX`, so release validation checks the active host
+rather than guessing one from a path, and a run without that variable skips the
+check instead of claiming it.
 
 ## 2026-11-12T13:17:00-05:00 - the session identity comes from the handler context
 
