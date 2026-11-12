@@ -1533,7 +1533,12 @@ class PiPackageTests(unittest.TestCase):
             "  Array: (items) => schema('array', { items }),\n"
             "  Optional: (inner) => ({ optional: true, ...(inner || {}) }),\n"
             "  Union: (anyOf) => ({ anyOf }),\n"
-            "  Literal: (value) => ({ const: value }),\n"
+            "  Null: () => schema('null'),\n"
+            "  Literal: (value) => {\n"
+            "    if (!['string', 'number', 'boolean'].includes(typeof value))\n"
+            "      throw new Error('Invalid Literal value');\n"
+            "    return { const: value };\n"
+            "  },\n"
             "};\n",
             encoding="utf-8",
         )
@@ -2073,6 +2078,44 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("memory_update", result["tools"])
         self.assertIn("rm_tree_exec", result["tools"])
         self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
+
+    def host_typebox(self) -> Path | None:
+        """The installed pi release's own typebox, when this host has one."""
+        releases = Path.home() / ".pi" / "agent" / "install" / "releases"
+        if not releases.is_dir():
+            return None
+        found = sorted(releases.glob("*/node_modules/typebox/build/index.mjs"))
+        return found[-1] if found else None
+
+    def test_a_nullable_digest_needs_type_null_for_the_host_typebox(self) -> None:
+        # The host's typebox rejects Literal(null) with "Invalid Literal value",
+        # and that exception aborts registration before any tool exists: no
+        # memory_update, no rm_tree_exec, no tool_call gate. So the readings
+        # schema must express an absent source's digest with the null schema.
+        content = EXTENSION_TEMPLATE.read_text(encoding="utf-8")
+        self.assertNotIn("Type.Literal(null)", content)
+        self.assertIn("Type.Union([Type.String(), Type.Null()]", content)
+        host = self.host_typebox()
+        node = shutil.which("node")
+        if host is None or node is None:
+            self.skipTest("no installed pi release to borrow typebox from")
+        script = (
+            "const {Type} = await import(process.argv[1]);\n"
+            "const union = JSON.stringify(Type.Union([Type.String(), Type.Null()]));\n"
+            "let rejected = null;\n"
+            "try { Type.Literal(null); } catch (error) { rejected = error.message; }\n"
+            "console.log(JSON.stringify({ union, rejected }));\n"
+        )
+        completed = subprocess.run(
+            [node, "--input-type=module", "-e", script, host.resolve().as_uri()],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observed = json.loads(completed.stdout)
+        self.assertEqual(
+            observed["union"], '{"anyOf":[{"type":"string"},{"type":"null"}]}'
+        )
+        self.assertEqual(observed["rejected"], "Invalid Literal value")
 
     def test_session_compact_injects_the_memory_pointer_immediately(self) -> None:
         # A mid-run compaction resumes without another before_agent_start, so

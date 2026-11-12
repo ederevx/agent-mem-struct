@@ -4,6 +4,24 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T17:40:00-05:00 - a nullable reading digest registers with the null schema
+
+`memory_update`'s `readings` schema spelled an absent source's digest as
+`Type.Literal(null)`. The host's TypeBox rejects a null literal with `Invalid
+Literal value` while the tool is being registered, and that exception aborts
+registration for the whole bridge, so the session ran with no `memory_update`,
+no `pre_memory`, no `rm_tree_exec`, and no `tool_call` handler at all: every
+memory write went ungated instead of being checked. The schema now expresses
+the same union with `Type.Null()`, which describes the nullable digest without
+an unrepresentable literal.
+
+Registration failures are now caught by the suite rather than by a session.
+The package test's TypeBox stand-in refuses unsupported literal values, as the
+host does, so a schema that throws at registration fails the bridge test, and
+a second test borrows the installed release's own TypeBox to record the two
+halves of that contract together: the union it accepts, and the literal it
+rejects.
+
 ## 2026-11-12T13:17:00-05:00 - the session identity comes from the handler context
 
 A bridge that registers after the session started - a resumed session, or a

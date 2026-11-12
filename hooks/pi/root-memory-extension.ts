@@ -403,7 +403,7 @@ export class RootMemoryBridge {
 					path: Type.String({
 						description: "One required source path, as the refusal listed it.",
 					}),
-					digest: Type.Union([Type.String(), Type.Literal(null)], {
+					digest: Type.Union([Type.String(), Type.Null()], {
 						description:
 							"Its current sha256, or null for a source the refusal listed " +
 							"as absent.",
