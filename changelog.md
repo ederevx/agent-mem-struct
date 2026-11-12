@@ -10,10 +10,11 @@ A bridge that registers after the session started - a resumed session, or a
 reload that replaces the extension - now takes the live session id from the
 context the host hands each handler, the same context the bridge already reads
 the session branch from. The api object `register` receives carries no session
-manager, so the previous attempt resolved there and reached the environment
-fallback instead of the real id; a replaced extension then sent an id that was
-not the session's, and the hook's receipts and audit gate stopped matching the
-session they were recorded for.
+manager, so the previous attempt resolved there, missed the live session id,
+and answered from the environment fallback. A hosted run sets that variable, but
+a plain CLI run may not, and the identity a hook receives must be the session's
+own for its receipts and audit gate to match the session they were recorded
+for.
 
 Resolution happens once per bridge, from the latest context seen by
 `session_start`, `before_agent_start`, `tool_call`, `input` or a settle, and
