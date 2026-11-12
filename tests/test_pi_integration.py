@@ -30,11 +30,11 @@ def js_safe(value: str) -> str:
 SCRATCH_ROOT = Path(
     os.environ.get(
         "AGENT_MEM_STRUCT_TEST_TMP",
-        str(Path.home() / "tmp" / "agent-mem-struct-tests"),
+        str(Path.home() / ".tmp" / "agent-mem-struct-tests"),
     )
 )
 # The session-start leftovers report scans the scratch root, so keep the suite
-# off the shared ~/tmp: an empty owned root keeps the pointer tests exact and
+# off the shared ~/.tmp: an empty owned root keeps the pointer tests exact and
 # lets an individual test point AMS_SCRATCH_ROOT at its own tree.
 SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
 os.environ["AMS_SCRATCH_ROOT"] = tempfile.mkdtemp(

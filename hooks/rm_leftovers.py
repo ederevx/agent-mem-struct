@@ -110,7 +110,7 @@ class LeftoverReport:
     def _scratch(self) -> list[str]:
         root = self.scratch_root
         if root is None:
-            root = Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/tmp").expanduser()
+            root = Path(os.environ.get("AMS_SCRATCH_ROOT") or "~/.tmp").expanduser()
         try:
             children = list(root.iterdir())
         except OSError:

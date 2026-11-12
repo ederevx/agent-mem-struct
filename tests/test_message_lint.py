@@ -19,7 +19,7 @@ if str(HOOKS) not in sys.path:
 SCRATCH_ROOT = Path(
     os.environ.get(
         "AGENT_MEM_STRUCT_TEST_TMP",
-        str(Path.home() / "tmp" / "agent-mem-struct-tests"),
+        str(Path.home() / ".tmp" / "agent-mem-struct-tests"),
     )
 )
 TRAILER = (

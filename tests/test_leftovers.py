@@ -13,6 +13,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 HOOK = REPO / "hooks" / "root-memory-context.py"
@@ -22,7 +23,7 @@ if str(HOOKS) not in sys.path:
 SCRATCH_ROOT = Path(
     os.environ.get(
         "AGENT_MEM_STRUCT_TEST_TMP",
-        str(Path.home() / "tmp" / "agent-mem-struct-tests"),
+        str(Path.home() / ".tmp" / "agent-mem-struct-tests"),
     )
 )
 
@@ -257,6 +258,33 @@ class LeftoverReportUnitTests(unittest.TestCase):
         self.assertIn("2 days old", text)
         self.assertNotIn(str(fresh), text)
         self.assertIn("never delete another agent's directory", text)
+
+    def test_the_default_scratch_root_is_the_hidden_home_directory(self) -> None:
+        hidden = self.home / ".tmp"
+        visible = self.home / "tmp"
+        hidden.mkdir()
+        visible.mkdir()
+        old = time.time() - 2 * 24 * 60 * 60
+        for root in (hidden, visible):
+            child = root / "stale-dir"
+            child.mkdir()
+            os.utime(child, (old, old))
+        environment = {k: v for k, v in os.environ.items()
+                       if k != "AMS_SCRATCH_ROOT"}
+        resolve = Path.expanduser
+
+        def expand(path: Path) -> Path:
+            if path == Path("~/.tmp"):
+                return hidden
+            if path == Path("~/tmp"):
+                return visible
+            return resolve(path)
+
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch.object(Path, "expanduser", expand):
+            text = LeftoverReport(budget=2.0).text(RepoLedger(self.state))
+        self.assertIn(str(hidden / "stale-dir"), text)
+        self.assertNotIn(str(visible / "stale-dir"), text)
 
     def test_an_exhausted_budget_reports_incomplete(self) -> None:
         ledger = RepoLedger(self.state)

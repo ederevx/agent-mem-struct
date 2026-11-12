@@ -26,7 +26,7 @@ CLAUDE_MANAGER = REPO / "hooks" / "claude" / "manage.py"
 SCRATCH_ROOT = Path(
     os.environ.get(
         "AGENT_MEM_STRUCT_TEST_TMP",
-        str(Path.home() / "tmp" / "agent-mem-struct-tests"),
+        str(Path.home() / ".tmp" / "agent-mem-struct-tests"),
     )
 )
 # The session-start leftovers report scans the scratch root; an empty owned
