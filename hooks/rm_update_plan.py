@@ -1,6 +1,6 @@
 """The exact file changes one memory mutation would make, before any of them.
 
-One owner for the evidence a judgment is made on: `PlanRecorder` stands in for
+One owner for the evidence an audit is made on: `PlanRecorder` stands in for
 the filesystem while `MemoryUpdater` runs an operation, so the same operation
 code produces the changes it would write instead of writing them, and
 `UpdatePlan` carries those changes with every path whose observed state the
@@ -9,7 +9,7 @@ operation depended on - file bytes, directory membership, and the Git facts
 
 Nothing here decides an operation, renders a memory body, or writes a file:
 the operation semantics stay in `rm_update.MemoryUpdater`. The recorder only
-records - and, once the judge has answered, re-records so a plan whose inputs
+records - and, once the audit is admitted, re-records so a plan whose inputs
 moved is refused rather than applied.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ class PlanConflict(Exception):
 class FileEffect:
     """One change to the file system, with the bytes on both sides of it.
 
-    `before` is the original the judge is shown, which for a publication is the
+    `before` is the original the audit is shown, which for a publication is the
     last committed bytes rather than what the working file happens to hold;
     `observed` is that working state, the one an apply must still find.
     """
@@ -235,8 +235,8 @@ class PlanRecorder:
     ) -> None:
         """Record the bytes `path` gains, and the bytes it holds now.
 
-        `before` is what the judge is shown as the prior state, and it differs
-        from `observed` exactly when a publication is judged against the
+        `before` is what the audit is shown as the prior state, and it differs
+        from `observed` exactly when a publication is audited against the
         committed bytes rather than an uncommitted working edit. Omitting it
         means "the current bytes", which is a real state distinct from
         `before=None`, the explicit absence of a path.
@@ -278,7 +278,7 @@ class PlanRecorder:
         if self.state(destination) != ABSENT:
             raise PlanConflict(
                 f"{destination} already exists, so the rename would replace "
-                "content the judge was never shown"
+                "content the audit was never shown"
             )
         if self.is_dir(source):
             for child, data in self._tree(source):
@@ -334,7 +334,7 @@ def key_under(key: str, root: str) -> bool:
 
 
 class UpdatePlan:
-    """What one judged mutation would change, and what it depended on."""
+    """What one audited mutation would change, and what it depended on."""
 
     def __init__(
         self,
@@ -354,28 +354,28 @@ class UpdatePlan:
         self.commit_message = commit_message
 
     def changes(self) -> list[FileEffect]:
-        """The effects a judge reads, in the order the operation made them."""
+        """The effects the audit reads, in the order the operation made them."""
         return [effect for effect in self.effects if effect.kind != MKDIR]
 
     def matches(self, other: UpdatePlan) -> tuple[bool, str]:
-        """Whether a second recording is the plan this judgment was made on."""
+        """Whether a second recording is the plan this audit was admitted on."""
         if self.operation != other.operation:
-            return False, "the operation changed during review"
+            return False, "the operation changed after audit capture"
         if self.intent != other.intent:
-            return False, "the requested mutation changed during review"
+            return False, "the requested mutation changed after audit capture"
         if self.commit_message != other.commit_message:
-            return False, "the commit message changed during review"
+            return False, "the commit message changed after audit capture"
         if self.publish_paths != other.publish_paths:
-            return False, "the set of published paths changed during review"
+            return False, "the set of published paths changed after audit capture"
         mine = [effect.key() for effect in self.effects]
         theirs = [effect.key() for effect in other.effects]
         if mine != theirs:
-            return False, "the planned changes differ from the reviewed draft"
+            return False, "the planned changes differ from the audited draft"
         if self.context != other.context:
             changed = sorted(
                 key for key in self.context if self.context.get(key) != other.context.get(key)
             ) + sorted(set(other.context) - set(self.context))
-            return False, "these repository facts changed during review: " + ", ".join(
+            return False, "these repository facts changed after audit capture: " + ", ".join(
                 changed[:5]
             )
         read = {key: item.key() for key, item in self.observations.items()}
@@ -390,7 +390,7 @@ class UpdatePlan:
                 changed = sorted({detail[0] for detail in read.values()} - {
                     detail[0] for detail in reread.values()
                 })
-            return False, "these inputs changed during review: " + ", ".join(changed[:5])
+            return False, "these inputs changed after audit capture: " + ", ".join(changed[:5])
         return True, ""
 
     def paths(self) -> list[Path]:

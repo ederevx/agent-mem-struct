@@ -75,7 +75,7 @@ class CommitPublisher:
         """Commit the paths this mutation wrote under the caller's own message.
 
         `expected` is the approved snapshot for this worktree - each
-        repo-relative path and the bytes (None for a deletion) the judge saw -
+        repo-relative path and the bytes (None for a deletion) the audit saw -
         and nothing is pushed until the commit proves it holds exactly that.
         """
         self.stop = time.monotonic() + (
@@ -182,7 +182,7 @@ class CommitPublisher:
                 if not rewrite:
                     return f"{name} is not the approved bytes"
                 # A line-ending conversion is the one rewrite that leaves the
-                # content the judge approved intact. A declared clean filter is
+                # content the audit approved intact. A declared clean filter is
                 # not: it can turn approved text into anything, so a commit
                 # made under one is refused rather than trusted.
                 if not converted(committed, data):
@@ -254,7 +254,7 @@ class CommitPublisher:
         if published is None:
             return (
                 "the shared branch has no published tip, so every commit on it "
-                "would be published without having been reviewed against one"
+                "would be published without having been audited against one"
             )
         if head == published:
             return ""
@@ -285,7 +285,7 @@ class CommitPublisher:
         if published is None:
             return (
                 "the branch has no published tip, so the push would publish earlier "
-                "local history that was never reviewed against one"
+                "local history that was never audited against one"
             )
         if parents != [published]:
             based = ", ".join(parent[:12] for parent in parents) or "no commit"
@@ -305,7 +305,7 @@ class CommitPublisher:
                 f"commit {sha[:12]} holds the approved snapshot, but {reason}; it was "
                 "not pushed.",
                 "reconcile the shared worktree with the published tip, then "
-                "rejudge the change",
+                "reread the required sources and audit the update again",
             ),
         )
 
@@ -315,10 +315,11 @@ class CommitPublisher:
             committed=True,
             sha=sha,
             conflict=self.conflict(
-                "judge-publish-mismatch",
+                "audit-publish-mismatch",
                 f"commit {sha[:12]} does not hold the approved snapshot: {mismatch}; "
                 "it was not pushed.",
-                "inspect the shared worktree and rejudge the change before retrying",
+                "inspect the shared worktree, reread the required sources, and "
+                "audit the update again before retrying",
             ),
         )
 

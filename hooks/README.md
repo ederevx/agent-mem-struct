@@ -266,43 +266,46 @@ The bridge maps Pi events onto the hook's event vocabulary:
   fast-forwarded. Every mutation is first recorded as a plan - the bytes each
   path would gain, the bytes it holds now, and every rename, removal, and
   directory - and written nowhere; the caller must then have read every
-  governing source again and audited that exact plan, and `rm_judge.MemoryJudge`
-  reviews it against the requirement (the root and shared conventions plus the
-  policy) with the agent's own model, and only a clean `yes` lets
-  `rm_update.MemoryUpdater.apply` materialize it. The audit text, the judge's
-  requirement and its freshness snapshot derive from one captured read of each
-  governing document, so a requirement edited between the audit and the
-  judgment is never the text the write is approved against. The audit is not advisory: a
+  governing source again and audited that exact plan. `rm_sources.GoverningSources`
+  captures each governing document once and `rm_draft.DraftRenderer` renders
+  that plan as the change it makes; the audit validator in `rm_audit` checks
+  the caller's `readings` and `audit` against that one capture and the computed
+  plan, and only an admitted audit lets `rm_update.MemoryUpdater.apply`
+  materialize it. No independent model, provider or judge launcher is
+  invoked; the Git synchronization and publication around it are unchanged.
+  The freshness snapshot derives from the same captured read of each governing
+  document, so a requirement edited between the audit and the write is never
+  the text the write is approved against. The audit is not advisory: a
   call without `readings` and `audit` is refused with the computed change, its
   `plan_digest`, the `documents_digest` of the governing inventory, and every
   required source with the digest its bytes hold now; the recorded reads are
-  consumed at the start of each attempt so a retry needs new ones; an audit
+  consumed at the start of each attempt so a retry needs new ones, and a
+  declared reading no recorded read backs, or one whose source changed since,
+  is `audit-readings-stale`; an audit
   bound to another plan or another revision of the conventions, a check that
-  cites a rule absent from its source, or a check left out returns
-  `audit-plan-mismatch`, `audit-documents-stale`, or `audit-invalid`; and an
-  audit that reports a violation returns `audit-violations` with the fix it
-  states, writing nothing. The admitted readings and audit are recorded under
-  `<agent-home>/.agent-mem-struct/memory-audits/` before the judge is asked.
+  cites a rule absent from its source, a check left out, or a check that
+  reports a violation returns `audit-plan-mismatch`, `audit-documents-stale`,
+  `audit-invalid`, or `audit-violations` with the fix it states, writing
+  nothing. A governing document that cannot be captured is
+  `audit-missing-source`, and an audit record that cannot be stored is
+  `audit-store-unwritable`; neither writes anything. The admitted readings and
+  audit are recorded under
+  `<agent-home>/.agent-mem-struct/memory-audits/` before the plan is applied.
   This gate is the hook's, not the bridge's: every harness that reaches the
-  `MemoryUpdate` event is held to it. A write reaches the judge as
-  the change it makes - both whole states by size and SHA-256, then every
+  `MemoryUpdate` event is held to it. The audit preview is
+  the change the plan makes - both whole states by size and SHA-256, then every
   changed line with three lines of context, its line ranges and its section,
   each row an exact JSON `[tag, string]` pair - so an unchanged body is never
-  printed twice and a large store does not push a small edit out of the input
-  bound; an over-limit draft is refused, never shortened. The bridge allows the
-  whole call three minutes and states that as the hook's budget, so the judge's
-  own `timeout_s` plus its completion reserve fit inside it. Before applying, the bytes
-  each path held when the plan was recorded, and every governing document in
-  the audited inventory, are compared again; a change to either returns
-  `judge-stale-draft` with no planned change applied. A refusal, an
-  unreachable launcher, an
-  answer that is not exactly `yes`, or a draft over the input bound returns
-  `judge-refused`, `judge-unavailable`, `judge-invalid-answer`,
-  `judge-prompt-too-large`, or `judge-no-budget`, and writes nothing. A
-  settings document that cannot be read as the policy, a governing document
-  that cannot be read, or an answer over the capture bound returns
-  `judge-invalid-config`, `judge-missing-source`, or `judge-oversized-response`
-  instead of approving anything.
+  printed twice and a large store does not push a small edit out of view. The
+  bridge allows the whole call three minutes and states that as the hook's
+  budget, a general operation deadline rather than a model's. Before applying,
+  the plan is prepared a second time and compared with the audited one - its
+  observations, directory membership, repository context, publication paths,
+  intent and effects - and then the bytes each path held when the plan was
+  recorded, and every governing document in the audited inventory, are
+  compared again; a change to either returns `audit-stale-draft` or
+  `audit-documents-stale` with no planned change applied, and the audited plan
+  itself is the one materialized.
   `rm_update.MemoryUpdater` materializes every required
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
@@ -347,8 +350,8 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
   `exists`, `would-overwrite`, `retire-required`, `unreadable-target`,
-  `message-lint`, `non-ascii`, `bad-request`, `judge-publish-mismatch`,
-  and the other `judge-` refusals above come back as a conflict report for the
+  `message-lint`, `non-ascii`, `bad-request`, `audit-publish-mismatch`,
+  and the other `audit-` refusals above come back as a conflict report for the
   agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`

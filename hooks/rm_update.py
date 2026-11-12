@@ -6,12 +6,14 @@ materializes every required counterpart (active leaf, paired log, nodes
 index, group scaffolding), and returns the exact conflicts the agent must
 fix before re-calling.
 
-Nothing is written until the mutation has been judged. `run` first records the
+Nothing is written until the mutation has been audited. `run` first records the
 complete change set through `rm_update_plan.PlanRecorder` - no file system
-write, every path the operation read captured as a dependency - and hands that
-plan to the injected judge. Only a `yes` reaches `apply`, which re-records the
-plan first so a mutation whose inputs moved during the review is refused, then
-materializes exactly the recorded bytes. A mutation that lands under the
+write, every path the operation read captured as a dependency - then requires
+the caller's own conventions audit of that exact plan, bound to one captured
+inventory of governing sources. Only an admitted audit reaches `apply`, which
+re-records the plan first so a mutation whose inputs moved after the audit
+capture is refused, rechecks the captured documents, then materializes exactly
+the recorded bytes. A mutation that lands under the
 declared shared root is then committed and pushed by `rm_commit.CommitPublisher`
 under the `commit_message` the agent wrote, which the tool never composes or
 edits but checks against the mechanical convention before committing; a
@@ -49,10 +51,11 @@ from rm_audit import (
     readings as audit_readings,
     source_key,
 )
+from rm_draft import DraftRenderer
 from rm_edit import WorktreeEdits
-from rm_judge_policy import JudgeError
 from rm_git import GitWorktree
 from rm_control import RootControl, RootState
+from rm_sources import GoverningSources, SourceError
 from rm_support import under
 from rm_update_plan import (
     ABSENT,
@@ -77,17 +80,18 @@ EMPTY_LOG_LINE = "No semantic history yet."
 LOG_BODY = "# Log: {name}\n\n" + EMPTY_LOG_LINE + "\n"
 MAX_LINK_FILES = 5000
 # The fields this tool documents. Anything else is a refusal, so a future field
-# cannot change what runs without the judge ever seeing it.
+# cannot change what runs without the audit ever seeing it.
 REQUEST_FIELDS = frozenset({
     "operation", "path", "name", "body", "text", "requires", "summary",
     "kind", "mechanical", "commit_message", "attachment_name",
     "attachment_content", "attachment_source", "overwrite",
     "readings", "audit",
 })
-# The request fields a judgment is made on. The audit protocol is verified by
-# the hook, never judged, so it never enters the plan's intent or its digest.
-JUDGED_FIELDS = REQUEST_FIELDS - {"readings", "audit"}
-# Identity the host adds to every event; never part of a judged draft.
+# The request fields a convention audit covers. The audit protocol is verified
+# by the hook, so it never enters the plan's intent or its digest; that is the
+# same exclusion `budget_ms` has as transport metadata.
+INTENT_FIELDS = REQUEST_FIELDS - {"readings", "audit"}
+# Identity the host adds to every event; never part of an audited draft.
 TRANSPORT_FIELDS = frozenset({
     "hook_event_name", "hookEventName", "session_id", "turn_id", "agent_id",
     "agentId", "cwd", "transcript_path", "stop_hook_active", "stopHookActive",
@@ -155,10 +159,13 @@ class UpdateResult:
 class MemoryUpdater:
     """Applies one validated memory mutation against a root snapshot."""
 
-    def __init__(self, control: RootControl, state: RootState, judge: Any) -> None:
+    def __init__(self, control: RootControl, state: RootState) -> None:
         self.control = control
         self.state = state
-        self.judge = judge
+        self.sources = GoverningSources(
+            state.memory_root, state.home, state.shared_resolved
+        )
+        self.draft = DraftRenderer()
         self.tree = PlanRecorder()
         self.deadline: float | None = None
         self.date: str = datetime.date.today().isoformat()
@@ -168,17 +175,18 @@ class MemoryUpdater:
     def run(
         self, request: dict[str, Any], *, gate: Any, budget_s: float | None = None
     ) -> UpdateResult:
-        """Record the mutation, audit it, judge it, then write what was judged.
+        """Record the mutation, audit it, then write exactly what was audited.
 
-        `budget_s` is the hook's remaining time; the review and the publish
-        both draw on it, so neither outlives the caller's own deadline. The log
-        date is fixed here, at the start of the one update, so a draft recorded
-        again is identical even across midnight.
+        `budget_s` is the hook's remaining time; the publication draws on it, so
+        it never outlives the caller's own deadline. The log date is fixed here,
+        at the start of the one update, so a draft recorded again is identical
+        even across midnight.
 
         The recorded reads are consumed at the start, so a refused attempt can
-        never be retried on the same reads. Nothing is judged until the caller's
-        own audit is structurally sound, bound to this exact plan and inventory,
-        free of violations, and backed by real reads of every required source.
+        never be retried on the same reads. Nothing is applied until the
+        caller's own audit is structurally sound, bound to this exact plan and
+        inventory, free of violations, and backed by real reads of every
+        required source.
         """
         self.date = datetime.date.today().isoformat()
         self.deadline = (
@@ -191,19 +199,25 @@ class MemoryUpdater:
             return prepared
         if not prepared.changes():
             return prepared.result
+
         try:
-            inventory = self.judge.inventory(prepared)
-        except JudgeError as refusal:
+            inventory = self.sources.inventory(prepared)
+        except SourceError as refusal:
             return self.conflict(
                 operation,
-                refusal.code,
-                refusal.detail + ".",
-                fix="restore the governing document, then retry the same update",
+                "audit-missing-source",
+                str(refusal) + ".",
+                fix="restore the governing document, reread the required sources, "
+                    "and audit the update again",
             )
-        changes = self.judge.effects(prepared)
-        preview = audit_preview(prepared, inventory, changes)
+
+        preview = audit_preview(
+            prepared, inventory, self.draft.effects(prepared)
+        )
         cwd = Path(str(request.get("cwd") or self.state.home)).expanduser()
-        declared, conflicts = audit_readings(request.get("readings"), inventory, observed, cwd)
+        declared, conflicts = audit_readings(
+            request.get("readings"), inventory, observed, cwd
+        )
         audited, audit_conflicts = audit_request(
             request.get("audit"),
             prepared,
@@ -212,29 +226,34 @@ class MemoryUpdater:
         )
         conflicts += audit_conflicts
         if conflicts:
-            return UpdateResult(False, operation, conflicts=conflicts, preview=preview)
+            return UpdateResult(
+                False, operation, conflicts=conflicts, preview=preview
+            )
+
         record = self.record_audit(prepared, inventory, declared, audited)
         if isinstance(record, UpdateResult):
             return record
-        verdict = self.judge.review(
-            prepared, inventory=inventory, budget_s=self.remaining()
-        )
-        if not verdict.approved:
-            return self.conflict(
-                operation, verdict.code, verdict.message, verdict.fix, preview=preview,
-            )
+
         repeated = self.prepare(request)
         if isinstance(repeated, UpdateResult):
-            return repeated
+            return self.conflict(
+                operation,
+                "audit-stale-draft",
+                "the audited update could no longer be prepared; no planned "
+                "changes applied. " + repeated.text(),
+                fix="reread the required sources and affected memory, then audit "
+                    "the recomputed update",
+            )
         matched, detail = prepared.matches(repeated)
         if not matched:
             return self.conflict(
                 operation,
-                "judge-stale-draft",
+                "audit-stale-draft",
                 detail + "; no planned changes applied.",
-                fix="reread the affected memory, then retry the same update",
+                fix="reread the required sources and affected memory, then audit "
+                    "the recomputed update",
             )
-        return self.apply(prepared, record=record)
+        return self.apply(prepared, inventory=inventory, record=record)
 
     def record_audit(
         self,
@@ -243,7 +262,7 @@ class MemoryUpdater:
         declared: dict[str, str | None],
         audited: dict[str, Any] | None,
     ) -> Path | UpdateResult:
-        """Write the attempt's evidence before the judge is asked anything.
+        """Write the attempt's evidence before the plan is applied.
 
         A store that cannot be written refuses, because an update whose audit
         has no record could not be told apart from one never audited.
@@ -285,24 +304,33 @@ class MemoryUpdater:
             self.commit_message(request),
         )
 
-    def apply(self, plan: UpdatePlan, *, record: Path | None = None) -> UpdateResult:
-        """Materialize the recorded changes, then publish what was approved."""
+    def apply(
+        self,
+        plan: UpdatePlan,
+        *,
+        inventory: list[dict[str, Any]],
+        record: Path | None = None,
+    ) -> UpdateResult:
+        """Materialize the recorded changes, then publish what was audited."""
         stale = self.stale_effect(plan)
         if stale:
             return self.conflict(
                 plan.operation,
-                "judge-stale-draft",
-                f"{stale} changed after the judgment; no planned changes applied.",
-                fix="reread the affected memory, then retry the same update",
+                "audit-stale-draft",
+                f"{stale} changed after the audited plan was captured; "
+                "no planned changes applied.",
+                fix="reread the required sources and affected memory, then audit "
+                    "the recomputed update",
             )
-        if not self.judge.unchanged():
+        if not self.sources.unchanged(inventory):
             return self.conflict(
                 plan.operation,
-                "judge-stale-draft",
-                "a governing document changed after the judgment; no planned "
-                "changes applied.",
-                fix="reread the governing documents, then retry the same update",
+                "audit-documents-stale",
+                "a governing document changed after the audit inventory was "
+                "captured; no planned changes applied.",
+                fix="reread the governing documents and audit the update again",
             )
+
         self.materialize(plan)
         result = (
             self.publish_worktree(plan)
@@ -317,10 +345,10 @@ class MemoryUpdater:
 
     @staticmethod
     def stale_effect(plan: UpdatePlan) -> str:
-        """The first path whose bytes on disk are no longer the judged ones.
+        """The first path whose bytes on disk are no longer the audited ones.
 
         The comparison is with the state the plan observed, not with the
-        original the judge was shown: a publication reviews the last committed
+        original the audit was shown: a publication audits the last committed
         bytes while the working file already holds the hand edit it publishes.
         Only a path's first effect is compared, because a later effect on the
         same path starts from the bytes this plan itself would have written.
@@ -426,11 +454,11 @@ class MemoryUpdater:
 
     @staticmethod
     def intent(request: dict[str, Any]) -> dict[str, Any]:
-        """The operation fields the judge reads, without transport identity."""
+        """The operation fields the audit covers, without transport identity."""
         return {
             key: request[key]
             for key in sorted(request)
-            if key in JUDGED_FIELDS and request[key] not in (None, "", [], {})
+            if key in INTENT_FIELDS and request[key] not in (None, "", [], {})
         }
 
     def publish(self, plan: UpdatePlan) -> UpdateResult:
@@ -624,7 +652,7 @@ class MemoryUpdater:
 
         The working tree is the source of truth: the target set is the named
         leaf plus its paired log, or every dirty path in the memory scopes.
-        The hand-edited bytes are recorded as equality writes, so the judge
+        The hand-edited bytes are recorded as equality writes, so the audit
         reads exactly what a commit would publish and the apply stage rewrites
         nothing; the paired log's appended lines are recorded as real writes.
         """
@@ -715,7 +743,7 @@ class MemoryUpdater:
         return None if not found else entry is not None
 
     def unreadable_target(self, operation: str, path: Path, detail: str) -> UpdateResult:
-        """A path Git would not describe is never judged as absent or empty."""
+        """A path Git would not describe is never read as absent or empty."""
         return self.conflict(
             operation,
             "unreadable-target",
@@ -740,7 +768,7 @@ class MemoryUpdater:
                 return self.unreadable_target(
                     "commit", path,
                     "is missing, and Git would not report what HEAD holds for it, "
-                    "so its removal cannot be judged.",
+                    "so its removal cannot be audited.",
                 )
             if not held:
                 continue
@@ -762,7 +790,7 @@ class MemoryUpdater:
         """Record one dirty target as the equality write or deletion to publish.
 
         A path that cannot be read is a conflict rather than a deletion: the
-        difference decides whether the judge reviewed a new body or a removal.
+        difference decides whether the audit describes a new body or a removal.
         """
         if self.tree.is_planned(path):
             return None
@@ -771,7 +799,7 @@ class MemoryUpdater:
             return self.conflict(
                 "commit",
                 "unreadable-target",
-                f"{path} could not be read, so its change cannot be judged.",
+                f"{path} could not be read, so its change cannot be audited.",
                 fix="repair the file, then re-call",
             )
         if state == FILE:
@@ -781,9 +809,9 @@ class MemoryUpdater:
                 return self.unreadable_target(
                     "commit", path,
                     "exists, but Git would not report what it holds in HEAD, so its "
-                    "change cannot be judged.",
+                    "change cannot be audited.",
                 )
-            # The judge compares a publication with what is committed, not with
+            # The audit compares a publication with what is committed, not with
             # the working file that already holds the hand edit.
             self.tree.write(path, data, before=committed)
             self.pin(path, edits)
@@ -793,7 +821,7 @@ class MemoryUpdater:
             return self.unreadable_target(
                 "commit", path,
                 "is missing, but Git would not report what it held in HEAD, so its "
-                "removal cannot be judged.",
+                "removal cannot be audited.",
             )
         self.tree.write(path, None, before=committed)
         self.pin(path, edits)
@@ -815,7 +843,7 @@ class MemoryUpdater:
         """What `path` held in HEAD, and whether Git could say.
 
         An untracked path is reported as `(True, None)` - genuinely absent - so
-        the judge reads an addition rather than an unchanged file, while an
+        the audit reads an addition rather than an unchanged file, while an
         unanswered query is `(False, None)` and refuses the publication. A path
         Git cannot even place in a worktree is unanswered too: failed repository
         discovery proves nothing about what HEAD holds.

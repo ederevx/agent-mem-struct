@@ -1,8 +1,8 @@
 """The conventions audit and the readings a memory update must carry.
 
-An update is not only judged: before it may be applied its caller must have
-read the governing sources again and audited the change it asks for. Neither
-part is taken on trust.
+An update reaches the disk only on its caller's own audit: before it may be
+applied, its caller must have read the governing sources again and audited the
+change it asks for. Neither part is taken on trust.
 
 The readings are compared with the reads the hook itself recorded, and those
 recorded reads are consumed at the start of every attempt, so a refused attempt
@@ -16,9 +16,10 @@ cites must be an exact excerpt of the source it names. An audit reporting a
 violation blocks the update and returns the fix it states; the corrected
 request needs a new audit and new readings.
 
-What no digest can prove is that the agent did the thinking. The independent
-compliance judge, run after a structurally valid and violation-free audit, is
-what stands between a copied declaration and a written change.
+What no digest can prove is that the agent did the thinking. Structural
+validation cannot show the reasoning behind an audit, nor that the writer found
+every rule that applies to a change; that responsibility stays with the writer,
+and the hook records the audit it admitted so the claim is on the record.
 """
 from __future__ import annotations
 
@@ -84,7 +85,7 @@ def preview(plan: Any, inventory: list[dict[str, Any]], changes: str) -> str:
 
     It is what the agent audits: the exact plan digest, the document digest it
     must bind to, every required reading with the digest its bytes hold now, and
-    the change itself in the words the judge reads.
+    the change itself as the draft renderer shows it.
     """
     return (
         "\n\ncomputed memory update: audit this exact change, then re-call with "
@@ -350,7 +351,7 @@ class AuditStore:
         declared: dict[str, str | None],
         evidence: dict[str, Any],
     ) -> Path:
-        """One attempt's evidence, written before the judge is asked.
+        """One attempt's evidence, written before the plan is applied.
 
         Identical plans do not overwrite each other: the name carries the time,
         so two attempts on the same change leave two records.

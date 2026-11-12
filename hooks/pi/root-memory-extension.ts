@@ -52,17 +52,17 @@ const CANONICAL_ROOT = "__AMS_CANONICAL_ROOT__";
 const DEFAULT_TIMEOUT_MS = 8000;
 const PRECOMPACT_TIMEOUT_MS = 120000;
 const PREMEMORY_TIMEOUT_MS = 30000;
-/** The ceiling for one judged write, and the budget the hook is told it has.
- *  It must exceed the judge's configured `timeout_s` plus `completion_reserve_s`
- *  with room for planning and publishing, or a prompt the model needs a minute
- *  to read is cut short and the write refuses as `judge-unavailable`; the judge
- *  still answers within its own policy limit, so this ceiling never lengthens a
- *  call that is answered sooner. */
+/** The ceiling for one memory update, and the budget the hook is told it has.
+ *  It is a general operation deadline: planning, admitting the conventions
+ *  audit, the working-tree writes and the Git publication all draw on it, so a
+ *  call that synchronizes or publishes shared memory has the time that work
+ *  needs. */
 const MEMORYUPDATE_TIMEOUT_MS = 180000;
 const MAX_INLINE_ENTRIES = 150;
 const LISTER_TIMEOUT_MS = 30000;
-// A host timer cannot hold a larger millisecond delay; the hook bounds
-// `timeout_s` against the same ceiling, so this only guards the arithmetic.
+// Node timers accept at most a signed 32-bit millisecond delay, so a budget
+// above this ceiling would fire at once instead; this only guards that
+// arithmetic.
 const MAX_TIMER_MS = 2 ** 31 - 1;
 const INTERPRETER_NAME_RE = /^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$/i;
 const INTERPRETER_FLAGS = new Set(["-I", "-B", "-E", "-S", "-u"]);
@@ -332,11 +332,12 @@ export class RootMemoryBridge {
 				"with the built-in edit tool and captures the displaced current " +
 				"state into the paired log. `path` is absolute or relative to the " +
 				"agent home and must resolve inside this agent's memory tree or the " +
-				"declared shared root. An update is judged only after you audit it " +
+				"declared shared root. An update is applied only after you audit it " +
 				"yourself: a call without `readings` and `audit` is refused with the " +
 				"computed change and the digests to bind to, after which you reread " +
 				"every required source and re-call with both. An audit reporting a " +
-				"violation blocks the update and states the fix.",
+				"violation blocks the update and states the fix; no model or provider " +
+				"is invoked.",
 			parameters: Type.Object({
 				operation: Type.Union([
 					Type.Literal("create"), Type.Literal("set"),

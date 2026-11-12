@@ -4,6 +4,62 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T07:20:00-05:00 - the model judge is removed from the memory-write path
+
+Memory writes now use the writer's conventions audit as their sole semantic
+compliance gate. The independent model subprocess, launcher policy, and
+provider configuration are removed because model availability must not block
+an otherwise admitted memory update.
+
+Every admitted change used to wait on a `pi -p` subprocess whose launcher,
+provider, model and five limits lived in a document the hook had to parse. A
+host with no runnable judge refused every write, and an unreachable provider
+turned a complete audit into a retried tool call - a second semantic reviewer
+that could only subtract writes the writer had already justified, and whose
+outage looked exactly like a refusal. The audit the writer submits is the
+review: no independent model, provider or judge launcher is invoked, and the
+Git synchronization and publication around the plan are unchanged.
+
+The hook keeps one owner for each half of the removed module. Source capture -
+`sources`, `inventory`, `state`, `group_documents`, `anchors`,
+`attachment_owner`, `attachment_dir` and `context_documents` - moved unchanged
+into `hooks/rm_sources.py` as `GoverningSources`, with its refusal as
+`SourceError`, and the audit preview rendering - `changed`, `snapshot`,
+`textual`, `hunks`, `section`, `render`, `text`, `CONTEXT_LINES` and
+`HUNK_LEGEND` - moved unchanged into `hooks/rm_draft.py` as `DraftRenderer`.
+`rm_judge.py`, `rm_judge_policy.py`, `rm_judge_process.py` and
+`judge-policy.json` are deleted with no compatibility class and no
+always-approved verdict, so nothing invites a future caller to mistake these
+helpers for a policy decision.
+
+What the judge enforced is not lost with it. The readings are still consumed at
+the start of every attempt, the plan digest and the document digest still bind
+the audit to the change and the conventions it was written against, every
+check still cites a rule that appears verbatim in the source it names, every
+present source must still be covered, and a reported violation still blocks the
+update with its fix. The admitted readings and audit are still recorded under
+`<agent-home>/.agent-mem-struct/memory-audits/` before the plan is applied,
+the plan is still prepared a second time and compared with the audited one, the
+affected bytes and every captured governing document are still rechecked, and
+the audited plan itself is the one materialized and published. `unchanged()`
+now compares the one inventory the audit was validated against; it no longer
+depends on a snapshot that only the deleted review path populated.
+
+An obsolete judge document is ignored and preserved. A missing, malformed,
+unreadable or non-regular `<agent-home>/.agent-mem-struct/memory-judge.json`,
+and the `AMS_JUDGE_*` variables, have no effect on admission, and no installer
+deletes or rejects them, so a host keeps its document for rollback. The
+conflict names say what refused the write: `audit-missing-source`,
+`audit-stale-draft`, `audit-documents-stale` and `audit-publish-mismatch`
+replace their `judge-` counterparts, and the launcher, configuration, answer
+and budget refusals are gone.
+
+A host pinned to `v1.72` keeps running that release, and its judge with it,
+until it adopts the next release: install the new version, then reload or
+restart the harness so the bridge's tool description and its operation
+deadline are the ones this release ships. Adoption is the step that removes
+the judge from a host, never the publication of this change.
+
 ## 2026-11-12T04:40:00-05:00 - the judge reads the revision the audit was admitted on
 
 The audit gate read each governing document to build the inventory it admitted

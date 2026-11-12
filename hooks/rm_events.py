@@ -19,7 +19,6 @@ from typing import Any
 from rm_checkpoints import CheckpointStore
 from rm_control import RootState, RootControl
 from rm_git import GitWorktree
-from rm_judge import load_judge
 from rm_ledger import RepoLedger
 from rm_leftovers import LeftoverReport
 from rm_lint import PushLint
@@ -255,11 +254,9 @@ class EventDispatcher:
                 )
                 return 3
             state = self.control.load(self.agent)
-        result = MemoryUpdater(
-            self.control,
-            state,
-            load_judge(state.memory_root, state.home, state.shared_resolved),
-        ).run(event, gate=self.gate, budget_s=memory_budget(event))
+        result = MemoryUpdater(self.control, state).run(
+            event, gate=self.gate, budget_s=memory_budget(event)
+        )
         self.emit_hook_context("MemoryUpdate", result.text())
         return 0 if result.ok else 3
 

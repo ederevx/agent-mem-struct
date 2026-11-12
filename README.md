@@ -81,32 +81,31 @@ then read root `RULES.md` before scoped memory work.
 consolidated where possible; rationale and examples belong outside the routine
 checklist.
 
-### The compliance judge
-
-Every `memory_update` is judged before it writes. The hook records the mutation
-as a write-free plan - every file's bytes, every move, rename and removal -
-and then shows the judge that plan as the change it makes: both whole states by
-size and digest, and every changed line with three lines of context, its line
-ranges and its section, so an unchanged body is never sent twice and a small
-edit stays small however large the file is. It asks one judge, `pi -p` with no
-session, tools, MCP servers, skills,
-context files or extensions, which answers exactly `yes` or `no`. Only `yes`
-reaches the disk; a crash, a deadline, an unreadable answer or a missing
-document refuses the write, so a broken judge costs a retried tool call and
-never an unjudged write. A shared write is pushed only when its commit holds
-exactly the approved paths and bytes - a line-ending conversion aside - and
-only while the governing documents still read as they did when the judge saw
-them, checked once the answer arrives and before the plan is applied.
-
 ### The conventions audit
 
-No write reaches the judge on the strength of a claim. Before a plan may be
-judged, its caller must read the governing sources again and audit the exact
-change the hook computed. A call without `readings` and `audit` is refused with
-that change, its `plan_digest`, the `documents_digest` of the governing
-inventory, and every required source with the digest its bytes hold now - so
-the agent can audit the change it is about to make instead of guessing at it.
-Nothing about this is advisory:
+Every non-no-op `memory_update` requires the writer's conventions audit of the
+exact computed plan. The shared hook validates fresh recorded readings, rule
+citations, source coverage, and both digest bindings. A reported violation
+blocks the update with its stated fix. No independent model or provider is
+invoked.
+
+The hook records the mutation as a write-free plan - every file's bytes, every
+move, rename and removal - and shows the writer that plan as the change it
+makes: both whole states by size and digest, and every changed line with three
+lines of context, its line ranges and its section, so an unchanged body is
+never sent twice and a small edit stays small however large the file is. A
+shared write is pushed only when its commit holds exactly the approved paths
+and bytes - a line-ending conversion aside - and only while the governing
+documents still read as they did when the audit captured them, checked again
+immediately before the audited plan is applied.
+
+No write is admitted on the strength of a claim. Before a plan may be applied,
+its caller must read the governing sources again and audit the exact change the
+hook computed. A call without `readings` and `audit` is refused with that
+change, its `plan_digest`, the `documents_digest` of the governing inventory,
+and every required source with the digest its bytes hold now - so the agent can
+audit the change it is about to make instead of guessing at it. Nothing about
+this is advisory:
 
 - the readings are compared with the reads the hook itself recorded, and those
   recorded reads are consumed at the start of every attempt, so a refused
@@ -123,56 +122,20 @@ Nothing about this is advisory:
 - an audit that reports a violation blocks the update and returns the fix it
   states, so the agent corrects the change rather than retrying it;
 - the readings and the audit are recorded under
-  `<agent-home>/.agent-mem-struct/memory-audits/` before the judge is asked
-  anything.
+  `<agent-home>/.agent-mem-struct/memory-audits/` before applying the plan.
 
-What no digest can prove is that the agent did the thinking, so the independent
-compliance judge still reviews every admitted change. The gate lives in the
+What no digest can prove is that the agent did the thinking: the structural
+checks establish that the audit covers the sources and is bound to this exact
+plan, not that its reasoning is sound or that it found every applicable rule.
+The writer remains responsible for a complete audit. The gate lives in the
 hook, not in one harness's bridge: Pi, Claude Code and Codex are all held to
 the same audit, because they all reach `MemoryUpdate` through the same
 dispatcher and the same `rm_update` mutation path.
 
-The launcher, the provider, the model and the resource limits live in the
-shipped `hooks/judge-policy.json`; a host overrides them in
-`<agent-home>/.agent-mem-struct/memory-judge.json`:
-
-```json
-{
-  "schema": 3,
-  "pi_settings": "<agent-home>/settings.json",
-  "limits": {
-    "timeout_s": 60,
-    "max_input_bytes": 65536,
-    "capture_bytes": 4096,
-    "teardown_s": 2,
-    "completion_reserve_s": 10
-  },
-  "launchers": {
-    "pi": {
-      "extensions": ["C:/absolute/path/to/provider-extension/src/index.ts"]
-    }
-  }
-}
-```
-
-`PI_PROVIDER` and `PI_MODEL` override the provider and model; otherwise the
-host's own `defaultProvider` and `defaultModel` are used, read from
-`pi_settings`. A `limits` block states all five limits; a partial one is
-refused instead of being merged with the policy defaults. The governing
-documents are part of every draft, so a host whose own `RULES.md`,
-`STRUCTURE.md` and indexes are large raises `max_input_bytes` to the room it
-needs rather than relying on the default. One judged write may take up to three
-minutes overall - the ceiling the bridge allows the call - while the judge still
-stops at `timeout_s`: a host that raises `timeout_s` keeps it plus
-`completion_reserve_s` inside that ceiling, and a call answered sooner returns
-at once. A host whose models
-are registered by an extension must name
-that extension in `launchers.pi.extensions`: the launcher keeps
-`--no-extensions` so the judge never loads the agent's own extensions, and
-only these explicit entry files are loaded. That list is a trust boundary, not
-a proof that an extension only registers providers. Until a runnable judge is
-configured, every memory write refuses with the reason and no changes are
-written.
+Obsolete judge configuration is ignored and preserved. An existing
+`<agent-home>/.agent-mem-struct/memory-judge.json` and the `AMS_JUDGE_*`
+variables have no effect on admission, and no installer deletes or rejects
+them, so a host keeps its document for rollback.
 
 ## Safety
 

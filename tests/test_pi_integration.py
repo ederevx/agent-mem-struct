@@ -51,49 +51,6 @@ def make_shared(path: Path) -> Path:
     return path.resolve()
 
 
-JUDGE_STUB = '''\
-import sys
-
-sys.stdin.buffer.read()
-print(sys.argv[1] if len(sys.argv) > 1 else "yes")
-'''
-
-
-def write_judge_settings(home: Path, verdict: str = "yes") -> Path:
-    """Configure this agent home's judge as a stub that answers one word.
-
-    The stub is the judge the settings document names, so tests exercise the
-    real launch path - resolution, the process boundary, the answer contract -
-    without a model call, and can make it refuse by answering `no`.
-    """
-    stub = home / "judge-stub.py"
-    stub.write_text(JUDGE_STUB, encoding="utf-8")
-    answer = verdict
-    host = home / "pi-settings.json"
-    host.write_text(
-        json.dumps({"defaultProvider": "test-provider", "defaultModel": "test-model"}),
-        encoding="utf-8",
-    )
-    document = home / ".agent-mem-struct" / "memory-judge.json"
-    document.parent.mkdir(parents=True, exist_ok=True)
-    document.write_text(
-        json.dumps(
-            {
-                "schema": 3,
-                "pi_settings": str(host),
-                "launchers": {
-                    "pi": {
-                        "command": [sys.executable, str(stub), answer],
-                        "arguments": [],
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    return document
-
-
 def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
     if shared is None:
         shared = make_shared(path.parent / f"{path.name} shared memory")
@@ -110,7 +67,6 @@ def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
         "# Local\n\n**Scope:** this agent\n\n## Mandatory conventions\n\n(none)\n",
         encoding="utf-8",
     )
-    write_judge_settings(path)
     return path, shared
 
 
@@ -196,7 +152,7 @@ def invoke_pi(
 ) -> subprocess.CompletedProcess[str]:
     """Run one hook event, completing the audit protocol for a memory update.
 
-    A memory update is only judged after its caller read the required sources
+    A memory update is applied only after its caller read the required sources
     again and audited the computed change, so a test that submits one goes
     through the same two calls an agent must make: the first refusal carries
     the plan and the digests, the reads are really dispatched, and the second
@@ -1729,9 +1685,10 @@ class PiPackageTests(unittest.TestCase):
         return json.loads(run.stdout)
 
     def test_memory_update_tells_the_hook_the_budget_it_allows(self) -> None:
-        """One judged write may take up to three minutes, and the hook is told
-        that budget: the judge's own `timeout_s` and completion reserve must fit
-        inside it, so a 30 s call budget would cut a slow answer short."""
+        """One write may take up to three minutes, and the hook is told that
+        budget: planning, admitting the audit, the writes and the Git
+        publication all draw on it, so a 30 s call budget would cut a slow
+        publication short."""
         config_home = self.temp / "pi-home-tool"
         config_home.mkdir(parents=True)
         result = self.run_driver(
@@ -2591,6 +2548,21 @@ class MemoryUpdateAuditTests(unittest.TestCase):
         audit.update(overrides)
         return audit
 
+    def admit(self, name: str, **fields: object) -> subprocess.CompletedProcess[str]:
+        """Preview, record the required reads, then submit the audited call."""
+        values: dict[str, object] = dict(
+            operation="create", path=str(self.local), name=name,
+            body="body", summary="A test node.",
+        )
+        values.update(fields)
+        preview = self.preview(self.submit(**values))
+        self.read_required(preview)
+        return self.submit(
+            **values,
+            readings=preview["required_readings"],
+            audit=self.audit(preview),
+        )
+
     def test_an_unaudited_update_is_refused_with_the_computed_change(self) -> None:
         result = self.create()
         self.assertEqual(result.returncode, 3, result.stderr)
@@ -2731,6 +2703,99 @@ class MemoryUpdateAuditTests(unittest.TestCase):
                               self.text(result))
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
+    def test_a_source_changed_after_its_read_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        (self.home / "RULES.md").write_text(
+            "# Rules\n\nEdited after the read.\n", encoding="utf-8"
+        )
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"], audit=self.audit(preview),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("audit-readings-stale", self.text(result))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_a_present_source_omitted_from_the_checks_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"],
+            audit=self.audit(preview, checks=self.checks(preview)[:-1]),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("leaves governing sources unchecked", self.text(result))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_an_audit_bound_to_another_inventory_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"],
+            audit=self.audit(preview, documents_digest="0" * 64),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("audit-documents-stale", self.text(result))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_an_obsolete_judge_document_has_no_effect(self) -> None:
+        document = self.home / ".agent-mem-struct" / "memory-judge.json"
+        document.parent.mkdir(parents=True, exist_ok=True)
+
+        def remove() -> None:
+            if document.is_dir():
+                document.rmdir()
+            document.unlink(missing_ok=True)
+
+        def malformed() -> None:
+            document.write_text("{not json", encoding="utf-8")
+
+        def schema_three() -> None:
+            document.write_text(
+                json.dumps(
+                    {
+                        "schema": 3,
+                        "pi_settings": str(self.home / "settings.json"),
+                        "launchers": {
+                            "pi": {"command": ["definitely-not-a-judge-ams"]}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        def non_regular() -> None:
+            document.mkdir()
+
+        cases = {
+            "absent": remove,
+            "malformed": malformed,
+            "schema-3": schema_three,
+            "non-regular": non_regular,
+        }
+        for label, write in cases.items():
+            with self.subTest(document=label):
+                remove()
+                write()
+                kept = (
+                    document.read_text(encoding="utf-8")
+                    if document.is_file()
+                    else None
+                )
+                result = self.admit(f"note-{label}")
+                self.assertEqual(result.returncode, 0, self.text(result))
+                self.assertTrue(
+                    (self.local / "nodes" / f"note-{label}.md").is_file()
+                )
+                if kept is not None:
+                    self.assertEqual(document.read_text(encoding="utf-8"), kept)
+
     def test_every_harness_is_held_to_the_same_audit(self) -> None:
         for agent in ("claude", "codex"):
             with self.subTest(agent=agent):
@@ -2741,6 +2806,24 @@ class MemoryUpdateAuditTests(unittest.TestCase):
                 self.assertEqual(refused.returncode, 3, refused.stderr)
                 self.assertIn("audit-missing", self.text(refused))
                 self.assertFalse((self.local / "nodes" / f"{agent}-note.md").exists())
+
+    def test_every_harness_admits_the_same_audited_update(self) -> None:
+        for agent in ("pi", "claude", "codex"):
+            with self.subTest(agent=agent):
+                result = invoke_pi(
+                    self.home,
+                    self.event(
+                        operation="create", path=str(self.local),
+                        name=f"{agent}-kept", body="body",
+                        summary="A test node.",
+                    ),
+                    agent=agent,
+                    audited=True,
+                )
+                self.assertEqual(result.returncode, 0, self.text(result))
+                self.assertTrue(
+                    (self.local / "nodes" / f"{agent}-kept.md").is_file()
+                )
 
 
 NOTE_MESSAGE = "memory_update create: note\n\nAdds the note node."
