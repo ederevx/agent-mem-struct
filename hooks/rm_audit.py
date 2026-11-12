@@ -237,7 +237,7 @@ def audit(
     unknown = sorted(set(raw) - AUDIT_KEYS)
     if unknown:
         return None, [_invalid("unknown audit keys: " + ", ".join(unknown))]
-    if raw.get("schema") != 1:
+    if type(raw.get("schema")) is not int or raw.get("schema") != 1:
         return None, [_invalid("`schema` must be 1")]
     bound: dict[str, str] = {}
     for key in ("plan_digest", "documents_digest"):
@@ -271,7 +271,7 @@ def audit(
             return None, [_invalid(f"{where} names no source")]
         if not isinstance(rule, str) or not rule.strip():
             return None, [_invalid(f"{where} cites no rule")]
-        if status not in STATUSES:
+        if not isinstance(status, str) or status not in STATUSES:
             return None, [_invalid(f"{where} status must be pass, violation or not-applicable")]
         if not isinstance(reasoning, str) or not reasoning.strip():
             return None, [_invalid(f"{where} gives no reasoning")]

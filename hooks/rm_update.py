@@ -216,7 +216,9 @@ class MemoryUpdater:
         record = self.record_audit(prepared, inventory, declared, audited)
         if isinstance(record, UpdateResult):
             return record
-        verdict = self.judge.review(prepared, budget_s=self.remaining())
+        verdict = self.judge.review(
+            prepared, inventory=inventory, budget_s=self.remaining()
+        )
         if not verdict.approved:
             return self.conflict(
                 operation, verdict.code, verdict.message, verdict.fix, preview=preview,

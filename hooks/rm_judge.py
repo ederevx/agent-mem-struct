@@ -26,7 +26,6 @@ from typing import Any
 
 from rm_judge_policy import JudgeError, JudgeLaunch, JudgePolicy
 from rm_judge_process import JudgeProcess, ProcessResult
-from rm_support import read_text
 from rm_update_plan import DELETE, MOVE, RMDIR, WRITE, digest
 
 ROOT_DOCUMENT = "MEMORY.md"
@@ -109,7 +108,13 @@ class RefusingJudge:
     def __init__(self, error: JudgeError) -> None:
         self.error = error
 
-    def review(self, plan: Any, *, budget_s: float | None = None) -> Verdict:
+    def review(
+        self,
+        plan: Any,
+        *,
+        inventory: list[dict[str, Any]] | None = None,
+        budget_s: float | None = None,
+    ) -> Verdict:
         return configuration_refusal(self.error)
 
     def inventory(self, plan: Any = None) -> list[dict[str, Any]]:
@@ -151,14 +156,25 @@ class MemoryJudge:
         self.shared_root = Path(shared_root) if shared_root is not None else None
         self.snapshot: list[tuple[Path, bytes | None]] = []
 
-    def review(self, plan: Any, *, budget_s: float | None = None) -> Verdict:
-        """Judge one plan; every failure path refuses, none approves."""
+    def review(
+        self,
+        plan: Any,
+        *,
+        inventory: list[dict[str, Any]] | None = None,
+        budget_s: float | None = None,
+    ) -> Verdict:
+        """Judge one plan; every failure path refuses, none approves.
+
+        Given the inventory an audit was admitted on, the judge renders that
+        requirement and rechecks it, so no reading of its own can describe a
+        revision the audit did not see.
+        """
         try:
             launch = self.policy.resolve()
         except JudgeError as exc:
             return self.config_refusal(exc)
         try:
-            prompt = self.prompt(launch, plan)
+            prompt = self.prompt(launch, plan, inventory=inventory)
             timeout = self.timeout(launch, budget_s)
         except JudgeError as exc:
             return refusal(
@@ -184,7 +200,13 @@ class MemoryJudge:
 
     # -- the requirement and the draft ---------------------------------------
 
-    def prompt(self, launch: JudgeLaunch, plan: Any) -> bytes:
+    def prompt(
+        self,
+        launch: JudgeLaunch,
+        plan: Any,
+        *,
+        inventory: list[dict[str, Any]] | None = None,
+    ) -> bytes:
         """The exact bytes one judgment is asked on, bounded by the policy."""
         parts = [
             "You are the compliance judge for a structured long-term memory store.",
@@ -193,7 +215,7 @@ class MemoryJudge:
             "## The requirement",
             RUBRIC.rstrip(),
         ]
-        parts += self.documents(plan)
+        parts += self.documents(plan, inventory=inventory)
         parts += [
             "",
             "## The judged operation",
@@ -228,7 +250,12 @@ class MemoryJudge:
             )
         return data
 
-    def documents(self, plan: Any = None) -> list[str]:
+    def documents(
+        self,
+        plan: Any = None,
+        *,
+        inventory: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
         """The documents a change is judged against: required ones, then context.
 
         A required document that cannot be read refuses the judgment: a write
@@ -236,9 +263,19 @@ class MemoryJudge:
         Every document read is kept as a snapshot, so "the requirement I
         approved against" can be compared with the requirement that still
         stands once the answer arrives.
+
+        A captured `inventory` is rendered as it was read for the audit and
+        becomes the snapshot, so the audited and the judged requirement are the
+        same bytes.
         """
         self.snapshot = []
         blocks: list[str] = []
+        if inventory is not None:
+            for row in inventory:
+                self.snapshot.append((Path(row["path"]), row["data"]))
+                shown = "(absent)" if row["data"] is None else row["text"]
+                blocks += ["", f"### {row['label']}: {row['path']}", "", shown]
+            return blocks
         for label, path, required in self.sources(plan):
             blocks += ["", f"### {label}: {path}", "", self.read(path, required)]
         return blocks
@@ -285,10 +322,12 @@ class MemoryJudge:
         absent optional document bound by a null digest so its creation during
         review is a visible change rather than a silent one. An unreadable or
         missing required source refuses here, exactly as it refuses a judgment.
+        Each row is read once, so its digest, the text a judgment renders and the
+        bytes its recheck compares describe one revision.
         """
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for _label, path, required in self.sources(plan):
+        for label, path, required in self.sources(plan):
             key = os.path.normcase(str(path.resolve(strict=False)))
             if key in seen:
                 continue
@@ -299,30 +338,48 @@ class MemoryJudge:
                     "prompt",
                     f"the governing document {path} is not a readable regular file",
                 )
-            text, error = read_text(path) if path.is_file() else (None, None)
-            if error is not None:
+            readable, data = self.state(path)
+            if not readable:
                 raise JudgeError(
                     "judge-missing-source",
                     "prompt",
                     f"the governing document {path} is not a readable regular file",
                 )
-            if text is None and required:
+            if data is None and required:
                 raise JudgeError(
                     "judge-missing-source",
                     "prompt",
                     f"the governing document {path} does not exist",
                 )
-            # The digest is taken over the text, exactly as a read receipt hashes
-            # the bytes the read tool opened: CRLF and LF are one document.
+            try:
+                text = (
+                    None
+                    if data is None
+                    else data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+                )
+            except UnicodeDecodeError:
+                raise JudgeError(
+                    "judge-missing-source",
+                    "prompt",
+                    f"the governing document {path} is not readable UTF-8 text",
+                )
+            # One read, one revision: the digest is taken over the text, exactly
+            # as a read receipt hashes the bytes the read tool opened (CRLF and
+            # LF are one document), and the bytes that text came from are the
+            # snapshot the judge renders and rechecks. Reading twice would let
+            # the audit, the judgment and the recheck each describe a different
+            # revision.
             rows.append(
                 {
                     "path": str(path),
+                    "label": label,
                     "digest": (
                         None
                         if text is None
                         else hashlib.sha256(text.encode("utf-8")).hexdigest()
                     ),
                     "text": text or "",
+                    "data": data,
                 }
             )
         return rows

@@ -2698,6 +2698,39 @@ class MemoryUpdateAuditTests(unittest.TestCase):
         present = [row for row in record["documents"] if row["digest"] is not None]
         self.assertEqual(len(record["audit"]["checks"]), len(present))
 
+    def test_an_audit_whose_schema_is_not_the_number_one_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        for schema in (True, "1", 1.0):
+            with self.subTest(schema=schema):
+                result = self.submit(
+                    operation="create", path=str(self.local), name="note",
+                    body="body", summary="A test node.",
+                    readings=preview["required_readings"],
+                    audit=self.audit(preview, schema=schema),
+                )
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertIn("`schema` must be 1", self.text(result))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_a_check_status_that_is_not_a_word_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        for status in (1, True, None, [], {}):
+            with self.subTest(status=status):
+                result = self.submit(
+                    operation="create", path=str(self.local), name="note",
+                    body="body", summary="A test node.",
+                    readings=preview["required_readings"],
+                    audit=self.audit(
+                        preview, checks=self.checks(preview, status=status)
+                    ),
+                )
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertIn("status must be pass, violation or not-applicable",
+                              self.text(result))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
     def test_every_harness_is_held_to_the_same_audit(self) -> None:
         for agent in ("claude", "codex"):
             with self.subTest(agent=agent):

@@ -4,6 +4,29 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T04:40:00-05:00 - the judge reads the revision the audit was admitted on
+
+The audit gate read each governing document to build the inventory it admitted
+an audit against, and then asked the judge to read the same documents again. The
+two readings were seconds apart, and any write to a document in between was
+judged as though the audit had seen it: the agent had audited one requirement,
+the judge approved another, and the freshness check that follows the answer
+compared the judge's second reading with the documents as they stood after the
+answer. A document edited between the two reads could therefore be approved on
+text no audit ever saw, and a document deleted between them was shown to the
+judge as absent while still carrying the digest of the text it used to hold. The
+inventory now takes one read per document and derives the audit text, the judged
+requirement and the post-answer snapshot from those bytes: the judge renders the
+inventory rows the audit was validated against - each one's label, path and text,
+with an absent candidate still shown as `(absent)` - and rechecks the same bytes
+rather than re-reading. The window between the audit and the judgment is closed
+rather than shrunk.
+
+Validation also stopped comparing values by equality alone: `schema` requires
+the integer `1`, excluding booleans and floats that compare equal to it, and a
+check's `status` must be a string before it is compared with the three accepted
+words, so a malformed value receives a validation refusal instead of a `TypeError`.
+
 ## 2026-11-12T03:20:00-05:00 - the writer audits its own change before the judge sees it
 
 A judged write had one reviewer, and it was the model. The agent could ask for

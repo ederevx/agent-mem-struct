@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -839,6 +840,66 @@ class LineEndingTests(Temp):
         self.assertFalse(self.converted(b"one\ntwo\n", b"one\nother\r\n"))
 
 
+class InventoryTests(Temp):
+    """`MemoryJudge.inventory`: one read per document, hashed as it was read."""
+
+    def judged(self):
+        host = self.document(
+            "pi-settings.json", {"defaultProvider": "test-provider", "defaultModel": "m"}
+        )
+        for name, body in (
+            ("RULES.md", "# Rules\n"),
+            ("STRUCTURE.md", "Structure-Version: v1\n"),
+        ):
+            (self.temp / name).write_text(body, encoding="utf-8")
+        judged = judge.MemoryJudge(
+            self.loaded(self.settings(pi_settings=host)), self.memory("# Root\n"), self.temp
+        )
+        plan = Plan("set")
+        plan.effects[0].path = judged.memory_root / "local" / "nodes" / "x.md"
+        return judged, plan
+
+    def test_a_crlf_document_is_hashed_as_its_lf_text(self) -> None:
+        judged, plan = self.judged()
+        (self.temp / "RULES.md").write_bytes(b"# Rules\r\n\r\nOne.\r\n")
+        row = next(r for r in judged.inventory(plan) if r["path"].endswith("RULES.md"))
+        self.assertEqual(row["digest"], hashlib.sha256(b"# Rules\n\nOne.\n").hexdigest())
+        self.assertEqual(row["text"], "# Rules\n\nOne.\n")
+        # The snapshot keeps the bytes on disk, so the recheck compares the file.
+        self.assertEqual(row["data"], b"# Rules\r\n\r\nOne.\r\n")
+
+    def test_an_absent_candidate_has_no_digest_and_no_bytes(self) -> None:
+        judged, plan = self.judged()
+        row = next(
+            r for r in judged.inventory(plan)
+            if Path(r["path"]).name == "MEMORY.md"
+            and Path(r["path"]).parent.name == "nodes"
+        )
+        self.assertIsNone(row["digest"])
+        self.assertIsNone(row["data"])
+        self.assertEqual(row["text"], "")
+
+    def test_a_duplicated_source_is_bound_once(self) -> None:
+        judged, plan = self.judged()
+        inventory = judged.inventory(plan)
+        paths = [os.path.normcase(str(Path(row["path"]).resolve())) for row in inventory]
+        self.assertEqual(len(paths), len(set(paths)))
+
+    def test_a_non_utf8_document_refuses_the_inventory(self) -> None:
+        judged, plan = self.judged()
+        (self.temp / "RULES.md").write_bytes(b"# Rules\n\xff\n")
+        with self.assertRaises(judge.JudgeError) as raised:
+            judged.inventory(plan)
+        self.assertEqual(raised.exception.code, "judge-missing-source")
+
+    def test_a_required_document_that_is_gone_refuses_the_inventory(self) -> None:
+        judged, plan = self.judged()
+        (self.temp / "RULES.md").unlink()
+        with self.assertRaises(judge.JudgeError) as raised:
+            judged.inventory(plan)
+        self.assertEqual(raised.exception.code, "judge-missing-source")
+
+
 class ReviewTests(Temp):
     """`MemoryJudge.review`: the answer only counts while the requirement stands."""
 
@@ -946,6 +1007,34 @@ class ReviewTests(Temp):
         judged = self.judged()
         with self.fake(lambda: (self.temp / "RULES.md").unlink()):
             verdict = judged.review(self.plan(judged))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.code, "judge-stale-draft")
+
+    def test_the_judge_reads_the_bytes_the_audit_was_admitted_on(self) -> None:
+        """An inventory captured for the audit is what the judge must read.
+
+        Without it the judge re-reads every document after the audit, so a
+        requirement edited in that window is judged as if the audit had seen it.
+        """
+        (self.temp / "RULES.md").write_text("# Rules\n", "utf-8")
+        judged = self.judged()
+        plan = self.plan(judged)
+        inventory = judged.inventory(plan)
+        (self.temp / "RULES.md").write_text("edited after the audit\n", "utf-8")
+        prompts: list[bytes] = []
+
+        class FakeProcess:
+            def __init__(self, capture, teardown) -> None:
+                self.capture = capture
+
+            def run(self, launch, prompt, deadline=None):
+                prompts.append(prompt)
+                return process.ProcessResult(b"yes\n", 0)
+
+        with mock.patch.object(judge, "JudgeProcess", FakeProcess):
+            verdict = judged.review(plan, inventory=inventory)
+        self.assertIn(b"# Rules", prompts[0])
+        self.assertNotIn(b"edited after the audit", prompts[0])
         self.assertFalse(verdict.approved)
         self.assertEqual(verdict.code, "judge-stale-draft")
 

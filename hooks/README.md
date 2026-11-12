@@ -269,7 +269,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   governing source again and audited that exact plan, and `rm_judge.MemoryJudge`
   reviews it against the requirement (the root and shared conventions plus the
   policy) with the agent's own model, and only a clean `yes` lets
-  `rm_update.MemoryUpdater.apply` materialize it. The audit is not advisory: a
+  `rm_update.MemoryUpdater.apply` materialize it. The audit text, the judge's
+  requirement and its freshness snapshot derive from one captured read of each
+  governing document, so a requirement edited between the audit and the
+  judgment is never the text the write is approved against. The audit is not advisory: a
   call without `readings` and `audit` is refused with the computed change, its
   `plan_digest`, the `documents_digest` of the governing inventory, and every
   required source with the digest its bytes hold now; the recorded reads are
@@ -289,9 +292,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   bound; an over-limit draft is refused, never shortened. The bridge allows the
   whole call three minutes and states that as the hook's budget, so the judge's
   own `timeout_s` plus its completion reserve fit inside it. Before applying, the bytes
-  each path held when the plan was recorded, and every document the judge
-  read, are compared again; a change to either returns `judge-stale-draft`
-  with no planned change applied. A refusal, an unreachable launcher, an
+  each path held when the plan was recorded, and every governing document in
+  the audited inventory, are compared again; a change to either returns
+  `judge-stale-draft` with no planned change applied. A refusal, an
+  unreachable launcher, an
   answer that is not exactly `yes`, or a draft over the input bound returns
   `judge-refused`, `judge-unavailable`, `judge-invalid-answer`,
   `judge-prompt-too-large`, or `judge-no-budget`, and writes nothing. A
