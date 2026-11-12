@@ -21,7 +21,7 @@ TESTS = Path(__file__).resolve().parent
 SCRATCH = Path(
     os.environ.get(
         "AGENT_MEM_STRUCT_TEST_TMP",
-        str(Path.home() / "tmp" / "agent-mem-struct-tests"),
+        str(Path.home() / ".tmp" / "agent-mem-struct-tests"),
     )
 )
 SCRATCH.mkdir(parents=True, exist_ok=True)

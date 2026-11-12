@@ -4,6 +4,14 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T01:15:00-05:00 - the judge suite nests its scratch under the hidden root
+
+`tests/test_judge.py` created its scratch directory at the retired visible root
+on import, so a suite run re-created a path every host has moved away from, and
+on a host whose conventions forbid that path the run broke the rule it was
+testing. The default is now the hidden root, beside the tree the other test
+modules already use, and `AGENT_MEM_STRUCT_TEST_TMP` still overrides it.
+
 ## 2026-11-12T00:15:00-05:00 - the judge reads the change, not two copies of the file
 
 The draft shown to the judge printed both sides of every write in full, so a
