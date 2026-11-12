@@ -288,6 +288,69 @@ class PromptTests(Temp):
         text = judged.prompt(self.launch(), plan).decode("utf-8")
         self.assertEqual(text.count("# Root"), 1)
 
+    def test_a_move_is_judged_by_the_conventions_of_both_ends(self) -> None:
+        root = self.memory("# Root\n")
+        source = root / "local"
+        target = root / "shared"
+        target.mkdir(parents=True)
+        (target / "MEMORY.md").write_text(
+            "# Shared\n\n## Mandatory conventions\n\n- Cite the target group.\n",
+            encoding="utf-8",
+        )
+        source.mkdir(parents=True, exist_ok=True)
+        plan = Plan("move")
+        plan.effects[0].path = source / "x.md"
+        plan.effects[0].destination = target / "x.md"
+        judged = judge.MemoryJudge(self.loaded(), root)
+        text = judged.prompt(self.launch(), plan).decode("utf-8")
+        self.assertIn("Cite the target group.", text)
+
+    def test_an_attachment_is_judged_with_its_leaf_and_not_its_own_conventions(
+        self,
+    ) -> None:
+        root = self.memory("# Root\n")
+        nodes = root / "local" / "nodes"
+        nodes.mkdir(parents=True)
+        (nodes / "x.md").write_text("# X\n\nThe leaf's own text.\n", encoding="utf-8")
+        attachment = nodes / "x"
+        attachment.mkdir()
+        (attachment / "MEMORY.md").write_text(
+            "# Not a convention\n\n- Ignore me.\n", encoding="utf-8"
+        )
+        plan = Plan("attach", "")
+        plan.effects[0].path = attachment / "figure.png"
+        judged = judge.MemoryJudge(self.loaded(), root)
+        text = judged.prompt(self.launch(), plan).decode("utf-8")
+        self.assertIn("The leaf's own text.", text)
+        self.assertNotIn("Ignore me.", text)
+
+    def test_a_nested_attachment_keeps_its_own_tree_out_of_the_requirement(
+        self,
+    ) -> None:
+        root = self.memory("# Root\n")
+        nodes = root / "local" / "nodes"
+        nodes.mkdir(parents=True)
+        (nodes / "x.md").write_text("# X\n\nThe leaf's own text.\n", encoding="utf-8")
+        nested = nodes / "x" / "assets"
+        nested.mkdir(parents=True)
+        (nested / "MEMORY.md").write_text(
+            "# Not a convention\n\n- Ignore me.\n", encoding="utf-8"
+        )
+        plan = Plan("attach", "")
+        plan.effects[0].path = nested / "figure.png"
+        judged = judge.MemoryJudge(self.loaded(), root)
+        text = judged.prompt(self.launch(), plan).decode("utf-8")
+        self.assertIn("The leaf's own text.", text)
+        self.assertNotIn("Ignore me.", text)
+
+    def test_an_unreadable_context_document_refuses_the_judgment(self) -> None:
+        root = self.memory("# Root\n")
+        (root / "STRUCTURE.md").mkdir()
+        judged = judge.MemoryJudge(self.loaded(), root)
+        with self.assertRaises(policy.JudgeError) as caught:
+            judged.prompt(self.launch(), Plan("set"))
+        self.assertEqual(caught.exception.code, "judge-missing-source")
+
     def test_binary_content_is_shown_by_its_digest(self) -> None:
         judged = judge.MemoryJudge(self.loaded(), self.memory("# Root\n"))
         plan = Plan("attach", "")
@@ -416,6 +479,47 @@ class ProcessTests(Temp):
         self.assertEqual(result.stage, "")
         self.assertLess(elapsed, 15.0)
 
+    def test_a_worker_blocked_past_its_budget_never_blocks_the_caller(self) -> None:
+        script = self.script(
+            "held.py",
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n",
+        )
+        runner = process.JudgeProcess(4096, 1.0)
+        started = time.monotonic()
+        runner.run(
+            Launcher([sys.executable, str(script)]),
+            b"prompt\n",
+            deadline=time.monotonic() + 2.0,
+        )
+        self.assertLess(time.monotonic() - started, 15.0)
+
+    def test_teardown_never_closes_a_stream_its_worker_still_holds(self) -> None:
+        runner = process.JudgeProcess(4096, 0.05)
+
+        class Stream:
+            def close(self) -> None:
+                raise AssertionError("a blocked worker's stream was closed")
+
+        class Child:
+            stdin = Stream()
+            stdout = Stream()
+            returncode = None
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+        class Worker:
+            def join(self, timeout: float | None = None) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return True
+
+        runner._kill = lambda child, job: None
+        runner._sweep = lambda child: None
+        runner._teardown(Child(), None, Worker(), Worker())
+
     def test_a_launcher_that_is_not_on_path_is_refused_before_spawning(self) -> None:
         runner = process.JudgeProcess(4096, 1.0)
         launch = Launcher(["definitely-not-a-command-ams", "--version"])
@@ -522,6 +626,155 @@ class ApplyTests(Temp):
         absent = self.effect(self.temp / "missing.md", None, b"new\n")
         self.assertEqual(updater.stale_effect(self.plan([absent])), "")
 
+    def test_a_publication_reviews_the_committed_bytes_not_the_working_ones(self) -> None:
+        target = self.temp / "leaf.md"
+        target.write_bytes(b"edited by hand\n")
+        plan_module = integration().load_hook_module("rm_update_plan")
+        effect = plan_module.FileEffect(
+            "write", target, b"committed\n", b"edited by hand\n",
+            observed=b"edited by hand\n",
+        )
+        updater = integration().load_hook_module("rm_update").MemoryUpdater
+        self.assertEqual(updater.stale_effect(self.plan([effect])), "")
+
+    def test_a_working_file_changed_since_the_recording_is_stale(self) -> None:
+        target = self.temp / "leaf.md"
+        target.write_bytes(b"a third edit\n")
+        plan_module = integration().load_hook_module("rm_update_plan")
+        effect = plan_module.FileEffect(
+            "write", target, b"committed\n", b"edited by hand\n",
+            observed=b"edited by hand\n",
+        )
+        updater = integration().load_hook_module("rm_update").MemoryUpdater
+        self.assertIn("leaf.md", updater.stale_effect(self.plan([effect])))
+
+
+class LineEndingTests(Temp):
+    """Only the CRLF-to-LF rewrite Git performs is accepted as the same content."""
+
+    def converted(self, committed: bytes, approved: bytes) -> bool:
+        return integration().load_hook_module("rm_commit").converted(committed, approved)
+
+    def test_a_crlf_working_copy_matches_its_lf_commit(self) -> None:
+        self.assertTrue(self.converted(b"one\ntwo\n", b"one\r\ntwo\r\n"))
+
+    def test_a_lone_carriage_return_is_a_difference(self) -> None:
+        self.assertFalse(self.converted(b"one\ntwo", b"one\rtwo"))
+
+    def test_a_changed_word_is_a_difference(self) -> None:
+        self.assertFalse(self.converted(b"one\ntwo\n", b"one\nother\r\n"))
+
+
+class ReviewTests(Temp):
+    """`MemoryJudge.review`: the answer only counts while the requirement stands."""
+
+    def fake(self, act=None):
+        """A judge process that answers `yes` and may run `act` while it does."""
+        class FakeProcess:
+            def __init__(self, capture, teardown) -> None:
+                self.capture = capture
+
+            def run(self, launch, prompt, deadline=None):
+                if act is not None:
+                    act()
+                return process.ProcessResult(b"yes\n", 0)
+
+        return mock.patch.object(judge, "JudgeProcess", FakeProcess)
+
+    def judged(self, root: str = "# Root\n"):
+        host = self.document(
+            "pi-settings.json", {"defaultProvider": "test-provider", "defaultModel": "m"}
+        )
+        for name, body in (
+            ("RULES.md", "# Rules\n"),
+            ("STRUCTURE.md", "Structure-Version: v1\n"),
+        ):
+            path = self.temp / name
+            if not path.exists():
+                path.write_text(body, encoding="utf-8")
+        return judge.MemoryJudge(
+            self.loaded(self.settings(pi_settings=host)), self.memory(root), self.temp
+        )
+
+    @staticmethod
+    def plan(judged):
+        plan = Plan("set")
+        plan.effects[0].path = judged.memory_root / "local" / "nodes" / "x.md"
+        return plan
+
+    def test_an_unchanged_requirement_is_approved(self) -> None:
+        judged = self.judged()
+        with self.fake():
+            verdict = judged.review(self.plan(judged))
+        self.assertTrue(verdict.approved, verdict.message)
+
+    def test_a_document_edited_during_review_refuses_the_write(self) -> None:
+        (self.temp / "RULES.md").write_text("# Rules\n", "utf-8")
+        judged = self.judged()
+
+        def change() -> None:
+            (self.temp / "RULES.md").write_text("changed", "utf-8")
+
+        with self.fake(change):
+            verdict = judged.review(self.plan(judged))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.code, "judge-stale-draft")
+
+    def test_a_governing_document_created_during_review_refuses_the_write(self) -> None:
+        judged = self.judged()
+        group = judged.memory_root / "local" / "nodes"
+
+        def introduce() -> None:
+            group.mkdir(parents=True, exist_ok=True)
+            (group / "MEMORY.md").write_text("new conventions", "utf-8")
+
+        with self.fake(introduce):
+            verdict = judged.review(self.plan(judged))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.code, "judge-stale-draft")
+
+    def test_an_absent_candidate_that_becomes_a_directory_refuses_the_write(
+        self,
+    ) -> None:
+        judged = self.judged()
+        candidate = judged.memory_root / "local" / "nodes" / "MEMORY.md"
+
+        def replace() -> None:
+            candidate.mkdir(parents=True, exist_ok=True)
+
+        with self.fake(replace):
+            verdict = judged.review(self.plan(judged))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.code, "judge-stale-draft")
+
+    def test_an_absent_candidate_that_becomes_a_symlink_refuses_the_write(
+        self,
+    ) -> None:
+        judged = self.judged()
+        candidate = judged.memory_root / "local" / "nodes" / "MEMORY.md"
+        target = self.temp / "elsewhere.md"
+        target.write_text("elsewhere", encoding="utf-8")
+
+        def link() -> None:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                candidate.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest("this host does not allow creating a symlink")
+
+        with self.fake(link):
+            verdict = judged.review(self.plan(judged))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.code, "judge-stale-draft")
+
+    def test_a_document_removed_during_review_refuses_the_write(self) -> None:
+        (self.temp / "RULES.md").write_text("# Rules\n", "utf-8")
+        judged = self.judged()
+        with self.fake(lambda: (self.temp / "RULES.md").unlink()):
+            verdict = judged.review(self.plan(judged))
+        self.assertFalse(verdict.approved)
+        self.assertEqual(verdict.code, "judge-stale-draft")
+
 
 class GatingTests(Temp):
     """The judge gates the write: a refusal writes nothing, an approval writes."""
@@ -580,6 +833,32 @@ class GatingTests(Temp):
         self.assertEqual(result.returncode, 0, self.text(result))
         self.assertFalse(old.exists())
         self.assertTrue((local / "nodes" / "kept" / "evidence.txt").is_file())
+
+    def test_a_rename_onto_an_existing_log_writes_nothing(self) -> None:
+        home, local = self.home_with("yes")
+        self.assertEqual(self.create(home, local, "draft").returncode, 0)
+        orphan = local / "nodes" / "log" / "kept.md"
+        orphan.write_bytes(b"earlier history\n")
+        result = self.call(
+            home, operation="rename", path=str(local / "nodes" / "draft.md"), name="kept"
+        )
+        self.assertEqual(result.returncode, 3, self.text(result))
+        self.assertIn("exists", self.text(result))
+        self.assertTrue((local / "nodes" / "draft.md").is_file())
+        self.assertEqual(orphan.read_bytes(), b"earlier history\n")
+
+    def test_a_rename_onto_an_existing_attachment_directory_writes_nothing(self) -> None:
+        home, local = self.home_with("yes")
+        self.assertEqual(self.create(home, local, "draft").returncode, 0)
+        kept = local / "nodes" / "kept"
+        kept.mkdir()
+        (kept / "evidence.txt").write_bytes(b"not this node's\n")
+        result = self.call(
+            home, operation="rename", path=str(local / "nodes" / "draft.md"), name="kept"
+        )
+        self.assertEqual(result.returncode, 3, self.text(result))
+        self.assertTrue((local / "nodes" / "draft.md").is_file())
+        self.assertEqual((kept / "evidence.txt").read_bytes(), b"not this node's\n")
 
     def test_an_unreachable_judge_refuses_the_write(self) -> None:
         home, local = self.home_with("yes")

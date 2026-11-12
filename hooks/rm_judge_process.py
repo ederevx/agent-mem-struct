@@ -178,6 +178,15 @@ class JudgeProcess:
                         return
             except (OSError, ValueError) as exc:
                 state["capture"] = str(exc) or type(exc).__name__
+            finally:
+                # The reader is finished with the pipe, so it closes it. A
+                # teardown that closed this stream from outside could deadlock
+                # against this read; a reader that never returns leaves the
+                # stream to the process's own exit.
+                try:
+                    child.stdout.close()
+                except (OSError, ValueError):
+                    pass
 
         writer = threading.Thread(target=feed, name="judge-stdin", daemon=True)
         reader = threading.Thread(target=drain, name="judge-stdout", daemon=True)
@@ -240,11 +249,16 @@ class JudgeProcess:
             job.close()
         elif os.name != "nt":
             self._sweep(child)
-        for stream in (child.stdin, child.stdout):
+        # A stream is only closed once the worker that owns it has stopped:
+        # closing a buffered stream a blocked reader still holds can deadlock
+        # inside the stream's own lock and defeat this deadline. A surviving
+        # worker already refuses the run above, so the pipe is left to it.
+        for stream, worker in ((child.stdin, writer), (child.stdout, reader)):
+            if stream is None or worker.is_alive():
+                continue
             try:
-                if stream is not None:
-                    stream.close()
-            except OSError:
+                stream.close()
+            except (OSError, ValueError):
                 pass
 
     # -- platform boundaries -------------------------------------------------

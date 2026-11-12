@@ -24,6 +24,19 @@ PUBLISH_SECONDS = 15.0
 PUSH_ATTEMPTS = 3
 
 
+def converted(committed: bytes, approved: bytes) -> bool:
+    """Whether one side is the other with CRLF line ends, and nothing else.
+
+    The only rewrite `text`/`eol`/`core.autocrlf` performs on its own is the
+    CRLF-LF pair, so a lone carriage return stays significant and a clean
+    filter that changes any other byte leaves the two unequal.
+    """
+    return (
+        committed.replace(b"\r\n", b"\n") == approved
+        or approved.replace(b"\r\n", b"\n") == committed
+    )
+
+
 class CommitOutcome:
     """What became of one mutation's paths: a commit, a push, or a conflict."""
 
@@ -140,15 +153,25 @@ class CommitPublisher:
             mode = self.worktree.mode(sha, name)
             if mode not in ("100644", "100755"):
                 return f"{name} is not committed as a regular file"
-            if not self.worktree.transformed(name):
-                if self.worktree.blob_bytes(sha, name) != data:
+            if self.worktree.blob_bytes(sha, name) != data:
+                rewrite = self.worktree.transformed(name)
+                if rewrite is None:
+                    return (
+                        f"{name} could not be checked: the repository would not "
+                        "say whether Git rewrites it"
+                    )
+                if not rewrite:
                     return f"{name} is not the approved bytes"
-                continue
-            approved = self.worktree.object_id(data, name)
-            if approved is None:
-                return f"the approved bytes of {name} could not be hashed"
-            if committed != approved:
-                return f"{name} is not the approved bytes"
+                # A line-ending conversion is the one rewrite that leaves the
+                # content the judge approved intact. A declared clean filter is
+                # not: it can turn approved text into anything, so a commit
+                # made under one is refused rather than trusted.
+                committed = self.worktree.blob_bytes(sha, name)
+                if committed is None or not converted(committed, data):
+                    return (
+                        f"{name} is not the approved bytes; the repository's "
+                        "clean filter rewrote them"
+                    )
         return ""
 
     def mismatch(self, sha: str, mismatch: str) -> CommitOutcome:

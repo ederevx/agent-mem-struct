@@ -31,9 +31,20 @@ DIRECTORY = "directory"
 ABSENT = "absent"
 UNREADABLE = "unreadable"
 
+_UNOBSERVED: Any = object()
+
+
+class PlanConflict(Exception):
+    """A mutation that cannot be recorded without destroying unseen content."""
+
 
 class FileEffect:
-    """One change to the file system, with the bytes on both sides of it."""
+    """One change to the file system, with the bytes on both sides of it.
+
+    `before` is the original the judge is shown, which for a publication is the
+    last committed bytes rather than what the working file happens to hold;
+    `observed` is that working state, the one an apply must still find.
+    """
 
     def __init__(
         self,
@@ -42,12 +53,14 @@ class FileEffect:
         before: bytes | None = None,
         after: bytes | None = None,
         destination: Path | None = None,
+        observed: Any = _UNOBSERVED,
     ) -> None:
         self.kind = kind
         self.path = path
         self.before = before
         self.after = after
         self.destination = destination
+        self.observed = before if observed is _UNOBSERVED else observed
 
     def key(self) -> tuple[Any, ...]:
         return (
@@ -55,6 +68,7 @@ class FileEffect:
             str(self.path),
             self.before,
             self.after,
+            self.observed,
             str(self.destination) if self.destination is not None else None,
         )
 
@@ -218,12 +232,13 @@ class PlanRecorder:
 
     def write(self, path: Path, data: bytes | None, before: bytes | None = None) -> None:
         key = self.key(path)
+        current = self.observe(path)
         if key in self.planned:
             before = self.planned[key]
         elif before is None:
-            before = self.observe(path)
+            before = current
         kind = WRITE if data is not None else DELETE
-        self.effects.append(FileEffect(kind, path, before, data))
+        self.effects.append(FileEffect(kind, path, before, data, observed=current))
         self.planned[key] = data
         self.planned_paths[key] = path
 
@@ -250,6 +265,11 @@ class PlanRecorder:
 
     def rename(self, source: Path, destination: Path) -> None:
         """Move a file, or every file under a directory, effect by effect."""
+        if self.state(destination) != ABSENT:
+            raise PlanConflict(
+                f"{destination} already exists, so the rename would replace "
+                "content the judge was never shown"
+            )
         if self.is_dir(source):
             for child, data in self._tree(source):
                 target = destination / child.relative_to(source)

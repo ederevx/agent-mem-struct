@@ -145,21 +145,21 @@ class GitWorktree:
         )
         return result.stdout if result.returncode == 0 else None
 
-    def transformed(self, relative: str) -> bool:
+    def transformed(self, relative: str) -> bool | None:
         """Whether Git rewrites this path's bytes on its way into a commit.
 
         A declared `text`, `filter` or `eol` attribute - or a `core.autocrlf` or
         `core.eol` setting, which rewrites line endings on its own - makes the
         committed blob a function of the working bytes rather than those bytes
-        themselves, so the comparison falls back to ids; an unreadable answer is
-        treated as a transformation and never as proof of exact bytes.
+        themselves. None means the question went unanswered, which a caller
+        treats as a failed check rather than as permission.
         """
         result = self.run(
             "check-attr", "-z", "text", "filter", "eol", "--", relative,
             budget=self.limit(default=QUERY_BUDGET),
         )
         if result.returncode != 0:
-            return True
+            return None
         values = result.stdout.split("\0")[2::3]
         if any(value not in ("unspecified", "unset") for value in values):
             return True
@@ -174,23 +174,6 @@ class GitWorktree:
             "config", "--get", "core.eol", budget=self.limit(default=QUERY_BUDGET)
         ).stdout.strip().lower()
         return eol in ("lf", "crlf")
-
-    def object_id(self, data: bytes, relative: str) -> str | None:
-        """The blob id Git would store for `data` at `relative`, filters applied.
-
-        Comparing ids rather than bytes keeps the comparison honest about the
-        clean filter, so a working file with CRLF endings and the LF bytes Git
-        records are the same approved content.
-        """
-        result = self.run_bytes(
-            "hash-object", "--stdin", f"--path={relative}",
-            input_bytes=data,
-            budget=self.limit(default=QUERY_BUDGET),
-        )
-        if result.returncode != 0:
-            return None
-        identifier = result.stdout.decode("ascii", "replace").strip()
-        return identifier or None
 
     def mode(self, sha: str, relative: str) -> str | None:
         """One path's Git mode at `sha` (`100644`, `100755`, ...), or None."""
@@ -215,6 +198,7 @@ class GitWorktree:
         if result.returncode != 0:
             return None
         return [entry for entry in result.stdout.split("\0") if entry]
+
     def detail(self, completed: subprocess.CompletedProcess[str]) -> str:
         """The one line of a failed git result worth reporting."""
         text = (completed.stderr or completed.stdout or "").strip()

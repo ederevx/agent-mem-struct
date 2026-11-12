@@ -18,11 +18,18 @@ code. Only an exact `yes` lets the plan reach the disk; a crash, a deadline, a
 prompt over the input limit, an unreadable answer, or any other word refuses the
 write, so a broken judge costs a retried tool call and never an unjudged write.
 A shared write is committed and pushed only when the commit holds exactly the
-approved snapshot: the same path set, a regular file at every path, and the
-identical bytes or - where the repository or its configuration rewrites that
-path on the way in, through a clean filter, `text`/`eol` attribute or
-`core.autocrlf` - the object id those rules make of the approved bytes, so a
-hand edit, a mode change or a missing upstream is reported instead of pushed.
+approved snapshot - the same path set, a regular file at every path, and the
+approved bytes, allowing only a line-ending conversion where the repository
+asks for one. A hand edit, a path that is not a regular file, or a missing
+upstream is reported instead of pushed.
+
+Approval is bound to the requirement it was given: every document the prompt
+carried - required, optional, each ancestor group's `MEMORY.md` and an
+attachment's owning leaf - is read again once the answer arrives and before the
+plan is applied, and a document edited, removed, introduced, or made
+unreadable in between refuses the write. Absence and unreadability are kept
+apart, so an unreadable document is never mistaken for one that imposes
+nothing.
 
 The requirement the judge applies is written for what it is actually shown:
 the owner's documents, the operation's own statement of intent, and both sides
@@ -34,7 +41,11 @@ extension in `launchers.pi.extensions`, since the launcher keeps
 `--no-extensions`; those entries must be readable regular files. The log date
 is fixed once per update, so a re-recorded draft is identical even across
 midnight, and a plan is applied only while the files on disk still hold the
-judged bytes.
+judged bytes and every governing document the judge read - including the
+conventions of each ancestor group, and the leaf an attachment belongs to -
+still reads exactly as it did, so a requirement edited, removed or introduced
+during the judgment refuses the write instead of approving against text that
+no longer stands.
 
 ## 2026-11-10T19:35:00-05:00 - the second conventions check covers the finished work
 

@@ -54,6 +54,7 @@ from rm_update_plan import (
     RMDIR,
     UNREADABLE,
     WRITE,
+    PlanConflict,
     PlanRecorder,
     UpdatePlan,
     digest,
@@ -151,8 +152,11 @@ class MemoryUpdater:
         """Record the mutation, judge it, then write exactly what was judged.
 
         `budget_s` is the hook's remaining time; the review and the publish
-        both draw on it, so neither outlives the caller's own deadline.
+        both draw on it, so neither outlives the caller's own deadline. The log
+        date is fixed here, at the start of the one update, so a draft recorded
+        again is identical even across midnight.
         """
+        self.date = datetime.date.today().isoformat()
         self.deadline = (
             None if budget_s is None else time.monotonic() + float(budget_s)
         )
@@ -183,7 +187,15 @@ class MemoryUpdater:
     def prepare(self, request: dict[str, Any]) -> UpdatePlan | UpdateResult:
         """Record what this mutation would change, writing none of it."""
         self.tree = PlanRecorder()
-        result = self.dispatch(request)
+        try:
+            result = self.dispatch(request)
+        except PlanConflict as refusal:
+            return self.conflict(
+                self.operation(request),
+                "would-overwrite",
+                f"{refusal}.",
+                fix="choose a name that is free, or remove what is there first",
+            )
         if not result.ok:
             return result
         return UpdatePlan(
@@ -204,6 +216,14 @@ class MemoryUpdater:
                 f"{stale} changed after the judgment; no planned changes applied.",
                 fix="reread the affected memory, then retry the same update",
             )
+        if not self.judge.unchanged():
+            return self.conflict(
+                plan.operation,
+                "judge-stale-requirement",
+                "a governing document changed after the judgment; no planned "
+                "changes applied.",
+                fix="reread the governing documents, then retry the same update",
+            )
         self.materialize(plan)
         if plan.operation == "commit":
             return self.publish_worktree(plan)
@@ -213,8 +233,11 @@ class MemoryUpdater:
     def stale_effect(plan: UpdatePlan) -> str:
         """The first path whose bytes on disk are no longer the judged ones.
 
-        Only a path's first effect is compared: a later effect on the same path
-        starts from the bytes this plan itself would have written there.
+        The comparison is with the state the plan observed, not with the
+        original the judge was shown: a publication reviews the last committed
+        bytes while the working file already holds the hand edit it publishes.
+        Only a path's first effect is compared, because a later effect on the
+        same path starts from the bytes this plan itself would have written.
         """
         seen: set[str] = set()
         for effect in plan.effects:
@@ -228,7 +251,7 @@ class MemoryUpdater:
                 current: bytes | None = effect.path.read_bytes()
             except OSError:
                 current = None
-            if current != effect.before:
+            if current != effect.observed:
                 return str(effect.path)
         return ""
 
@@ -598,7 +621,9 @@ class MemoryUpdater:
             )
         if state == FILE:
             data = self.tree.observe(path)
-            self.tree.write(path, data)
+            # The judge compares a publication with what is committed, not with
+            # the working file that already holds the hand edit.
+            self.tree.write(path, data, before=self.head_bytes(path, edits))
             self.pin(path, edits)
             return None
         previous = edits.previous_body(path) or ""
@@ -606,19 +631,35 @@ class MemoryUpdater:
         self.pin(path, edits)
         return None
 
-    def pin(
-        self, path: Path, edits: WorktreeEdits, previous: str | None = None
-    ) -> None:
-        """Record the Git facts a publication of `path` is verified against."""
+    def git_target(self, path: Path, edits: WorktreeEdits) -> tuple[GitWorktree, str] | None:
+        """The worktree holding `path` and its repo-relative name, or None."""
         repo = edits.repo_root(path)
         if repo is None:
-            return
+            return None
         root = repo.resolve(strict=False)
         try:
             relative = path.resolve(strict=False).relative_to(root).as_posix()
         except ValueError:
+            return None
+        return GitWorktree(root), relative
+
+    def head_bytes(self, path: Path, edits: WorktreeEdits) -> bytes | None:
+        """The bytes `path` had in HEAD, which is what a publication replaces."""
+        target = self.git_target(path, edits)
+        if target is None:
+            return None
+        worktree, relative = target
+        return worktree.blob_bytes("HEAD", relative)
+
+    def pin(
+        self, path: Path, edits: WorktreeEdits, previous: str | None = None
+    ) -> None:
+        """Record the Git facts a publication of `path` is verified against."""
+        target = self.git_target(path, edits)
+        if target is None:
             return
-        worktree = GitWorktree(root)
+        worktree, relative = target
+        root = worktree.root
         head_key = f"repo:{root}:head"
         if head_key not in self.tree.context:
             self.tree.context[head_key] = worktree.head()
@@ -781,11 +822,17 @@ class MemoryUpdater:
         if name == leaf.stem:
             return self.ok("rename", note="already named " + name)
         new_leaf = leaf.parent / f"{name}.md"
-        if self.tree.exists(new_leaf):
-            return self.conflict("rename", "exists", f"{new_leaf} already exists.")
         log = leaf.parent / "log" / leaf.name
         new_log = leaf.parent / "log" / f"{name}.md"
         attachment = leaf.parent / leaf.stem
+        new_attachment = leaf.parent / name
+        for existing in (new_leaf, new_log):
+            if self.tree.exists(existing):
+                return self.conflict("rename", "exists", f"{existing} already exists.")
+        if self.tree.is_dir(new_attachment):
+            return self.conflict(
+                "rename", "exists", f"{new_attachment} already exists."
+            )
         changed = [str(new_leaf), str(new_log), str(leaf), str(log)]
         changed.extend(self.rewrite_links(leaf.parent.parent, leaf.stem, name))
         if self.tree.exists(log):
@@ -793,8 +840,8 @@ class MemoryUpdater:
         self.tree.rename(leaf, new_leaf)
         if self.tree.is_dir(attachment):
             changed.append(str(attachment))
-            changed.append(str(leaf.parent / name))
-            self.tree.rename(attachment, leaf.parent / name)
+            changed.append(str(new_attachment))
+            self.tree.rename(attachment, new_attachment)
         return self.ok("rename", changed=changed)
 
     def op_retire(self, request: dict[str, Any]) -> UpdateResult:

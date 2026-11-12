@@ -262,7 +262,18 @@ The bridge maps Pi events onto the hook's event vocabulary:
   plus the `pre_memory` feature summary.
 - The bridge also registers `memory_update`, the structural mutation tool,
   which runs the hook's `MemoryUpdate` event once the shared worktree has
-  fast-forwarded. `rm_update.MemoryUpdater` materializes every required
+  fast-forwarded. Every mutation is first recorded as a plan - the bytes each
+  path would gain, the bytes it holds now, and every rename, removal, and
+  directory - and written nowhere; `rm_judge.MemoryJudge` then reviews that
+  plan against the requirement (the root and shared conventions plus the
+  policy) with the agent's own model, and only a clean `yes` lets
+  `rm_update.MemoryUpdater.apply` materialize it. Before applying, the bytes
+  each path held when the plan was recorded, and every document the judge
+  read, are compared again; a change to either returns `judge-stale-draft`
+  with no planned change applied. A refusal, an unreachable launcher, an
+  answer that is not exactly `yes`, or a draft over `max_input_bytes` returns
+  `judge-refused` / `judge-unavailable` / `judge-answer` / `judge-too-large`
+  and writes nothing. `rm_update.MemoryUpdater` materializes every required
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
   mechanical, and supports create, set, log, rename, retire, requires,
@@ -296,7 +307,8 @@ The bridge maps Pi events onto the hook's event vocabulary:
   resolves a conflict itself: `control-invalid`, `stale-protocol`,
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
-  `exists`, `message-lint`, `non-ascii`, and `bad-request`
+  `exists`, `message-lint`, `non-ascii`, `bad-request`, `unapproved-working-tree`,
+  and `overwrite`
   come back as a conflict report for the agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`

@@ -90,7 +90,9 @@ context files or extensions, which answers exactly `yes` or `no`. Only `yes`
 reaches the disk; a crash, a deadline, an unreadable answer or a missing
 document refuses the write, so a broken judge costs a retried tool call and
 never an unjudged write. A shared write is pushed only when its commit holds
-exactly the approved paths and bytes.
+exactly the approved paths and bytes - a line-ending conversion aside - and
+only while the governing documents still read as they did when the judge saw
+them, checked once the answer arrives and before the plan is applied.
 
 The launcher, the provider, the model and the resource limits live in the
 shipped `hooks/judge-policy.json`; a host overrides them in
@@ -100,7 +102,13 @@ shipped `hooks/judge-policy.json`; a host overrides them in
 {
   "schema": 3,
   "pi_settings": "<agent-home>/settings.json",
-  "limits": {"timeout_s": 60},
+  "limits": {
+    "timeout_s": 60,
+    "max_input_bytes": 65536,
+    "capture_bytes": 4096,
+    "teardown_s": 2,
+    "completion_reserve_s": 10
+  },
   "launchers": {
     "pi": {
       "extensions": ["C:/absolute/path/to/provider-extension/src/index.ts"]
@@ -111,7 +119,8 @@ shipped `hooks/judge-policy.json`; a host overrides them in
 
 `PI_PROVIDER` and `PI_MODEL` override the provider and model; otherwise the
 host's own `defaultProvider` and `defaultModel` are used, read from
-`pi_settings`. A host whose models are registered by an extension must name
+`pi_settings`. A `limits` block states all five limits; a partial one is
+refused instead of being merged with the policy defaults. A host whose models are registered by an extension must name
 that extension in `launchers.pi.extensions`: the launcher keeps
 `--no-extensions` so the judge never loads the agent's own extensions, and
 only these explicit entry files are loaded. That list is a trust boundary, not
