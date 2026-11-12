@@ -19,6 +19,7 @@ from typing import Any
 from rm_checkpoints import CheckpointStore
 from rm_control import RootState, RootControl
 from rm_git import GitWorktree
+from rm_judge import load_judge
 from rm_ledger import RepoLedger
 from rm_leftovers import LeftoverReport
 from rm_lint import PushLint
@@ -60,6 +61,14 @@ def compaction_is_automatic(event: dict[str, Any]) -> bool:
         event.get("triggered_by") or event.get("triggeredBy") or event.get("trigger")
     )
     return str(trigger or "").lower() == "auto"
+
+
+def memory_budget(event: dict[str, Any]) -> float | None:
+    """The seconds the host allowed this call, when it states one."""
+    value = event.get("budget_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value) / 1000.0
 
 
 class EventDispatcher:
@@ -246,7 +255,11 @@ class EventDispatcher:
                 )
                 return 3
             state = self.control.load(self.agent)
-        result = MemoryUpdater(self.control, state).run(event)
+        result = MemoryUpdater(
+            self.control,
+            state,
+            load_judge(state.memory_root, state.home, state.shared_resolved),
+        ).run(event, budget_s=memory_budget(event))
         self.emit_hook_context("MemoryUpdate", result.text())
         return 0 if result.ok else 3
 

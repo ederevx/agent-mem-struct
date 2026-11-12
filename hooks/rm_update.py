@@ -4,10 +4,17 @@ One owner for the write half of the root-memory hook: `MemoryUpdater`
 validates a requested mutation against the live root-control snapshot,
 materializes every required counterpart (active leaf, paired log, nodes
 index, group scaffolding), and returns the exact conflicts the agent must
-fix before re-calling. A mutation that lands under the declared shared root
-is then committed and pushed by `rm_commit.CommitPublisher` under the
-`commit_message` the agent wrote, which the tool never composes or edits but
-checks against the mechanical convention before committing; a
+fix before re-calling.
+
+Nothing is written until the mutation has been judged. `run` first records the
+complete change set through `rm_update_plan.PlanRecorder` - no file system
+write, every path the operation read captured as a dependency - and hands that
+plan to the injected judge. Only a `yes` reaches `apply`, which re-records the
+plan first so a mutation whose inputs moved during the review is refused, then
+materializes exactly the recorded bytes. A mutation that lands under the
+declared shared root is then committed and pushed by `rm_commit.CommitPublisher`
+under the `commit_message` the agent wrote, which the tool never composes or
+edits but checks against the mechanical convention before committing; a
 mutation in the agent's own tree is only written. A publish then attests the
 shared worktree it committed through `rm_verify.PublishAttestation` and puts
 its report lines in the same result, so the agent need not re-verify the
@@ -30,6 +37,7 @@ import difflib
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +46,18 @@ from rm_edit import WorktreeEdits
 from rm_git import GitWorktree
 from rm_control import RootControl, RootState
 from rm_support import under
+from rm_update_plan import (
+    DELETE,
+    FILE,
+    MKDIR,
+    MOVE,
+    RMDIR,
+    UNREADABLE,
+    WRITE,
+    PlanRecorder,
+    UpdatePlan,
+    digest,
+)
 from rm_verify import PublishAttestation
 
 LEAF_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -46,6 +66,28 @@ REQUIRES_LINE_RE = re.compile(r"(?m)^\s*-\s*(.+?)\s*$")
 EMPTY_LOG_LINE = "No semantic history yet."
 LOG_BODY = "# Log: {name}\n\n" + EMPTY_LOG_LINE + "\n"
 MAX_LINK_FILES = 5000
+# The fields this tool documents. Anything else is a refusal, so a future field
+# cannot change what runs without the judge ever seeing it.
+REQUEST_FIELDS = frozenset({
+    "operation", "path", "name", "body", "text", "requires", "summary",
+    "kind", "mechanical", "commit_message", "attachment_name",
+    "attachment_content", "attachment_source", "overwrite",
+})
+# Identity the host adds to every event; never part of a judged draft.
+TRANSPORT_FIELDS = frozenset({
+    "hook_event_name", "hookEventName", "session_id", "turn_id", "agent_id",
+    "agentId", "cwd", "transcript_path", "stop_hook_active", "stopHookActive",
+    "budget_ms",
+})
+
+
+def universal_newlines(text: str) -> str:
+    """`text` with CRLF and CR line endings read as LF, as `read_text` does.
+
+    A hand edit written on Windows carries CRLF; every comparison in this
+    module is line-shaped, so the endings are normalised once at the read.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 class UpdateResult:
@@ -95,16 +137,145 @@ class UpdateResult:
 class MemoryUpdater:
     """Applies one validated memory mutation against a root snapshot."""
 
-    def __init__(self, control: RootControl, state: RootState) -> None:
+    def __init__(self, control: RootControl, state: RootState, judge: Any) -> None:
         self.control = control
         self.state = state
+        self.judge = judge
+        self.tree = PlanRecorder()
+        self.deadline: float | None = None
+        self.date: str = datetime.date.today().isoformat()
 
     # -- entry ---------------------------------------------------------------
 
-    def run(self, request: dict[str, Any]) -> UpdateResult:
-        operation = str(request.get("operation") or "").strip()
+    def run(self, request: dict[str, Any], *, budget_s: float | None = None) -> UpdateResult:
+        """Record the mutation, judge it, then write exactly what was judged.
+
+        `budget_s` is the hook's remaining time; the review and the publish
+        both draw on it, so neither outlives the caller's own deadline.
+        """
+        self.deadline = (
+            None if budget_s is None else time.monotonic() + float(budget_s)
+        )
+        operation = self.operation(request)
+        prepared = self.prepare(request)
+        if isinstance(prepared, UpdateResult):
+            return prepared
+        if not prepared.changes():
+            return prepared.result
+        verdict = self.judge.review(prepared, budget_s=self.remaining())
+        if not verdict.approved:
+            return self.conflict(
+                operation, verdict.code, verdict.message, verdict.fix
+            )
+        repeated = self.prepare(request)
+        if isinstance(repeated, UpdateResult):
+            return repeated
+        matched, detail = prepared.matches(repeated)
+        if not matched:
+            return self.conflict(
+                operation,
+                "judge-stale-draft",
+                detail + "; no planned changes applied.",
+                fix="reread the affected memory, then retry the same update",
+            )
+        return self.apply(prepared)
+
+    def prepare(self, request: dict[str, Any]) -> UpdatePlan | UpdateResult:
+        """Record what this mutation would change, writing none of it."""
+        self.tree = PlanRecorder()
+        result = self.dispatch(request)
+        if not result.ok:
+            return result
+        return UpdatePlan(
+            self.operation(request),
+            self.intent(request),
+            self.tree,
+            result,
+            self.commit_message(request),
+        )
+
+    def apply(self, plan: UpdatePlan) -> UpdateResult:
+        """Materialize the recorded changes, then publish what was approved."""
+        stale = self.stale_effect(plan)
+        if stale:
+            return self.conflict(
+                plan.operation,
+                "judge-stale-draft",
+                f"{stale} changed after the judgment; no planned changes applied.",
+                fix="reread the affected memory, then retry the same update",
+            )
+        self.materialize(plan)
+        if plan.operation == "commit":
+            return self.publish_worktree(plan)
+        return self.publish(plan)
+
+    @staticmethod
+    def stale_effect(plan: UpdatePlan) -> str:
+        """The first path whose bytes on disk are no longer the judged ones.
+
+        Only a path's first effect is compared: a later effect on the same path
+        starts from the bytes this plan itself would have written there.
+        """
+        seen: set[str] = set()
+        for effect in plan.effects:
+            if effect.kind == MKDIR or effect.kind == RMDIR:
+                continue
+            key = os.path.normcase(str(effect.path))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                current: bytes | None = effect.path.read_bytes()
+            except OSError:
+                current = None
+            if current != effect.before:
+                return str(effect.path)
+        return ""
+
+    def materialize(self, plan: UpdatePlan) -> None:
+        """Write exactly the recorded bytes, in the order they were recorded."""
+        for effect in plan.effects:
+            if effect.kind == WRITE:
+                if effect.before == effect.after:
+                    continue
+                self.write_file(effect.path, effect.after or b"")
+            elif effect.kind == DELETE:
+                effect.path.unlink(missing_ok=True)
+            elif effect.kind == MKDIR:
+                effect.path.mkdir(parents=True, exist_ok=True)
+            elif effect.kind == RMDIR:
+                try:
+                    effect.path.rmdir()
+                except OSError:
+                    pass
+            elif effect.kind == MOVE and effect.destination is not None:
+                # The approved bytes are written, never the source's live ones,
+                # so a source that changed after the comparison cannot travel.
+                effect.destination.parent.mkdir(parents=True, exist_ok=True)
+                self.write_file(effect.destination, effect.after or b"")
+                effect.path.unlink(missing_ok=True)
+
+    def remaining(self) -> float | None:
+        """The hook budget left for the next step, or None when unbounded."""
+        if self.deadline is None:
+            return None
+        return max(0.0, self.deadline - time.monotonic())
+
+    def dispatch(self, request: dict[str, Any]) -> UpdateResult:
+        """Validate the request and run its handler against the plan recorder."""
+        operation = self.operation(request)
         if not operation:
             return self.conflict(operation, "bad-request", "`operation` is required.")
+        unknown = sorted(
+            set(request) - set(REQUEST_FIELDS) - set(TRANSPORT_FIELDS)
+        )
+        if unknown:
+            return self.conflict(
+                operation,
+                "bad-request",
+                "unknown request fields: " + ", ".join(unknown) + ".",
+                fix="send only the fields this tool documents",
+            )
         if self.state.errors:
             return self.conflict(
                 operation,
@@ -138,14 +309,24 @@ class MemoryUpdater:
         result = handler(request)
         if not result.ok and not result.operation:
             result.operation = operation
-        if result.ok and operation != "commit":
-            return self.publish(result, request, operation)
         return result
 
-    def publish(
-        self, result: UpdateResult, request: dict[str, Any], operation: str
-    ) -> UpdateResult:
+    @staticmethod
+    def operation(request: dict[str, Any]) -> str:
+        return str(request.get("operation") or "").strip()
+
+    @staticmethod
+    def intent(request: dict[str, Any]) -> dict[str, Any]:
+        """The operation fields the judge reads, without transport identity."""
+        return {
+            key: request[key]
+            for key in sorted(request)
+            if key in REQUEST_FIELDS and request[key] not in (None, "", [], {})
+        }
+
+    def publish(self, plan: UpdatePlan) -> UpdateResult:
         """Commit and push what the mutation wrote when it landed in shared memory."""
+        result, operation = plan.result, plan.operation
         shared = self.state.shared_resolved
         if shared is None:
             return result
@@ -166,7 +347,12 @@ class MemoryUpdater:
                 ),
             )
         publisher = CommitPublisher(shared)
-        outcome = publisher.publish(written, self.commit_message(request))
+        outcome = publisher.publish(
+            written,
+            plan.commit_message,
+            expected=self.expected(plan, shared),
+            budget_s=self.remaining(),
+        )
         if outcome.conflict is not None:
             conflict = outcome.conflict
             return self.conflict(
@@ -223,7 +409,7 @@ class MemoryUpdater:
         nodes = group / "nodes"
         leaf = nodes / f"{name}.md"
         log = nodes / "log" / f"{name}.md"
-        if leaf.exists() or log.exists():
+        if self.tree.exists(leaf) or self.tree.exists(log):
             return self.conflict(
                 "create", "exists", f"{leaf} or its log already exists.", fix="use set or rename"
             )
@@ -235,7 +421,7 @@ class MemoryUpdater:
 
     def create_group(self, parent: Path, name: str, request: dict[str, Any]) -> UpdateResult:
         group = parent / name
-        if group.exists():
+        if self.tree.exists(group):
             return self.conflict("create", "exists", f"{group} already exists.")
         body = str(request.get("body") or "").strip()
         created: list[str] = []
@@ -256,7 +442,7 @@ class MemoryUpdater:
         if previous == body:
             return self.ok("set", note="current state already matches.")
         log = leaf.parent / "log" / leaf.name
-        if not log.exists():
+        if not self.tree.exists(log):
             return self.log_conflict("set", leaf)
         note = ""
         written = [str(leaf)]
@@ -290,7 +476,7 @@ class MemoryUpdater:
             if conflict is not None:
                 return conflict
         log = leaf.parent / "log" / leaf.name
-        if not log.exists():
+        if not self.tree.exists(log):
             return self.log_conflict("log", leaf)
         self.append_log(log, text.rstrip() + "\n", summary)
         return self.ok("log", changed=[str(log)])
@@ -325,12 +511,13 @@ class MemoryUpdater:
         )
 
     def op_commit(self, request: dict[str, Any]) -> UpdateResult:
-        """Publish leaves the agent edited by hand, logging what they displaced.
+        """Prepare the leaves the agent edited by hand, logging what they displaced.
 
         The working tree is the source of truth: the target set is the named
         leaf plus its paired log, or every dirty path in the memory scopes.
-        Displaced lines move into a paired log exactly as `op_set` would, and
-        the paths are committed and pushed through `CommitPublisher`.
+        The hand-edited bytes are recorded as equality writes, so the judge
+        reads exactly what a commit would publish and the apply stage rewrites
+        nothing; the paired log's appended lines are recorded as real writes.
         """
         message = self.commit_message(request)
         if not message:
@@ -349,19 +536,21 @@ class MemoryUpdater:
             if not edits.is_repo(leaf):
                 return self.unbacked_commit(leaf)
             log = leaf.parent / "log" / leaf.name
-            targets = [leaf] if leaf.exists() else []
-            if log.exists() and self.dirty(log, dirty):
+            targets = [leaf] if self.tree.exists(leaf) else []
+            if self.tree.exists(log) and self.dirty(log, dirty):
                 targets.append(log)
         else:
             targets = [Path(item) for item in dirty]
-        dirty_targets = [path for path in targets if self.dirty(path, dirty)]
+        dirty_targets = sorted(
+            (path for path in targets if self.dirty(path, dirty)), key=str
+        )
         if not dirty_targets:
             return self.ok(
                 "commit", note="nothing-to-commit: no target has working-tree changes."
             )
         active = [path for path in dirty_targets if self.is_active_leaf(path)]
         for leaf in active:
-            if not (leaf.parent / "log" / leaf.name).exists():
+            if not self.tree.exists(leaf.parent / "log" / leaf.name):
                 return self.log_conflict("commit", leaf)
         written: list[Path] = []
         appended: list[tuple[str, str]] = []
@@ -373,36 +562,116 @@ class MemoryUpdater:
             working, read_error = self.read(leaf)
             if previous is None or read_error is not None:
                 continue
+            self.pin(leaf, edits, previous)
             displaced = self.superseded_text(previous, working)
             if displaced:
                 self.append_log(log, displaced, "superseded current state")
                 written.append(log)
                 appended.append((str(log), displaced))
-        return self.publish_worktree(
-            self.unique(targets + written), message, edits, appended
+        for path in dirty_targets:
+            recorded = self.record_target(path, edits)
+            if isinstance(recorded, UpdateResult):
+                return recorded
+        published = self.unique(dirty_targets + written)
+        self.tree.publish = published
+        return self.ok(
+            "commit",
+            changed=[str(path) for path in published],
+            appended=appended,
         )
 
-    def publish_worktree(
-        self,
-        paths: list[Path],
-        message: str,
-        edits: WorktreeEdits,
-        appended: list[tuple[str, str]],
-    ) -> UpdateResult:
-        """Commit each target in its own worktree under the agent's message.
+    def record_target(self, path: Path, edits: WorktreeEdits) -> UpdateResult | None:
+        """Record one dirty target as the equality write or deletion to publish.
+
+        A path that cannot be read is a conflict rather than a deletion: the
+        difference decides whether the judge reviewed a new body or a removal.
+        """
+        if self.tree.is_planned(path):
+            return None
+        state = self.tree.state(path)
+        if state == UNREADABLE:
+            return self.conflict(
+                "commit",
+                "unreadable-target",
+                f"{path} could not be read, so its change cannot be judged.",
+                fix="repair the file, then re-call",
+            )
+        if state == FILE:
+            data = self.tree.observe(path)
+            self.tree.write(path, data)
+            self.pin(path, edits)
+            return None
+        previous = edits.previous_body(path) or ""
+        self.tree.write(path, None, before=previous.encode("utf-8"))
+        self.pin(path, edits)
+        return None
+
+    def pin(
+        self, path: Path, edits: WorktreeEdits, previous: str | None = None
+    ) -> None:
+        """Record the Git facts a publication of `path` is verified against."""
+        repo = edits.repo_root(path)
+        if repo is None:
+            return
+        root = repo.resolve(strict=False)
+        try:
+            relative = path.resolve(strict=False).relative_to(root).as_posix()
+        except ValueError:
+            return
+        worktree = GitWorktree(root)
+        head_key = f"repo:{root}:head"
+        if head_key not in self.tree.context:
+            self.tree.context[head_key] = worktree.head()
+        self.tree.context[f"repo:{root}:mode:{relative}"] = (
+            worktree.mode("HEAD", relative) or ""
+        )
+        if previous is not None:
+            self.tree.context[f"repo:{root}:previous:{relative}"] = digest(
+                previous.encode("utf-8")
+            )
+
+    def expected(
+        self, plan: UpdatePlan, root: Path
+    ) -> dict[str, bytes | None]:
+        """The approved snapshot of one worktree: path -> bytes, or None when deleted."""
+        resolved = root.resolve(strict=False)
+
+        def relative(path: Path) -> str | None:
+            if not under(path, resolved):
+                return None
+            return path.resolve(strict=False).relative_to(resolved).as_posix()
+
+        expected: dict[str, bytes | None] = {}
+        for effect in plan.effects:
+            if effect.kind in (WRITE, DELETE):
+                name = relative(effect.path)
+                if name is not None:
+                    expected[name] = effect.after
+            elif effect.kind == MOVE and effect.destination is not None:
+                source, target = relative(effect.path), relative(effect.destination)
+                if source is not None:
+                    expected[source] = None
+                if target is not None:
+                    expected[target] = effect.after
+        return expected
+
+    def publish_worktree(self, plan: UpdatePlan) -> UpdateResult:
+        """Commit each published target in its own worktree, under the agent's message.
 
         Every worktree that produced a commit is then attested with its own
         changed paths and the appended logs that belong to it; the first
         verification conflict stops the report.
         """
+        result = plan.result
+        edits = WorktreeEdits(self.state.memory_root, self.state.shared_resolved)
         groups: dict[str, list[Path]] = {}
-        for path in paths:
+        for path in plan.publish_paths:
             repo = edits.repo_root(path)
             if repo is None:
                 return self.unbacked_commit(path)
             groups.setdefault(str(repo.resolve(strict=False)), []).append(path)
         appended_groups: dict[str, list[tuple[str, str]]] = {}
-        for raw, text in appended:
+        for raw, text in result.appended:
             repo = edits.repo_root(Path(raw))
             if repo is None:
                 continue
@@ -413,7 +682,12 @@ class MemoryUpdater:
         notes: list[str] = []
         verified: list[str] = []
         for root, group in groups.items():
-            outcome = CommitPublisher(Path(root)).publish(group, message)
+            outcome = CommitPublisher(Path(root)).publish(
+                group,
+                plan.commit_message,
+                expected=self.expected(plan, Path(root)),
+                budget_s=self.remaining(),
+            )
             if outcome.conflict is not None:
                 conflict = outcome.conflict
                 return self.conflict(
@@ -436,8 +710,28 @@ class MemoryUpdater:
                     )
                 verified.extend(lines)
         return self.ok(
-            "commit", changed=changed, note=" ".join(notes), verified=verified
+            "commit",
+            changed=changed,
+            note=" ".join(notes),
+            verified=verified,
+            appended=result.appended,
         )
+
+    @staticmethod
+    def is_active_leaf(path: Path) -> bool:
+        return (
+            path.suffix == ".md"
+            and path.parent.name != "log"
+            and path.name != "MEMORY.md"
+        )
+
+    @staticmethod
+    def unique(paths: list[Path]) -> list[Path]:
+        seen: list[Path] = []
+        for path in paths:
+            if path not in seen:
+                seen.append(path)
+        return seen
 
     def attest(
         self,
@@ -474,22 +768,8 @@ class MemoryUpdater:
             fix="commit these paths by hand before the turn ends",
         )
 
-    def is_active_leaf(self, path: Path) -> bool:
-        return (
-            path.suffix == ".md"
-            and path.parent.name != "log"
-            and path.name != "MEMORY.md"
-        )
-
     def dirty(self, path: Path, dirty: set[str]) -> bool:
         return str(path.resolve(strict=False)) in dirty
-
-    def unique(self, paths: list[Path]) -> list[Path]:
-        seen: list[Path] = []
-        for path in paths:
-            if path not in seen:
-                seen.append(path)
-        return seen
 
     def op_rename(self, request: dict[str, Any]) -> UpdateResult:
         leaf, error = self.resolve_leaf(request, "rename")
@@ -501,20 +781,20 @@ class MemoryUpdater:
         if name == leaf.stem:
             return self.ok("rename", note="already named " + name)
         new_leaf = leaf.parent / f"{name}.md"
-        if new_leaf.exists():
+        if self.tree.exists(new_leaf):
             return self.conflict("rename", "exists", f"{new_leaf} already exists.")
         log = leaf.parent / "log" / leaf.name
         new_log = leaf.parent / "log" / f"{name}.md"
         attachment = leaf.parent / leaf.stem
         changed = [str(new_leaf), str(new_log), str(leaf), str(log)]
         changed.extend(self.rewrite_links(leaf.parent.parent, leaf.stem, name))
-        if log.exists():
-            log.rename(new_log)
-        leaf.rename(new_leaf)
-        if attachment.is_dir():
+        if self.tree.exists(log):
+            self.tree.rename(log, new_log)
+        self.tree.rename(leaf, new_leaf)
+        if self.tree.is_dir(attachment):
             changed.append(str(attachment))
             changed.append(str(leaf.parent / name))
-            attachment.rename(leaf.parent / name)
+            self.tree.rename(attachment, leaf.parent / name)
         return self.ok("rename", changed=changed)
 
     def op_retire(self, request: dict[str, Any]) -> UpdateResult:
@@ -530,7 +810,7 @@ class MemoryUpdater:
         if conflict is not None:
             return conflict
         log = leaf.parent / "log" / leaf.name
-        if not log.exists():
+        if not self.tree.exists(log):
             return self.log_conflict("retire", leaf)
         previous, read_error = self.read(leaf)
         if read_error is not None:
@@ -545,12 +825,12 @@ class MemoryUpdater:
         appended.append((str(log), account))
         changed = self.index_remove(leaf.parent, leaf.stem)
         changed.append(str(log))
-        if leaf.exists():
-            leaf.unlink()
+        if self.tree.exists(leaf):
+            self.delete(leaf)
             changed.append(str(leaf))
         attachment = leaf.parent / leaf.stem
-        if attachment.is_dir():
-            shutil.rmtree(attachment)
+        if self.tree.is_dir(attachment):
+            self.tree.rmtree(attachment)
             changed.append(str(attachment))
         return self.ok(
             "retire",
@@ -590,18 +870,19 @@ class MemoryUpdater:
         if error is not None:
             return error
         name = str(request.get("attachment_name") or "").strip()
-        if not name or os.sep in name or (os.altsep and os.altsep in name) or name in (".", ".."):
+        if not self.plain_name(name):
             return self.conflict("attach", "bad-name", f"{name!r} is not a plain file name.")
         directory = leaf.parent / leaf.stem
-        if (directory / "MEMORY.md").exists():
+        if self.tree.exists(directory / "MEMORY.md"):
             return self.conflict(
                 "attach",
                 "attachment-conflict",
                 f"{directory} is a node collection; a leaf cannot own it as an attachment.",
             )
-        if (directory / name).exists() and not request.get("overwrite"):
+        target = directory / name
+        if self.tree.exists(target) and not request.get("overwrite"):
             return self.conflict(
-                "attach", "exists", f"{directory / name} already exists.", fix="pass overwrite"
+                "attach", "exists", f"{target} already exists.", fix="pass overwrite"
             )
         content = request.get("attachment_content")
         source = str(request.get("attachment_source") or "").strip()
@@ -609,15 +890,15 @@ class MemoryUpdater:
             return self.conflict(
                 "attach", "bad-request", "pass `attachment_content` or `attachment_source`."
             )
-        target = directory / name
         if content is not None:
-            self.write(target, str(content))
+            data = str(content).encode("utf-8")
         else:
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(Path(source).expanduser().read_bytes())
-            except OSError as exc:
-                return self.conflict("attach", "unreadable-source", f"{source}: {exc}")
+            data = self.tree.observe(Path(source).expanduser())
+            if data is None:
+                return self.conflict(
+                    "attach", "unreadable-source", f"{source} is not a readable file."
+                )
+        self.write_bytes(target, data)
         return self.ok("attach", created=[str(target)])
 
     def op_detach(self, request: dict[str, Any]) -> UpdateResult:
@@ -625,16 +906,31 @@ class MemoryUpdater:
         if error is not None:
             return error
         name = str(request.get("attachment_name") or "").strip()
-        target = leaf.parent / leaf.stem / name
-        if not target.exists():
+        if not self.plain_name(name):
+            return self.conflict("detach", "bad-name", f"{name!r} is not a plain file name.")
+        directory = leaf.parent / leaf.stem
+        target = directory / name
+        if target.parent.resolve(strict=False) != directory.resolve(strict=False):
+            return self.conflict(
+                "detach", "bad-target", f"{target} is outside this leaf's attachment directory."
+            )
+        if not self.tree.exists(target):
             return self.conflict("detach", "not-found", f"{target} does not exist.")
-        target.unlink()
+        self.delete(target)
         changed = [str(target)]
-        directory = target.parent
-        if directory.is_dir() and not any(directory.iterdir()):
-            directory.rmdir()
+        if self.tree.is_dir(directory) and not self.tree.entries(directory):
+            self.tree.rmdir(directory)
             changed.append(str(directory))
         return self.ok("detach", changed=changed)
+
+    @staticmethod
+    def plain_name(name: str) -> bool:
+        """Whether this is one plain file name, never a path or a relative step."""
+        if not name or name in (".", ".."):
+            return False
+        if os.sep in name or (os.altsep and os.altsep in name):
+            return False
+        return not name.startswith("~")
 
     # -- resolution and conflicts -------------------------------------------
 
@@ -665,7 +961,7 @@ class MemoryUpdater:
                 "log-target",
                 "logs are history; use the log operation, not a direct edit.",
             )
-        if not leaf.exists():
+        if not self.tree.exists(leaf):
             return leaf, self.conflict(
                 operation, "not-found", f"{leaf} does not exist.", fix="create it first"
             )
@@ -684,7 +980,7 @@ class MemoryUpdater:
         if error is not None or log.parent.name != "log" or log.suffix != ".md":
             return self.resolve_leaf(request, operation)
         leaf = log.parent.parent / log.name
-        if leaf.exists():
+        if self.tree.exists(leaf):
             return leaf, self.conflict(
                 operation,
                 "log-target",
@@ -692,7 +988,7 @@ class MemoryUpdater:
                 fix="pass the active leaf as `path`; a log path is accepted "
                 "only once its leaf is retired",
             )
-        if not log.exists():
+        if not self.tree.exists(log):
             return leaf, self.conflict(operation, "not-found", f"{log} does not exist.")
         return leaf, None
 
@@ -738,12 +1034,12 @@ class MemoryUpdater:
 
     def ensure_nodes(self, nodes: Path) -> list[str]:
         created: list[str] = []
-        nodes.mkdir(parents=True, exist_ok=True)
+        self.tree.mkdir(nodes)
         index = nodes / "MEMORY.md"
-        if not index.exists():
+        if not self.tree.exists(index):
             created.append(self.write(index, "# Nodes\n\n"))
         log = nodes / "log" / "MEMORY.md"
-        if not log.exists():
+        if not self.tree.exists(log):
             created.append(self.write(log, LOG_BODY.format(name="MEMORY")))
         return created
 
@@ -761,7 +1057,7 @@ class MemoryUpdater:
 
     def index_remove(self, nodes: Path, name: str) -> list[str]:
         index = nodes / "MEMORY.md"
-        if not index.exists():
+        if not self.tree.exists(index):
             return []
         text, _ = self.read(index)
         lines = text.splitlines()
@@ -785,7 +1081,7 @@ class MemoryUpdater:
     def rewrite_links(self, root: Path, old: str, new: str) -> list[str]:
         pattern = re.compile(r"\[\[" + re.escape(old) + r"\]\]")
         changed: list[str] = []
-        for path in sorted(root.rglob("*.md"))[:MAX_LINK_FILES]:
+        for path in self.tree.files(root, ".md")[:MAX_LINK_FILES]:
             if "log" in path.relative_to(root).parts or path.name in (f"{old}.md", f"{new}.md"):
                 continue
             text, _ = self.read(path)
@@ -827,7 +1123,9 @@ class MemoryUpdater:
     def append_log(self, log: Path, text: str, heading: str) -> None:
         current, _ = self.read(log)
         body = current.replace(EMPTY_LOG_LINE + "\n", "").rstrip("\n")
-        stamp = datetime.date.today().isoformat()
+        # The operation's own date, fixed when the update started: a second
+        # prepare must record the same bytes even across midnight.
+        stamp = self.date
         section = f"## {stamp}" + (f" - {heading}" if heading else "")
         self.write(log, f"{body}\n\n{section}\n\n{text.rstrip()}\n".lstrip("\n"))
 
@@ -836,7 +1134,7 @@ class MemoryUpdater:
         if not candidate.is_absolute():
             candidate = leaf.parent / candidate
         resolved = candidate.resolve(strict=False)
-        if "log" in resolved.parts or resolved.suffix != ".md" or not resolved.is_file():
+        if "log" in resolved.parts or resolved.suffix != ".md" or not self.tree.exists(resolved):
             return False
         return any(
             root is not None and under(resolved, root)
@@ -850,17 +1148,32 @@ class MemoryUpdater:
         return (text + "\n") if text else ""
 
     def read(self, path: Path) -> tuple[str, str | None]:
+        data = self.tree.observe(path)
+        if data is None:
+            return "", f"{path} is not a readable file"
         try:
-            return path.read_text(encoding="utf-8"), None
-        except OSError as exc:
-            return "", str(exc)
+            return universal_newlines(data.decode("utf-8")), None
+        except UnicodeDecodeError as exc:
+            return "", f"{path} is not UTF-8 text: {exc}"
 
     def write(self, path: Path, text: str) -> str:
+        return self.write_bytes(path, text.encode("utf-8"))
+
+    def write_bytes(self, path: Path, data: bytes) -> str:
+        """Plan one file write; nothing reaches the disk until the plan is applied."""
+        self.tree.write(path, data)
+        return str(path)
+
+    def delete(self, path: Path) -> str:
+        self.tree.write(path, None)
+        return str(path)
+
+    def write_file(self, path: Path, data: bytes) -> None:
+        """Replace one file with exactly these bytes, as the applied plan requires."""
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
         try:
-            temporary.write_text(text, encoding="utf-8")
+            temporary.write_bytes(data)
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-        return str(path)

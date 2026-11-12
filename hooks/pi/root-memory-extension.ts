@@ -398,8 +398,9 @@ export class RootMemoryBridge {
 	 *  result the model sees; a conflict report is an error result so the agent
 	 *  fixes it before re-calling. */
 	private async runMemoryUpdate(params: Record<string, unknown>): Promise<unknown> {
+		const budget = { budget_ms: MEMORYUPDATE_TIMEOUT_MS };
 		const result = await this.serialize(() =>
-			this.callHook("MemoryUpdate", params, MEMORYUPDATE_TIMEOUT_MS));
+			this.callHook("MemoryUpdate", { ...params, ...budget }, MEMORYUPDATE_TIMEOUT_MS));
 		const context = this.additionalContext(result);
 		if (!result.ok) {
 			const fallback = result.timedOut

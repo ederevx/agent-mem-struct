@@ -51,9 +51,23 @@ class CommitPublisher:
         self.stop: float | None = None
         self.worktree = GitWorktree(root, window=self.remaining)
 
-    def publish(self, paths: list[Path], message: str) -> CommitOutcome:
-        """Commit the paths this mutation wrote under the caller's own message."""
-        self.stop = time.monotonic() + PUBLISH_SECONDS
+    def publish(
+        self,
+        paths: list[Path],
+        message: str,
+        *,
+        expected: dict[str, bytes | None] | None = None,
+        budget_s: float | None = None,
+    ) -> CommitOutcome:
+        """Commit the paths this mutation wrote under the caller's own message.
+
+        `expected` is the approved snapshot for this worktree - each
+        repo-relative path and the bytes (None for a deletion) the judge saw -
+        and nothing is pushed until the commit proves it holds exactly that.
+        """
+        self.stop = time.monotonic() + (
+            PUBLISH_SECONDS if budget_s is None else max(0.5, float(budget_s))
+        )
         can_push = self.worktree.has_sync_target()
         staged = self.stageable(paths)
         if not staged:
@@ -90,13 +104,65 @@ class CommitPublisher:
                 )
             )
         sha = self.worktree.head()
+        mismatch = self.verify_snapshot(sha, expected)
+        if mismatch:
+            return self.mismatch(sha, mismatch)
         if not can_push:
             return CommitOutcome(
                 committed=True,
                 sha=sha,
                 note=f"committed {sha[:12]} locally; the shared worktree has no upstream to push to.",
             )
-        return self.push(sha)
+        return self.push(sha, expected)
+
+    def verify_snapshot(
+        self, sha: str, expected: dict[str, bytes | None] | None
+    ) -> str:
+        """How one commit differs from the approved snapshot, or "" when it is it."""
+        if expected is None:
+            return ""
+        changed = self.worktree.changed_paths(sha)
+        if changed is None:
+            return "the commit's changed paths could not be read back"
+        if sorted(changed) != sorted(expected):
+            extra = sorted(set(changed) - set(expected))
+            missing = sorted(set(expected) - set(changed))
+            detail = ", ".join(
+                [*(f"unexpected {name}" for name in extra), *(f"unchanged {name}" for name in missing)]
+            )
+            return f"the commit changed a different path set ({detail})"
+        for name, data in expected.items():
+            committed = self.worktree.blob_id(sha, name)
+            if data is None:
+                if committed is not None:
+                    return f"{name} was approved for deletion but is still committed"
+                continue
+            mode = self.worktree.mode(sha, name)
+            if mode not in ("100644", "100755"):
+                return f"{name} is not committed as a regular file"
+            if not self.worktree.transformed(name):
+                if self.worktree.blob_bytes(sha, name) != data:
+                    return f"{name} is not the approved bytes"
+                continue
+            approved = self.worktree.object_id(data, name)
+            if approved is None:
+                return f"the approved bytes of {name} could not be hashed"
+            if committed != approved:
+                return f"{name} is not the approved bytes"
+        return ""
+
+    def mismatch(self, sha: str, mismatch: str) -> CommitOutcome:
+        """A local commit that does not hold the approved snapshot is never pushed."""
+        return CommitOutcome(
+            committed=True,
+            sha=sha,
+            conflict=self.conflict(
+                "judge-publish-mismatch",
+                f"commit {sha[:12]} does not hold the approved snapshot: {mismatch}; "
+                "it was not pushed.",
+                "inspect the shared worktree and rejudge the change before retrying",
+            ),
+        )
 
     def stage(self, staged: list[str]) -> list[str] | CommitOutcome:
         """Stage exactly these paths, or report why staging failed."""
@@ -111,30 +177,42 @@ class CommitPublisher:
             )
         )
 
-    def push(self, sha: str) -> CommitOutcome:
-        """Push the local commit, replaying it onto the shared tip if it raced.
+    def push(
+        self, sha: str, expected: dict[str, bytes | None] | None = None
+    ) -> CommitOutcome:
+        """Push the verified local commit, replaying it onto the shared tip if it raced.
 
         The remote and branch are named explicitly, so a
         `branch.<name>.merge` the environment adds cannot make Git refuse the
-        push or the replay as a multi-head one.
+        push or the replay as a multi-head one. The exact commit is pushed, not
+        whatever `HEAD` happens to name, and a replay that changed the
+        approved bytes is reported rather than pushed.
         """
         target = self.worktree.upstream()
-        refspec = (target[0], f"HEAD:{target[1]}") if target else ()
         for _ in range(PUSH_ATTEMPTS):
+            mismatch = self.verify_snapshot(sha, expected)
+            if mismatch:
+                return self.mismatch(sha, mismatch)
+            if target is None:
+                # A bare `git push` would pick its own destination, so a
+                # worktree with no upstream keeps its commit local and says so.
+                return self.unpushed(
+                    sha, "the worktree names no upstream to publish to."
+                )
+            refspec = (target[0], f"{sha}:{target[1]}")
             if self.worktree.run("push", *refspec).returncode == 0:
-                published = self.worktree.head() or sha
                 return CommitOutcome(
                     committed=True,
                     pushed=True,
-                    sha=published,
-                    note=f"committed {published[:12]} and pushed.",
+                    sha=sha,
+                    note=f"committed {sha[:12]} and pushed.",
                 )
             if self.expired():
                 return self.unpushed(
                     sha, f"publishing it did not finish within {PUBLISH_SECONDS:g}s."
                 )
             replay = self.worktree.run(
-                "pull", "--rebase", "--autostash", *(target or ())
+                "pull", "--rebase", "--autostash", *target
             )
             if replay.returncode != 0:
                 self.abort_replay()
@@ -149,6 +227,7 @@ class CommitPublisher:
                         "before the turn ends",
                     ),
                 )
+            sha = self.worktree.head() or sha
         return self.unpushed(sha, f"the push was rejected {PUSH_ATTEMPTS} times.")
 
     def unpushed(self, sha: str, reason: str) -> CommitOutcome:

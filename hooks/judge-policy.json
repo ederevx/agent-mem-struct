@@ -1,0 +1,33 @@
+{
+  "schema": 2,
+  "settings": "{agent_home}/.agent-mem-struct/memory-judge.json",
+  "pi_settings": "{pi_agent_dir}/settings.json",
+  "defaults": {
+    "timeout_s": 30,
+    "max_input_bytes": 65536,
+    "capture_bytes": 4096,
+    "teardown_s": 2,
+    "completion_reserve_s": 10
+  },
+  "launchers": {
+    "pi": {
+      "command": ["pi"],
+      "arguments": [
+        "-p",
+        "--no-session",
+        "--no-tools",
+        "--no-mcp",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-context-files",
+        "--no-extensions"
+      ],
+      "extension_flag": "-e",
+      "provider_flag": "--provider",
+      "model_flag": "--model",
+      "prompt": "stdin",
+      "answer": "stdout",
+      "extensions": []
+    }
+  }
+}

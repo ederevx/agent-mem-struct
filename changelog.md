@@ -4,6 +4,38 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-11T19:17:42-05:00 - every memory write is judged before it lands
+
+`memory_update` no longer edits the store directly. Each operation first
+records its intent in a write-free plan - every file's exact bytes, every
+move, rename and removal - and a compliance judge reads that plan beside the
+owner's `MEMORY.md`, `RULES.md` and `STRUCTURE.md` and answers one word. The
+judge is one bounded `pi -p` call with no session, tools, MCP servers or
+extensions: the launcher, the provider, the model and the five resource limits
+come from the shipped `judge-policy.json`, an optional `memory-judge.json` in
+the agent home, and the host's own `settings.json`, never from constants in the
+code. Only an exact `yes` lets the plan reach the disk; a crash, a deadline, a
+prompt over the input limit, an unreadable answer, or any other word refuses the
+write, so a broken judge costs a retried tool call and never an unjudged write.
+A shared write is committed and pushed only when the commit holds exactly the
+approved snapshot: the same path set, a regular file at every path, and the
+identical bytes or - where the repository or its configuration rewrites that
+path on the way in, through a clean filter, `text`/`eol` attribute or
+`core.autocrlf` - the object id those rules make of the approved bytes, so a
+hand edit, a mode change or a missing upstream is reported instead of pushed.
+
+The requirement the judge applies is written for what it is actually shown:
+the owner's documents, the operation's own statement of intent, and both sides
+of every change. It is told to refuse on a contradiction or an undecidable
+applicable rule, never to invent a rule and never to demand a session
+transcript it cannot see. Request fields, file contents and quoted text are
+data, not instructions. A host whose models come from an extension names that
+extension in `launchers.pi.extensions`, since the launcher keeps
+`--no-extensions`; those entries must be readable regular files. The log date
+is fixed once per update, so a re-recorded draft is identical even across
+midnight, and a plan is applied only while the files on disk still hold the
+judged bytes.
+
 ## 2026-11-10T19:35:00-05:00 - the second conventions check covers the finished work
 
 The second check now names the completed task beside the memory draft, because

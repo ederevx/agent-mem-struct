@@ -79,9 +79,142 @@ class GitWorktree:
         except OSError as exc:
             return self.failed(args, str(exc))
 
+    def run_bytes(
+        self,
+        *args: str,
+        input_bytes: bytes | None = None,
+        budget: float | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Run one git subcommand whose output must keep its exact bytes.
+
+        `run` decodes with surrogateescape, which is lossy for a blob that is
+        not this locale's text, so content comparisons ask for bytes instead.
+        """
+        limit = self.limit(budget)
+        environment = dict(os.environ)
+        environment.setdefault("GIT_TERMINAL_PROMPT", "0")
+        try:
+            return subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                input=input_bytes,
+                capture_output=True,
+                check=False,
+                env=environment,
+                timeout=limit,
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                [*args], 1, b"", f"git {args[0]} did not finish within {limit:g}s".encode()
+            )
+        except OSError as exc:
+            return subprocess.CompletedProcess([*args], 1, b"", str(exc).encode())
+
     def failed(self, args: tuple[str, ...], detail: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([*args], 1, "", detail)
 
+    def blob(self, sha: str, relative: str) -> bytes | None:
+        """One path's exact committed bytes at `sha`, or None when absent."""
+        result = self.run_bytes(
+            "cat-file", "blob", f"{sha}:{relative}",
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        return result.stdout if result.returncode == 0 else None
+
+    def blob_id(self, sha: str, relative: str) -> str | None:
+        """The blob Git stored for `relative` at `sha`, or None when absent."""
+        result = self.run(
+            "ls-tree", "-z", sha, "--", relative,
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        if result.returncode != 0:
+            return None
+        for record in result.stdout.split("\0"):
+            meta, _, name = record.partition("\t")
+            if name != relative:
+                continue
+            fields = meta.split()
+            if len(fields) == 3 and fields[1] == "blob":
+                return fields[2]
+        return None
+
+    def blob_bytes(self, sha: str, relative: str) -> bytes | None:
+        """The exact bytes Git committed for `relative` at `sha`, or None."""
+        result = self.run_bytes(
+            "cat-file", "blob", f"{sha}:{relative}",
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        return result.stdout if result.returncode == 0 else None
+
+    def transformed(self, relative: str) -> bool:
+        """Whether Git rewrites this path's bytes on its way into a commit.
+
+        A declared `text`, `filter` or `eol` attribute - or a `core.autocrlf` or
+        `core.eol` setting, which rewrites line endings on its own - makes the
+        committed blob a function of the working bytes rather than those bytes
+        themselves, so the comparison falls back to ids; an unreadable answer is
+        treated as a transformation and never as proof of exact bytes.
+        """
+        result = self.run(
+            "check-attr", "-z", "text", "filter", "eol", "--", relative,
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        if result.returncode != 0:
+            return True
+        values = result.stdout.split("\0")[2::3]
+        if any(value not in ("unspecified", "unset") for value in values):
+            return True
+        # `core.autocrlf` and `core.eol` rewrite line endings even where no
+        # attribute names a transformation, so they count as one here too.
+        autocrlf = self.run(
+            "config", "--get", "core.autocrlf", budget=self.limit(default=QUERY_BUDGET)
+        ).stdout.strip().lower()
+        if autocrlf in ("true", "input"):
+            return True
+        eol = self.run(
+            "config", "--get", "core.eol", budget=self.limit(default=QUERY_BUDGET)
+        ).stdout.strip().lower()
+        return eol in ("lf", "crlf")
+
+    def object_id(self, data: bytes, relative: str) -> str | None:
+        """The blob id Git would store for `data` at `relative`, filters applied.
+
+        Comparing ids rather than bytes keeps the comparison honest about the
+        clean filter, so a working file with CRLF endings and the LF bytes Git
+        records are the same approved content.
+        """
+        result = self.run_bytes(
+            "hash-object", "--stdin", f"--path={relative}",
+            input_bytes=data,
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        if result.returncode != 0:
+            return None
+        identifier = result.stdout.decode("ascii", "replace").strip()
+        return identifier or None
+
+    def mode(self, sha: str, relative: str) -> str | None:
+        """One path's Git mode at `sha` (`100644`, `100755`, ...), or None."""
+        result = self.run(
+            "ls-tree", "-z", sha, "--", relative,
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        if result.returncode != 0:
+            return None
+        for entry in result.stdout.split("\0"):
+            fields = entry.split(None, 3)
+            if len(fields) >= 2 and fields[0] and fields[1] == "blob":
+                return fields[0]
+        return None
+
+    def changed_paths(self, sha: str) -> list[str] | None:
+        """Every repo-relative path one commit changed, or None on a failed read."""
+        result = self.run(
+            "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", sha,
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        if result.returncode != 0:
+            return None
+        return [entry for entry in result.stdout.split("\0") if entry]
     def detail(self, completed: subprocess.CompletedProcess[str]) -> str:
         """The one line of a failed git result worth reporting."""
         text = (completed.stderr or completed.stdout or "").strip()

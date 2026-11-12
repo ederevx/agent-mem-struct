@@ -51,6 +51,49 @@ def make_shared(path: Path) -> Path:
     return path.resolve()
 
 
+JUDGE_STUB = '''\
+import sys
+
+sys.stdin.buffer.read()
+print(sys.argv[1] if len(sys.argv) > 1 else "yes")
+'''
+
+
+def write_judge_settings(home: Path, verdict: str = "yes") -> Path:
+    """Configure this agent home's judge as a stub that answers one word.
+
+    The stub is the judge the settings document names, so tests exercise the
+    real launch path - resolution, the process boundary, the answer contract -
+    without a model call, and can make it refuse by answering `no`.
+    """
+    stub = home / "judge-stub.py"
+    stub.write_text(JUDGE_STUB, encoding="utf-8")
+    answer = verdict
+    host = home / "pi-settings.json"
+    host.write_text(
+        json.dumps({"defaultProvider": "test-provider", "defaultModel": "test-model"}),
+        encoding="utf-8",
+    )
+    document = home / ".agent-mem-struct" / "memory-judge.json"
+    document.parent.mkdir(parents=True, exist_ok=True)
+    document.write_text(
+        json.dumps(
+            {
+                "schema": 3,
+                "pi_settings": str(host),
+                "launchers": {
+                    "pi": {
+                        "command": [sys.executable, str(stub), answer],
+                        "arguments": [],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return document
+
+
 def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
     if shared is None:
         shared = make_shared(path.parent / f"{path.name} shared memory")
@@ -67,6 +110,7 @@ def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
         "# Local\n\n**Scope:** this agent\n\n## Mandatory conventions\n\n(none)\n",
         encoding="utf-8",
     )
+    write_judge_settings(path)
     return path, shared
 
 

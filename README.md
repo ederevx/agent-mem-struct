@@ -81,6 +81,44 @@ then read root `RULES.md` before scoped memory work.
 consolidated where possible; rationale and examples belong outside the routine
 checklist.
 
+### The compliance judge
+
+Every `memory_update` is judged before it writes. The hook records the mutation
+as a write-free plan - every file's bytes, every move, rename and removal -
+and asks one judge, `pi -p` with no session, tools, MCP servers, skills,
+context files or extensions, which answers exactly `yes` or `no`. Only `yes`
+reaches the disk; a crash, a deadline, an unreadable answer or a missing
+document refuses the write, so a broken judge costs a retried tool call and
+never an unjudged write. A shared write is pushed only when its commit holds
+exactly the approved paths and bytes.
+
+The launcher, the provider, the model and the resource limits live in the
+shipped `hooks/judge-policy.json`; a host overrides them in
+`<agent-home>/.agent-mem-struct/memory-judge.json`:
+
+```json
+{
+  "schema": 3,
+  "pi_settings": "<agent-home>/settings.json",
+  "limits": {"timeout_s": 60},
+  "launchers": {
+    "pi": {
+      "extensions": ["C:/absolute/path/to/provider-extension/src/index.ts"]
+    }
+  }
+}
+```
+
+`PI_PROVIDER` and `PI_MODEL` override the provider and model; otherwise the
+host's own `defaultProvider` and `defaultModel` are used, read from
+`pi_settings`. A host whose models are registered by an extension must name
+that extension in `launchers.pi.extensions`: the launcher keeps
+`--no-extensions` so the judge never loads the agent's own extensions, and
+only these explicit entry files are loaded. That list is a trust boundary, not
+a proof that an extension only registers providers. Until a runnable judge is
+configured, every memory write refuses with the reason and no changes are
+written.
+
 ## Safety
 
 Do not create a `memory/shared` alias or copy. The `Shared:` declaration is the

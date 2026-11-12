@@ -60,7 +60,18 @@ def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
         "# Local\n\n**Scope:** this agent\n\n## Mandatory conventions\n\n(none)\n",
         encoding="utf-8",
     )
+    judge_settings(path)
     return path, shared
+
+
+def judge_settings(home: Path) -> None:
+    """Give this home the shared stub judge, so a write here is judged too."""
+    tests = str(Path(__file__).resolve().parent)
+    if tests not in sys.path:
+        sys.path.insert(0, tests)
+    from test_pi_integration import write_judge_settings
+
+    write_judge_settings(home)
 
 
 def make_git_shared(origin: Path, shared: Path) -> Path:
