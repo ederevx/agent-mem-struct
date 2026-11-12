@@ -249,6 +249,7 @@ export class RootMemoryBridge {
 		this.registerMemoryUpdateTool(pi);
 		this.registerListerTool(pi);
 		pi.on("session_start", async (event: any, ctx: any) => {
+			this.noteContext(ctx);
 			const label = this.sessionId(ctx);
 			const fork = event?.reason === "fork";
 			// The identity transition is a queued receipt operation like any other:
@@ -520,6 +521,15 @@ export class RootMemoryBridge {
 		});
 	}
 
+	/** The most recent host context. The session identity and the branch live on
+	 *  the context a handler receives, not on the object `register` is given, so
+	 *  the last one seen is what a late-resolved identity reads. */
+	private liveContext?: any;
+
+	private noteContext(ctx: any): void {
+		if (ctx) this.liveContext = ctx;
+	}
+
 	private sessionId(pi: any): string {
 		try {
 			const id = pi.sessionManager?.getSessionId?.();
@@ -536,10 +546,13 @@ export class RootMemoryBridge {
 
 	/** The identity every hook request carries. A bridge that registers after
 	 *  the session started, as a resumed or reloaded session does, has no
-	 *  `session_start` behind it, so the live identity is resolved on first use
-	 *  rather than an empty label being sent. */
+	 *  `session_start` behind it, so the identity is resolved once, from the
+	 *  latest handler context or the api when no context has been seen;
+	 *  `sessionId` supplies the environment and generated fallbacks. */
 	private label(): string {
-		if (!this.sessionLabel) this.sessionLabel = this.sessionId(this.api);
+		if (!this.sessionLabel) {
+			this.sessionLabel = this.sessionId(this.liveContext ?? this.api);
+		}
 		return this.sessionLabel;
 	}
 
@@ -653,6 +666,7 @@ export class RootMemoryBridge {
 	 *  user message also opens the conventions generation the settle boundary
 	 *  answers; compaction and custom starts never do. */
 	private async onBeforeAgentStart(event: any, ctx: any): Promise<unknown> {
+		this.noteContext(ctx);
 		this.turnCounter += 1;
 		this.turnId = `turn-${Date.now()}-${this.turnCounter}`;
 		if (event?.messageType === "user") this.recordOrdinaryInput(ctx);
@@ -704,6 +718,7 @@ export class RootMemoryBridge {
 
 	/** Pi can block, so the memory-mutation gate is enforced here. */
 	private async onToolCall(event: any, ctx: any): Promise<unknown> {
+		this.noteContext(ctx);
 		const result = await this.serialize(() => this.callHook(
 			"PreToolUse",
 			{
@@ -795,6 +810,7 @@ export class RootMemoryBridge {
 	 *  and the reminder travel in one boundary proposal, so the reminder's own
 	 *  response finds its generation already claimed and cannot repeat. */
 	private async onBeforeSettle(event: any, ctx: any): Promise<unknown> {
+		this.noteContext(ctx);
 		return this.serialize(async () => {
 			// A hard exit is not a place to reopen work the owner just ended.
 			if (event?.outcome !== "completed") return undefined;
@@ -833,6 +849,7 @@ export class RootMemoryBridge {
 	 *  for owner input that arrives mid-run. A prompt that starts a run, and any
 	 *  message another extension sends, is left to the run-start rule. */
 	private onInput(event: any, ctx: any): void {
+		this.noteContext(ctx);
 		if (!event?.streamingBehavior) return;
 		if (event.source === "extension") return;
 		this.recordOrdinaryInput(ctx);

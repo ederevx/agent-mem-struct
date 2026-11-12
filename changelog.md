@@ -4,6 +4,23 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T13:17:00-05:00 - the session identity comes from the handler context
+
+A bridge that registers after the session started - a resumed session, or a
+reload that replaces the extension - now takes the live session id from the
+context the host hands each handler, the same context the bridge already reads
+the session branch from. The api object `register` receives carries no session
+manager, so the previous attempt resolved there and reached the environment
+fallback instead of the real id; a replaced extension then sent an id that was
+not the session's, and the hook's receipts and audit gate stopped matching the
+session they were recorded for.
+
+Resolution happens once per bridge, from the latest context seen by
+`session_start`, `before_agent_start`, `tool_call`, `input` or a settle, and
+only a bridge that has seen no context falls back to the api object, then to
+`PI_SESSION_ID`. A new bridge test registers with no `session_start` and no api
+identity and asserts the id the hook receives.
+
 ## 2026-11-12T11:05:00-05:00 - the session identity survives a late extension load
 
 A bridge that registers after the session started - a resumed session, or a

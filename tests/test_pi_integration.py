@@ -1605,6 +1605,9 @@ class PiPackageTests(unittest.TestCase):
             "  sessionManager: ctx.sessionManager,\n"
             "  appendEntry: (customType, data) => { entries.push({\n"
             "    type: 'custom', customType, data, id: 'e' + entries.length }); } };\n"
+            "// A late bridge: the host's api object carries no session identity at\n"
+            "// all, while every handler's context does.\n"
+            "if (process.env.DROP_API_SESSION === '1') delete pi.sessionManager;\n"
             "if (mode === 'paths') {\n"
             "  const paths = new mod.PackageBridgePaths({ AMS_PYTHON: 'P', AMS_HOOK: 'H',\n"
             "    AMS_MEMORY_HOME: 'M', AMS_CONFIG_HOME: 'C', AMS_CANONICAL_ROOT: 'R' });\n"
@@ -1660,6 +1663,11 @@ class PiPackageTests(unittest.TestCase):
             "    const result = await defs.memory_update.execute('id',\n"
             "      JSON.parse(process.argv[4]), undefined, undefined, undefined);\n"
             "    process.stdout.write(JSON.stringify({ result }));\n"
+            "  } else if (mode === 'late') {\n"
+            "    await handlers['before_agent_start']({ messageType: 'user', prompt: 'hi' }, ctx);\n"
+            "    const log = readFileSync(process.env.STUB_LOG, 'utf8')\n"
+            "      .trim().split('\\n').filter(Boolean).map((line) => JSON.parse(line));\n"
+            "    process.stdout.write(JSON.stringify({ bodies: log }));\n"
             "  } else {\n"
             "    process.stdout.write(JSON.stringify({ registered: Object.keys(handlers), tools: tools.sort() }));\n"
             "  }\n"
@@ -1677,12 +1685,38 @@ class PiPackageTests(unittest.TestCase):
             "SESSION_ENTRIES": env.get("entries", str(self.temp / "entries.json")),
             "STUB_REMINDER": env.get("reminder", "STUB-REMINDER"),
         })
+        # The host's own environment may carry a session identity; a test that
+        # wants it sets it explicitly.
+        full_env.pop("PI_SESSION_ID", None)
+        if env.get("session_id"):
+            full_env["PI_SESSION_ID"] = env["session_id"]
+        full_env["DROP_API_SESSION"] = env.get("drop_api_session", "0")
         run = subprocess.run(
             [shutil.which("node") or "node", str(driver), str(bundle), mode, *(argv or [])],
             capture_output=True, text=True, check=False, env=full_env,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
         return json.loads(run.stdout)
+
+    def test_a_late_bridge_sends_the_session_identity(self) -> None:
+        """A bridge instantiated after the session started - the resumed or
+        reloaded case - must still send the live session id.
+
+        The conventions receipt and the audit gate are keyed by that id, so an
+        empty one refuses every memory write and cannot record a read. The id
+        lives on the context each handler receives, not on the api object
+        `register` is given: this bridge registers with no `session_start`
+        behind it and no identity on that object.
+        """
+        config_home = self.temp / "pi-home-late"
+        config_home.mkdir(parents=True)
+        result = self.run_driver(
+            self.bundle(),
+            "late",
+            {"config_home": str(config_home), "drop_api_session": "1"},
+        )
+        self.assertTrue(result["bodies"], result)
+        self.assertEqual(result["bodies"][0]["session_id"], "s1", result["bodies"])
 
     def test_memory_update_tells_the_hook_the_budget_it_allows(self) -> None:
         """One write may take up to three minutes, and the hook is told that
