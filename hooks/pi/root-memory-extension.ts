@@ -534,6 +534,15 @@ export class RootMemoryBridge {
 		return `pi-process-${process.pid}-${randomUUID().slice(0, 8)}`;
 	}
 
+	/** The identity every hook request carries. A bridge that registers after
+	 *  the session started, as a resumed or reloaded session does, has no
+	 *  `session_start` behind it, so the live identity is resolved on first use
+	 *  rather than an empty label being sent. */
+	private label(): string {
+		if (!this.sessionLabel) this.sessionLabel = this.sessionId(this.api);
+		return this.sessionLabel;
+	}
+
 	/** The serialized hook request both the measurement and the write use. */
 	private hookBody(eventName: string, extra: Record<string, unknown>, session: string): string {
 		return JSON.stringify({
@@ -550,7 +559,7 @@ export class RootMemoryBridge {
 		timeoutMs: number,
 	): Promise<HookResult> {
 		return new Promise((resolve) => {
-			const body = this.hookBody(eventName, extra, this.sessionLabel);
+			const body = this.hookBody(eventName, extra, this.label());
 			const stdout: Buffer[] = [];
 			const stderr: Buffer[] = [];
 			let settled = false;

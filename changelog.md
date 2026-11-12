@@ -4,6 +4,19 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T11:05:00-05:00 - the session identity survives a late extension load
+
+A bridge that registers after the session started - a resumed session, or a
+reload that replaces the extension - now resolves the live session id when a
+hook first needs it instead of sending the empty label it was constructed with.
+The conventions receipt and the audit gate are keyed by that id, so an empty
+one refused every memory write before the writer's audit could run, and a
+resumed session could not record that it had read its sources at all.
+
+The id still comes from `sessionManager.getSessionId()` with `PI_SESSION_ID` as
+the fallback, and a value captured at session start still wins, so the change
+only supplies the identity that was always available to the host.
+
 ## 2026-11-12T07:20:00-05:00 - the model judge is removed from the memory-write path
 
 Memory writes now use the writer's conventions audit as their sole semantic
