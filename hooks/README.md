@@ -338,7 +338,7 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `rm_leftovers.LeftoverReport` lists each remembered repository's local-only
   commits (`git rev-list --branches --not --remotes`, up to three
   `sha12 subject` samples) and the immediate children of `AMS_SCRATCH_ROOT`
-  (default `~/tmp`) older than 24 hours, pruning clean or missing
+  (default `~/.tmp`) older than 24 hours, pruning clean or missing
   repositories. It is report only, bounded to two seconds, and writes nothing
   except pruning its own ledger; an unfinished scan adds a
   `leftover check incomplete` line.
