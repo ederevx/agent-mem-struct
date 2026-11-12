@@ -2782,6 +2782,23 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.log.read_bytes(), before)
 
+    def test_a_deleted_tracked_file_is_published_as_a_deletion(self) -> None:
+        self.create_note(body="alpha\nbeta")
+        self.leaf.unlink()
+        message = "commit: drop the note\n\nRetires it without a successor."
+        result = self.call(operation="commit", commit_message=message)
+        self.assertEqual(result.returncode, 0, self.text(result))
+        files = git_run(
+            "show", "--name-only", "--format=", "HEAD", cwd=self.origin
+        ).stdout
+        self.assertIn("nodes/note.md", files)
+        self.assertFalse(
+            subprocess.run(
+                ["git", "cat-file", "-e", "HEAD:nodes/note.md"],
+                cwd=str(self.shared), capture_output=True, check=False,
+            ).returncode == 0
+        )
+
     def test_a_clean_set_reports_nothing_to_commit(self) -> None:
         self.create_note()
         result = self.call(operation="commit", commit_message="commit: nothing")

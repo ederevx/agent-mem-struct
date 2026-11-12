@@ -219,7 +219,7 @@ class MemoryUpdater:
         if not self.judge.unchanged():
             return self.conflict(
                 plan.operation,
-                "judge-stale-requirement",
+                "judge-stale-draft",
                 "a governing document changed after the judgment; no planned "
                 "changes applied.",
                 fix="reread the governing documents, then retry the same update",

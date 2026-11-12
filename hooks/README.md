@@ -271,9 +271,10 @@ The bridge maps Pi events onto the hook's event vocabulary:
   each path held when the plan was recorded, and every document the judge
   read, are compared again; a change to either returns `judge-stale-draft`
   with no planned change applied. A refusal, an unreachable launcher, an
-  answer that is not exactly `yes`, or a draft over `max_input_bytes` returns
-  `judge-refused` / `judge-unavailable` / `judge-answer` / `judge-too-large`
-  and writes nothing. `rm_update.MemoryUpdater` materializes every required
+  answer that is not exactly `yes`, or a draft over the input bound returns
+  `judge-refused`, `judge-unavailable`, `judge-invalid-answer`,
+  `judge-prompt-too-large`, or `judge-no-budget`, and writes nothing.
+  `rm_update.MemoryUpdater` materializes every required
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
   mechanical, and supports create, set, log, rename, retire, requires,
@@ -307,9 +308,9 @@ The bridge maps Pi events onto the hook's event vocabulary:
   resolves a conflict itself: `control-invalid`, `stale-protocol`,
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
-  `exists`, `message-lint`, `non-ascii`, `bad-request`, `unapproved-working-tree`,
-  and `overwrite`
-  come back as a conflict report for the agent to fix and retry. Every
+  `exists`, `would-overwrite`, `message-lint`, `non-ascii`, `bad-request`,
+  and the `judge-` refusals above come back as a conflict report for the
+  agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`
   inspects the worktree the publish committed into and the report gains

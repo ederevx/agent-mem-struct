@@ -4,6 +4,20 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-11T20:11:52-05:00 - the refusals are named as the code returns them
+
+The hook documentation listed conflicts no path produces and left out the
+ones that do, so a reader could not tell which refusal to expect: the judge's
+`judge-refused`, `judge-unavailable`, `judge-invalid-answer`,
+`judge-prompt-too-large`, and `judge-no-budget` now appear beside the
+`would-overwrite` and `exists` a create or rename can hit. A requirement
+edited between the answer and the apply carries `judge-stale-draft`, the same
+code a draft edited during review carries, because both refuse the same way
+and name the same remedy. The commit path gains a test for a tracked file
+deleted by hand: it publishes as a deletion rather than being refused as a
+stale draft. The settings example in the README states a complete `limits`
+block, matching the parser's refusal of a partial one.
+
 ## 2026-11-11T19:17:42-05:00 - every memory write is judged before it lands
 
 `memory_update` no longer edits the store directly. Each operation first

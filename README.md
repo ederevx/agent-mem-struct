@@ -120,7 +120,8 @@ shipped `hooks/judge-policy.json`; a host overrides them in
 `PI_PROVIDER` and `PI_MODEL` override the provider and model; otherwise the
 host's own `defaultProvider` and `defaultModel` are used, read from
 `pi_settings`. A `limits` block states all five limits; a partial one is
-refused instead of being merged with the policy defaults. A host whose models are registered by an extension must name
+refused instead of being merged with the policy defaults. A host whose models
+are registered by an extension must name
 that extension in `launchers.pi.extensions`: the launcher keeps
 `--no-extensions` so the judge never loads the agent's own extensions, and
 only these explicit entry files are loaded. That list is a trust boundary, not
