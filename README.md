@@ -98,6 +98,40 @@ exactly the approved paths and bytes - a line-ending conversion aside - and
 only while the governing documents still read as they did when the judge saw
 them, checked once the answer arrives and before the plan is applied.
 
+### The conventions audit
+
+No write reaches the judge on the strength of a claim. Before a plan may be
+judged, its caller must read the governing sources again and audit the exact
+change the hook computed. A call without `readings` and `audit` is refused with
+that change, its `plan_digest`, the `documents_digest` of the governing
+inventory, and every required source with the digest its bytes hold now - so
+the agent can audit the change it is about to make instead of guessing at it.
+Nothing about this is advisory:
+
+- the readings are compared with the reads the hook itself recorded, and those
+  recorded reads are consumed at the start of every attempt, so a refused
+  attempt cannot be replayed - the retry needs a genuinely new read of every
+  required source, and a submitted reading is only a declaration of what was
+  seen; every required source must be declared, one that does not exist yet
+  with a null digest, and a declared source is stale when its bytes changed or
+  it was never opened;
+- the audit is bound to the computed plan and to the current governing
+  documents, so an audit written for another change, or for another revision of
+  the conventions, is refused (`audit-plan-mismatch`, `audit-documents-stale`);
+- every check names a governing source that exists and cites a rule that must
+  appear verbatim in that source, and every present source must be covered;
+- an audit that reports a violation blocks the update and returns the fix it
+  states, so the agent corrects the change rather than retrying it;
+- the readings and the audit are recorded under
+  `<agent-home>/.agent-mem-struct/memory-audits/` before the judge is asked
+  anything.
+
+What no digest can prove is that the agent did the thinking, so the independent
+compliance judge still reviews every admitted change. The gate lives in the
+hook, not in one harness's bridge: Pi, Claude Code and Codex are all held to
+the same audit, because they all reach `MemoryUpdate` through the same
+dispatcher and the same `rm_update` mutation path.
+
 The launcher, the provider, the model and the resource limits live in the
 shipped `hooks/judge-policy.json`; a host overrides them in
 `<agent-home>/.agent-mem-struct/memory-judge.json`:
@@ -127,7 +161,11 @@ host's own `defaultProvider` and `defaultModel` are used, read from
 refused instead of being merged with the policy defaults. The governing
 documents are part of every draft, so a host whose own `RULES.md`,
 `STRUCTURE.md` and indexes are large raises `max_input_bytes` to the room it
-needs rather than relying on the default. A host whose models
+needs rather than relying on the default. One judged write may take up to three
+minutes overall - the ceiling the bridge allows the call - while the judge still
+stops at `timeout_s`: a host that raises `timeout_s` keeps it plus
+`completion_reserve_s` inside that ceiling, and a call answered sooner returns
+at once. A host whose models
 are registered by an extension must name
 that extension in `launchers.pi.extensions`: the launcher keeps
 `--no-extensions` so the judge never loads the agent's own extensions, and

@@ -113,6 +113,74 @@ def invoke(
     )
 
 
+def update_preview(result: subprocess.CompletedProcess[str]) -> dict | None:
+    """The plan a refused, unaudited memory update hands back for auditing."""
+    try:
+        text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    start = text.find("```json\n")
+    if start < 0:
+        return None
+    start += len("```json\n")
+    end = text.find("\n```", start)
+    if end < 0:
+        return None
+    try:
+        preview = json.loads(text[start:end])
+    except json.JSONDecodeError:
+        return None
+    return preview if isinstance(preview, dict) else None
+
+
+def audited_call(
+    agent: str, home: Path, event: dict[str, object]
+) -> subprocess.CompletedProcess[str]:
+    """Submit a memory update the way an agent must: read, audit, then call."""
+    event = dict(event)
+    event.setdefault("session_id", "pi-session")
+    event.setdefault("turn_id", "turn-1")
+    first = invoke(agent, home, event)
+    preview = update_preview(first)
+    if preview is None:
+        return first
+    rows = [row for row in preview.get("required_readings") or [] if isinstance(row, dict)]
+    for row in rows:
+        if row.get("digest") is None:
+            continue
+        invoke(agent, home, {
+            "hook_event_name": "PreToolUse",
+            "session_id": event["session_id"],
+            "turn_id": event["turn_id"],
+            "tool_name": "read",
+            "tool_input": {"path": row["path"]},
+            "cwd": str(home),
+        })
+    checks = []
+    for row in rows:
+        if row.get("digest") is None:
+            continue
+        source = Path(str(row["path"])).read_text(encoding="utf-8")
+        checks.append({
+            "source": row["path"],
+            "rule": next((line for line in source.splitlines() if line.strip()), source),
+            "status": "pass",
+            "reasoning": "The computed change complies with this rule.",
+            "fix": None,
+        })
+    return invoke(agent, home, {
+        **event,
+        "readings": rows,
+        "audit": {
+            "schema": 1,
+            "plan_digest": preview["plan_digest"],
+            "documents_digest": preview["documents_digest"],
+            "checks": checks,
+            "evidence": ["Read every required source again before this update."],
+        },
+    })
+
+
 def open_gate(
     agent: str, home: Path, shared: Path, *, environment: dict[str, str] | None = None
 ) -> None:
@@ -518,7 +586,7 @@ class MemoryCommitLintTests(unittest.TestCase):
             "turn_id": "turn-1",
         }
         event.update(fields)
-        return invoke("pi", self.home, event)
+        return audited_call("pi", self.home, event)
 
     def text(self, result: subprocess.CompletedProcess[str]) -> str:
         return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]

@@ -156,14 +156,110 @@ def make_git_shared(origin: Path, shared: Path) -> Path:
     return shared.resolve()
 
 
-def invoke_pi(home: Path, event: dict[str, object], *, canonical_root: Path | None = None,
-              config_home: Path | None = None) -> subprocess.CompletedProcess[str]:
-    command = [sys.executable, str(HOOK), "--agent", "pi", "--home", str(home)]
+def raw_invoke(
+    home: Path, event: dict[str, object], *, canonical_root: Path | None = None,
+    config_home: Path | None = None, agent: str = "pi",
+) -> subprocess.CompletedProcess[str]:
+    """One hook event exactly as sent, with no test-side protocol around it."""
+    command = [sys.executable, str(HOOK), "--agent", agent, "--home", str(home)]
     command.extend(("--canonical-root", str(canonical_root or home)))
     if config_home is not None:
         command.extend(("--config-home", str(config_home)))
     return subprocess.run(
         command, input=json.dumps(event), text=True, capture_output=True, check=False,
+    )
+
+
+def update_preview(result: subprocess.CompletedProcess[str]) -> dict | None:
+    """The computed plan and digests a refusal carries, or None without one."""
+    try:
+        text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    start = text.find("```json\n")
+    if start < 0:
+        return None
+    start += len("```json\n")
+    end = text.find("\n```", start)
+    if end < 0:
+        return None
+    try:
+        preview = json.loads(text[start:end])
+    except json.JSONDecodeError:
+        return None
+    return preview if isinstance(preview, dict) else None
+
+
+def invoke_pi(
+    home: Path, event: dict[str, object], *, canonical_root: Path | None = None,
+    config_home: Path | None = None, audited: bool = True, agent: str = "pi",
+) -> subprocess.CompletedProcess[str]:
+    """Run one hook event, completing the audit protocol for a memory update.
+
+    A memory update is only judged after its caller read the required sources
+    again and audited the computed change, so a test that submits one goes
+    through the same two calls an agent must make: the first refusal carries
+    the plan and the digests, the reads are really dispatched, and the second
+    call carries the audit. `audited=False` sends one raw event instead, for
+    the tests that check the protocol itself.
+    """
+    name = event.get("hook_event_name")
+    if name != "MemoryUpdate" or not audited:
+        return raw_invoke(
+            home, event, canonical_root=canonical_root, config_home=config_home,
+            agent=agent,
+        )
+    # The protocol is session-scoped: reads are recorded on the session receipt.
+    event = dict(event)
+    event.setdefault("session_id", "pi-session")
+    event.setdefault("turn_id", "turn-1")
+    first = raw_invoke(
+        home, event, canonical_root=canonical_root, config_home=config_home,
+        agent=agent,
+    )
+    preview = update_preview(first)
+    if preview is None:
+        return first
+    session = str(event.get("session_id") or "pi-session")
+    turn = str(event.get("turn_id") or "turn-1")
+    rows = list(preview.get("required_readings") or [])
+    for row in rows:
+        if not isinstance(row, dict) or row.get("digest") is None:
+            continue
+        raw_invoke(home, {
+            "hook_event_name": "PreToolUse",
+            "session_id": session,
+            "turn_id": turn,
+            "tool_name": "read",
+            "tool_input": {"path": row["path"]},
+            "cwd": str(home),
+        }, canonical_root=canonical_root, config_home=config_home, agent=agent)
+    checks = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("digest") is None:
+            continue
+        text = Path(str(row["path"])).read_text(encoding="utf-8")
+        rule = next((line for line in text.splitlines() if line.strip()), text)
+        checks.append({
+            "source": row["path"],
+            "rule": rule,
+            "status": "pass",
+            "reasoning": "The computed change complies with this rule.",
+            "fix": None,
+        })
+    audit = {
+        "schema": 1,
+        "plan_digest": preview["plan_digest"],
+        "documents_digest": preview["documents_digest"],
+        "checks": checks,
+        "evidence": ["Read every required source again before this update."],
+    }
+    audited_event = dict(event)
+    audited_event["readings"] = rows
+    audited_event["audit"] = audit
+    return raw_invoke(
+        home, audited_event, canonical_root=canonical_root, config_home=config_home,
+        agent=agent,
     )
 
 
@@ -1604,6 +1700,10 @@ class PiPackageTests(unittest.TestCase):
             "        { command: item.command }, undefined, undefined, { cwd: item.cwd }));\n"
             "    }\n"
             "    process.stdout.write(JSON.stringify(results));\n"
+            "  } else if (mode === 'tool') {\n"
+            "    const result = await defs.memory_update.execute('id',\n"
+            "      JSON.parse(process.argv[4]), undefined, undefined, undefined);\n"
+            "    process.stdout.write(JSON.stringify({ result }));\n"
             "  } else {\n"
             "    process.stdout.write(JSON.stringify({ registered: Object.keys(handlers), tools: tools.sort() }));\n"
             "  }\n"
@@ -1627,6 +1727,29 @@ class PiPackageTests(unittest.TestCase):
         )
         self.assertEqual(run.returncode, 0, run.stderr)
         return json.loads(run.stdout)
+
+    def test_memory_update_tells_the_hook_the_budget_it_allows(self) -> None:
+        """One judged write may take up to three minutes, and the hook is told
+        that budget: the judge's own `timeout_s` and completion reserve must fit
+        inside it, so a 30 s call budget would cut a slow answer short."""
+        config_home = self.temp / "pi-home-tool"
+        config_home.mkdir(parents=True)
+        result = self.run_driver(
+            self.bundle(),
+            "tool",
+            {"config_home": str(config_home)},
+            [json.dumps({"operation": "commit", "path": "nodes/note.md"})],
+        )
+        self.assertFalse(result["result"].get("isError"), result["result"])
+        bodies = [
+            json.loads(line)
+            for line in (self.temp / "stub-bodies.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        updates = [body for body in bodies if body.get("hook_event_name") == "MemoryUpdate"]
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0]["budget_ms"], 180000)
+        self.assertEqual(updates[0]["path"], "nodes/note.md")
 
     def test_manifest_declares_a_pi_package_and_its_entry(self) -> None:
         manifest = json.loads(PACKAGE_MANIFEST.read_text(encoding="utf-8"))
@@ -2388,6 +2511,203 @@ class MemoryUpdateTests(unittest.TestCase):
 
     def output(self, result: subprocess.CompletedProcess[str]) -> dict:
         return json.loads(result.stdout)
+
+
+class MemoryUpdateAuditTests(unittest.TestCase):
+    """A memory update is admitted only on a fresh read and its own audit."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-audit-", dir=SCRATCH_ROOT))
+        self.home, self.shared = make_home(self.temp / "home")
+        self.local = self.home / "memory" / "local"
+
+    def event(self, **fields: object) -> dict[str, object]:
+        event: dict[str, object] = {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        }
+        event.update(fields)
+        return event
+
+    def submit(self, *, agent: str = "pi", audited: bool = False,
+               **fields: object) -> subprocess.CompletedProcess[str]:
+        return invoke_pi(self.home, self.event(**fields), audited=audited, agent=agent)
+
+    def create(self, **fields: object) -> subprocess.CompletedProcess[str]:
+        return self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.", **fields,
+        )
+
+    def text(self, result: subprocess.CompletedProcess[str]) -> str:
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def preview(self, result: subprocess.CompletedProcess[str]) -> dict:
+        preview = update_preview(result)
+        self.assertIsNotNone(preview, self.text(result))
+        return preview
+
+    def read_required(self, preview: dict) -> None:
+        """Open every present required source, as the read tool must."""
+        for row in preview["required_readings"]:
+            if row.get("digest") is None:
+                continue
+            invoke_pi(self.home, {
+                "hook_event_name": "PreToolUse",
+                "session_id": "pi-session",
+                "turn_id": "turn-1",
+                "tool_name": "read",
+                "tool_input": {"path": row["path"]},
+                "cwd": str(self.home),
+            }, audited=False)
+
+    def checks(self, preview: dict, *, status: str = "pass", rule: str | None = None,
+               fix: str | None = None) -> list[dict[str, object]]:
+        checks = []
+        for row in preview["required_readings"]:
+            if row.get("digest") is None:
+                continue
+            text = Path(row["path"]).read_text(encoding="utf-8")
+            first = next((line for line in text.splitlines() if line.strip()), text)
+            checks.append({
+                "source": row["path"],
+                "rule": first if rule is None else rule,
+                "status": status,
+                "reasoning": "The change complies with this rule.",
+                "fix": fix,
+            })
+        return checks
+
+    def audit(self, preview: dict, **overrides: object) -> dict[str, object]:
+        audit: dict[str, object] = {
+            "schema": 1,
+            "plan_digest": preview["plan_digest"],
+            "documents_digest": preview["documents_digest"],
+            "checks": self.checks(preview),
+            "evidence": ["Read every required source again before this update."],
+        }
+        audit.update(overrides)
+        return audit
+
+    def test_an_unaudited_update_is_refused_with_the_computed_change(self) -> None:
+        result = self.create()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        text = self.text(result)
+        self.assertIn("audit-missing", text)
+        preview = self.preview(result)
+        self.assertIn("plan_digest", preview)
+        self.assertIn("documents_digest", preview)
+        # The agent audits the change itself, not a summary of it.
+        self.assertIn("## Every change this operation will make", text)
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_a_reading_that_was_not_read_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"], audit=self.audit(preview),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("audit-readings-stale", self.text(result))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_the_reads_one_attempt_consumes_cannot_open_another(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        refused = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"],
+            audit=self.audit(preview, plan_digest="0" * 64),
+        )
+        self.assertEqual(refused.returncode, 3, refused.stderr)
+        self.assertIn("audit-plan-mismatch", self.text(refused))
+        retried = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"], audit=self.audit(preview),
+        )
+        self.assertEqual(retried.returncode, 3, retried.stderr)
+        self.assertIn("audit-readings-stale", self.text(retried))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_an_audit_bound_to_another_change_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"],
+            audit=self.audit(preview, plan_digest="0" * 64),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("audit-plan-mismatch", self.text(result))
+
+    def test_a_cited_rule_must_appear_in_its_source(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"],
+            audit=self.audit(
+                preview, checks=self.checks(preview, rule="a rule nobody wrote")
+            ),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("cites a rule that is not in", self.text(result))
+
+    def test_an_audit_reporting_a_violation_blocks_the_update(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"],
+            audit=self.audit(
+                preview,
+                checks=self.checks(
+                    preview, status="violation", fix="shorten the body first"
+                ),
+            ),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        text = self.text(result)
+        self.assertIn("audit-violations", text)
+        self.assertIn("shorten the body first", text)
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
+
+    def test_an_admitted_update_records_its_audit(self) -> None:
+        preview = self.preview(self.create())
+        self.read_required(preview)
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            readings=preview["required_readings"], audit=self.audit(preview),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("conventions audit recorded:", self.text(result))
+        records = list((self.home / ".agent-mem-struct" / "memory-audits").glob("*.json"))
+        self.assertEqual(len(records), 1)
+        record = json.loads(records[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["plan_digest"], preview["plan_digest"])
+        self.assertEqual(record["documents_digest"], preview["documents_digest"])
+        present = [row for row in record["documents"] if row["digest"] is not None]
+        self.assertEqual(len(record["audit"]["checks"]), len(present))
+
+    def test_every_harness_is_held_to_the_same_audit(self) -> None:
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                refused = self.submit(
+                    agent=agent, operation="create", path=str(self.local),
+                    name=f"{agent}-note", body="body", summary="A test node.",
+                )
+                self.assertEqual(refused.returncode, 3, refused.stderr)
+                self.assertIn("audit-missing", self.text(refused))
+                self.assertFalse((self.local / "nodes" / f"{agent}-note.md").exists())
 
 
 NOTE_MESSAGE = "memory_update create: note\n\nAdds the note node."

@@ -49,7 +49,8 @@ The shared hook `root-memory-context.py`:
     root - the shipped `hooks/rm_tree.py` lister, `tree`, `find DIR [-print]`,
     `ls -aR`, or PowerShell `Get-ChildItem -Recurse -Force` - then refuses a
     mutation or turn completion until every current source and the shared
-    structure have been read;
+    structure have been read, and consumes the recorded reads of one memory
+    update attempt so no two attempts share one reading;
 12. reports a stale structure as a mandatory migrate-first condition without
     hard-blocking the migration itself;
 13. exposes the declared shared-memory directory, including whether it is an
@@ -264,15 +265,30 @@ The bridge maps Pi events onto the hook's event vocabulary:
   which runs the hook's `MemoryUpdate` event once the shared worktree has
   fast-forwarded. Every mutation is first recorded as a plan - the bytes each
   path would gain, the bytes it holds now, and every rename, removal, and
-  directory - and written nowhere; `rm_judge.MemoryJudge` then reviews that
-  plan against the requirement (the root and shared conventions plus the
+  directory - and written nowhere; the caller must then have read every
+  governing source again and audited that exact plan, and `rm_judge.MemoryJudge`
+  reviews it against the requirement (the root and shared conventions plus the
   policy) with the agent's own model, and only a clean `yes` lets
-  `rm_update.MemoryUpdater.apply` materialize it. A write reaches the judge as
+  `rm_update.MemoryUpdater.apply` materialize it. The audit is not advisory: a
+  call without `readings` and `audit` is refused with the computed change, its
+  `plan_digest`, the `documents_digest` of the governing inventory, and every
+  required source with the digest its bytes hold now; the recorded reads are
+  consumed at the start of each attempt so a retry needs new ones; an audit
+  bound to another plan or another revision of the conventions, a check that
+  cites a rule absent from its source, or a check left out returns
+  `audit-plan-mismatch`, `audit-documents-stale`, or `audit-invalid`; and an
+  audit that reports a violation returns `audit-violations` with the fix it
+  states, writing nothing. The admitted readings and audit are recorded under
+  `<agent-home>/.agent-mem-struct/memory-audits/` before the judge is asked.
+  This gate is the hook's, not the bridge's: every harness that reaches the
+  `MemoryUpdate` event is held to it. A write reaches the judge as
   the change it makes - both whole states by size and SHA-256, then every
   changed line with three lines of context, its line ranges and its section,
   each row an exact JSON `[tag, string]` pair - so an unchanged body is never
   printed twice and a large store does not push a small edit out of the input
-  bound; an over-limit draft is refused, never shortened. Before applying, the bytes
+  bound; an over-limit draft is refused, never shortened. The bridge allows the
+  whole call three minutes and states that as the hook's budget, so the judge's
+  own `timeout_s` plus its completion reserve fit inside it. Before applying, the bytes
   each path held when the plan was recorded, and every document the judge
   read, are compared again; a change to either returns `judge-stale-draft`
   with no planned change applied. A refusal, an unreachable launcher, an

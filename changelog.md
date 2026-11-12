@@ -4,6 +4,30 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T03:20:00-05:00 - the writer audits its own change before the judge sees it
+
+A judged write had one reviewer, and it was the model. The agent could ask for
+any change without ever stating what it had concluded about the conventions,
+and a copied or careless draft reached the judge with no audit behind it. The
+hook now refuses every memory update that does not carry `readings` and
+`audit`, and it does not take either on trust. The refusal is the plan itself:
+the computed change, the `plan_digest` of its exact bytes and observed inputs,
+the `documents_digest` of the governing inventory, and every required source
+with the digest its bytes hold now. The readings are compared with the reads
+the hook recorded and the recorded reads are consumed at the start of each
+attempt, so a retry can never replay the reads that opened a refused attempt. A
+reading is therefore only a declaration of what was seen, never evidence. The
+audit is bound to the plan digest and the document digest, every check must
+cite a rule that appears verbatim in the source it names, every present source
+must be covered, and a check reporting a violation blocks the update with the
+fix it states. The admitted readings and audit are recorded under
+`<agent-home>/.agent-mem-struct/memory-audits/` before the judge is invoked.
+The independent judge still reviews every admitted change, because no digest
+can prove that the agent did the thinking. The gate lives in the shared hook
+(`rm_audit`, `rm_update`, `rm_receipts`) rather than in a bridge, so Pi, Claude
+Code and Codex are held to it alike; only the Pi bridge's tool schema states
+the request fields.
+
 ## 2026-11-12T01:15:00-05:00 - the judge suite nests its scratch under the hidden root
 
 `tests/test_judge.py` created its scratch directory at the retired visible root

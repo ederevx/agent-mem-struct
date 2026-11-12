@@ -332,7 +332,11 @@ export class RootMemoryBridge {
 				"with the built-in edit tool and captures the displaced current " +
 				"state into the paired log. `path` is absolute or relative to the " +
 				"agent home and must resolve inside this agent's memory tree or the " +
-				"declared shared root.",
+				"declared shared root. An update is judged only after you audit it " +
+				"yourself: a call without `readings` and `audit` is refused with the " +
+				"computed change and the digests to bind to, after which you reread " +
+				"every required source and re-call with both. An audit reporting a " +
+				"violation blocks the update and states the fix.",
 			parameters: Type.Object({
 				operation: Type.Union([
 					Type.Literal("create"), Type.Literal("set"),
@@ -392,6 +396,30 @@ export class RootMemoryBridge {
 				})),
 				overwrite: Type.Optional(Type.Boolean({
 					description: "attach: replace an existing attachment file.",
+				})),
+				readings: Type.Optional(Type.Array(Type.Object({
+					path: Type.String({
+						description: "One required source path, as the refusal listed it.",
+					}),
+					digest: Type.Union([Type.String(), Type.Literal(null)], {
+						description:
+							"Its current sha256, or null for a source the refusal listed " +
+							"as absent.",
+					}),
+				}), {
+					description:
+						"Every required reading, with the digest of the bytes just read. " +
+						"A refusal lists them under `required_readings`; the hook checks " +
+						"them against its own record of the reads this attempt made, and " +
+						"consumes that record, so a retry needs a new read of every source.",
+				})),
+				audit: Type.Optional(Type.Object({}, {
+					description:
+						"Your conventions audit of the computed change: {schema: 1, " +
+						"plan_digest, documents_digest, checks: [{source, rule, status, " +
+						"reasoning, fix}], evidence}. Bind it to the digests the refusal " +
+						"lists, cite rules verbatim from each required source, and report " +
+						"a violation instead of hiding it.",
 				})),
 			}),
 			annotations: { readOnlyHint: false },

@@ -259,7 +259,7 @@ class EventDispatcher:
             self.control,
             state,
             load_judge(state.memory_root, state.home, state.shared_resolved),
-        ).run(event, budget_s=memory_budget(event))
+        ).run(event, gate=self.gate, budget_s=memory_budget(event))
         self.emit_hook_context("MemoryUpdate", result.text())
         return 0 if result.ok else 3
 

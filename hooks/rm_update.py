@@ -42,7 +42,15 @@ from pathlib import Path
 from typing import Any
 
 from rm_commit import CommitPublisher
+from rm_audit import (
+    AuditStore,
+    audit as audit_request,
+    preview as audit_preview,
+    readings as audit_readings,
+    source_key,
+)
 from rm_edit import WorktreeEdits
+from rm_judge_policy import JudgeError
 from rm_git import GitWorktree
 from rm_control import RootControl, RootState
 from rm_support import under
@@ -74,7 +82,11 @@ REQUEST_FIELDS = frozenset({
     "operation", "path", "name", "body", "text", "requires", "summary",
     "kind", "mechanical", "commit_message", "attachment_name",
     "attachment_content", "attachment_source", "overwrite",
+    "readings", "audit",
 })
+# The request fields a judgment is made on. The audit protocol is verified by
+# the hook, never judged, so it never enters the plan's intent or its digest.
+JUDGED_FIELDS = REQUEST_FIELDS - {"readings", "audit"}
 # Identity the host adds to every event; never part of a judged draft.
 TRANSPORT_FIELDS = frozenset({
     "hook_event_name", "hookEventName", "session_id", "turn_id", "agent_id",
@@ -106,6 +118,7 @@ class UpdateResult:
         note: str = "",
         verified: list[str] | None = None,
         appended: list[tuple[str, str]] | None = None,
+        preview: str = "",
     ) -> None:
         self.ok = ok
         self.operation = operation
@@ -115,6 +128,7 @@ class UpdateResult:
         self.note = note
         self.verified = verified or []
         self.appended = appended or []
+        self.preview = preview
 
     def text(self) -> str:
         if self.ok:
@@ -133,6 +147,8 @@ class UpdateResult:
         for conflict in self.conflicts:
             fix = f" (fix: {conflict['fix']})" if conflict.get("fix") else ""
             lines.append(f"- {conflict['code']}: {conflict['message']}{fix}")
+        if self.preview:
+            lines.append(self.preview)
         return "\n".join(lines)
 
 
@@ -149,28 +165,61 @@ class MemoryUpdater:
 
     # -- entry ---------------------------------------------------------------
 
-    def run(self, request: dict[str, Any], *, budget_s: float | None = None) -> UpdateResult:
-        """Record the mutation, judge it, then write exactly what was judged.
+    def run(
+        self, request: dict[str, Any], *, gate: Any, budget_s: float | None = None
+    ) -> UpdateResult:
+        """Record the mutation, audit it, judge it, then write what was judged.
 
         `budget_s` is the hook's remaining time; the review and the publish
         both draw on it, so neither outlives the caller's own deadline. The log
         date is fixed here, at the start of the one update, so a draft recorded
         again is identical even across midnight.
+
+        The recorded reads are consumed at the start, so a refused attempt can
+        never be retried on the same reads. Nothing is judged until the caller's
+        own audit is structurally sound, bound to this exact plan and inventory,
+        free of violations, and backed by real reads of every required source.
         """
         self.date = datetime.date.today().isoformat()
         self.deadline = (
             None if budget_s is None else time.monotonic() + float(budget_s)
         )
+        observed = gate.take_update_reads(request)
         operation = self.operation(request)
         prepared = self.prepare(request)
         if isinstance(prepared, UpdateResult):
             return prepared
         if not prepared.changes():
             return prepared.result
+        try:
+            inventory = self.judge.inventory(prepared)
+        except JudgeError as refusal:
+            return self.conflict(
+                operation,
+                refusal.code,
+                refusal.detail + ".",
+                fix="restore the governing document, then retry the same update",
+            )
+        changes = self.judge.effects(prepared)
+        preview = audit_preview(prepared, inventory, changes)
+        cwd = Path(str(request.get("cwd") or self.state.home)).expanduser()
+        declared, conflicts = audit_readings(request.get("readings"), inventory, observed, cwd)
+        audited, audit_conflicts = audit_request(
+            request.get("audit"),
+            prepared,
+            inventory,
+            {source_key(row["path"]): row["text"] for row in inventory},
+        )
+        conflicts += audit_conflicts
+        if conflicts:
+            return UpdateResult(False, operation, conflicts=conflicts, preview=preview)
+        record = self.record_audit(prepared, inventory, declared, audited)
+        if isinstance(record, UpdateResult):
+            return record
         verdict = self.judge.review(prepared, budget_s=self.remaining())
         if not verdict.approved:
             return self.conflict(
-                operation, verdict.code, verdict.message, verdict.fix
+                operation, verdict.code, verdict.message, verdict.fix, preview=preview,
             )
         repeated = self.prepare(request)
         if isinstance(repeated, UpdateResult):
@@ -183,7 +232,34 @@ class MemoryUpdater:
                 detail + "; no planned changes applied.",
                 fix="reread the affected memory, then retry the same update",
             )
-        return self.apply(prepared)
+        return self.apply(prepared, record=record)
+
+    def record_audit(
+        self,
+        plan: UpdatePlan,
+        inventory: list[dict[str, Any]],
+        declared: dict[str, str | None],
+        audited: dict[str, Any] | None,
+    ) -> Path | UpdateResult:
+        """Write the attempt's evidence before the judge is asked anything.
+
+        A store that cannot be written refuses, because an update whose audit
+        has no record could not be told apart from one never audited.
+        """
+        try:
+            return AuditStore(self.state.home).record(
+                plan=plan,
+                inventory=inventory,
+                declared=declared,
+                evidence=audited or {},
+            )
+        except OSError as failure:
+            return self.conflict(
+                plan.operation,
+                "audit-store-unwritable",
+                f"the conventions audit could not be recorded: {failure}.",
+                fix="repair the agent memory tree's permissions, then retry",
+            )
 
     def prepare(self, request: dict[str, Any]) -> UpdatePlan | UpdateResult:
         """Record what this mutation would change, writing none of it."""
@@ -207,7 +283,7 @@ class MemoryUpdater:
             self.commit_message(request),
         )
 
-    def apply(self, plan: UpdatePlan) -> UpdateResult:
+    def apply(self, plan: UpdatePlan, *, record: Path | None = None) -> UpdateResult:
         """Materialize the recorded changes, then publish what was approved."""
         stale = self.stale_effect(plan)
         if stale:
@@ -226,9 +302,16 @@ class MemoryUpdater:
                 fix="reread the governing documents, then retry the same update",
             )
         self.materialize(plan)
-        if plan.operation == "commit":
-            return self.publish_worktree(plan)
-        return self.publish(plan)
+        result = (
+            self.publish_worktree(plan)
+            if plan.operation == "commit"
+            else self.publish(plan)
+        )
+        if record is not None:
+            result.verified.insert(
+                0, f"conventions audit recorded: {record}"
+            )
+        return result
 
     @staticmethod
     def stale_effect(plan: UpdatePlan) -> str:
@@ -345,7 +428,7 @@ class MemoryUpdater:
         return {
             key: request[key]
             for key in sorted(request)
-            if key in REQUEST_FIELDS and request[key] not in (None, "", [], {})
+            if key in JUDGED_FIELDS and request[key] not in (None, "", [], {})
         }
 
     def publish(self, plan: UpdatePlan) -> UpdateResult:
@@ -1152,9 +1235,14 @@ class MemoryUpdater:
         return leaf, None
 
     def conflict(
-        self, operation: str, code: str, message: str, fix: str = ""
+        self, operation: str, code: str, message: str, fix: str = "", *, preview: str = ""
     ) -> UpdateResult:
-        return UpdateResult(False, operation, conflicts=[{"code": code, "message": message, "fix": fix}])
+        return UpdateResult(
+            False,
+            operation,
+            conflicts=[{"code": code, "message": message, "fix": fix}],
+            preview=preview,
+        )
 
     def log_conflict(self, operation: str, leaf: Path) -> UpdateResult:
         return self.conflict(

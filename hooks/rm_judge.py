@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hashlib
 import json
 import os
 import time
@@ -25,6 +26,7 @@ from typing import Any
 
 from rm_judge_policy import JudgeError, JudgeLaunch, JudgePolicy
 from rm_judge_process import JudgeProcess, ProcessResult
+from rm_support import read_text
 from rm_update_plan import DELETE, MOVE, RMDIR, WRITE, digest
 
 ROOT_DOCUMENT = "MEMORY.md"
@@ -109,6 +111,10 @@ class RefusingJudge:
 
     def review(self, plan: Any, *, budget_s: float | None = None) -> Verdict:
         return configuration_refusal(self.error)
+
+    def inventory(self, plan: Any = None) -> list[dict[str, Any]]:
+        """A judge that cannot be configured cannot bind an audit either."""
+        raise self.error
 
 
 def load_judge(
@@ -270,6 +276,56 @@ class MemoryJudge:
         entries += [(label, path, False) for label, path in self.context_documents()]
         entries += self.group_documents(plan)
         return entries
+
+    def inventory(self, plan: Any = None) -> list[dict[str, Any]]:
+        """Every governing source with the exact bytes a reading binds to.
+
+        It is the one list the audit challenge, the submitted readings and the
+        judge share: deduped by resolved path, in the judge's own order, with an
+        absent optional document bound by a null digest so its creation during
+        review is a visible change rather than a silent one. An unreadable or
+        missing required source refuses here, exactly as it refuses a judgment.
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for _label, path, required in self.sources(plan):
+            key = os.path.normcase(str(path.resolve(strict=False)))
+            if key in seen:
+                continue
+            seen.add(key)
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                raise JudgeError(
+                    "judge-missing-source",
+                    "prompt",
+                    f"the governing document {path} is not a readable regular file",
+                )
+            text, error = read_text(path) if path.is_file() else (None, None)
+            if error is not None:
+                raise JudgeError(
+                    "judge-missing-source",
+                    "prompt",
+                    f"the governing document {path} is not a readable regular file",
+                )
+            if text is None and required:
+                raise JudgeError(
+                    "judge-missing-source",
+                    "prompt",
+                    f"the governing document {path} does not exist",
+                )
+            # The digest is taken over the text, exactly as a read receipt hashes
+            # the bytes the read tool opened: CRLF and LF are one document.
+            rows.append(
+                {
+                    "path": str(path),
+                    "digest": (
+                        None
+                        if text is None
+                        else hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    ),
+                    "text": text or "",
+                }
+            )
+        return rows
 
     def read(self, path: Path, required: bool) -> str:
         """One governing document, recorded for the recheck, or a refusal.

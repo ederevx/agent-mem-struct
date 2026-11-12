@@ -487,6 +487,37 @@ class PresentationTests(Temp):
         self.assertIn(b"a moved line", prompt)
 
 
+class BudgetTests(Temp):
+    """The judge's share of the hook's budget: its limit and the reserve."""
+
+    def judged(self):
+        return judge.MemoryJudge(self.loaded(), self.memory("# Root\n"))
+
+    def test_a_large_hook_budget_still_leaves_only_the_policy_limit(self) -> None:
+        # The bridge allows a judged write three minutes, which is more than a
+        # host's own timeout_s; the extra time is not spent on a fast answer.
+        launch = self.launch(timeout_s=60, completion_reserve_s=10)
+        self.assertEqual(self.judged().timeout(launch, 171.0), 60.0)
+
+    def test_a_small_hook_budget_shrinks_the_judge_to_what_is_left(self) -> None:
+        launch = self.launch(timeout_s=60, completion_reserve_s=10)
+        self.assertEqual(self.judged().timeout(launch, 31.0), 21.0)
+
+    def test_no_stated_budget_leaves_the_judge_its_own_limit(self) -> None:
+        launch = self.launch(timeout_s=60, completion_reserve_s=10)
+        self.assertEqual(self.judged().timeout(launch, None), 60.0)
+
+    def test_a_budget_with_nothing_left_to_report_is_refused(self) -> None:
+        judged = self.judged()
+        launch = self.launch(timeout_s=60, completion_reserve_s=10)
+        with self.assertRaises(policy.JudgeError) as caught:
+            judged.timeout(launch, 9.0)
+        self.assertEqual(caught.exception.code, "judge-no-budget")
+
+    def test_the_shipped_policy_keeps_its_thirty_seconds(self) -> None:
+        self.assertEqual(self.judged().timeout(self.launch(), 180.0), 30.0)
+
+
 class AnswerTests(Temp):
     """`MemoryJudge.decide` and `parse`: only a clean `yes` approves."""
 
@@ -931,13 +962,7 @@ class GatingTests(Temp):
     def call(self, home: Path, **fields: object) -> subprocess.CompletedProcess[str]:
         event: dict[str, object] = {"hook_event_name": "MemoryUpdate"}
         event.update(fields)
-        command = [
-            sys.executable, str(HOOKS / "root-memory-context.py"),
-            "--agent", "pi", "--home", str(home), "--canonical-root", str(home),
-        ]
-        return subprocess.run(
-            command, input=json.dumps(event), text=True, capture_output=True, check=False
-        )
+        return integration().invoke_pi(home, event)
 
     def text(self, result: subprocess.CompletedProcess[str]) -> str:
         return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]

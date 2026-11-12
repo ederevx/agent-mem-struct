@@ -394,13 +394,71 @@ class UpdatePlan:
         return True, ""
 
     def paths(self) -> list[Path]:
-        """Every path the plan touches, deduped in effect order."""
         seen: list[Path] = []
         for effect in self.effects:
             for path in (effect.path, effect.destination):
                 if path is not None and path not in seen:
                     seen.append(path)
         return seen
+
+    def payload(self) -> dict[str, Any]:
+        """Everything this plan declares, as one canonical auditable value.
+
+        The audit the agent returns is bound to this digest, so a change that
+        differs in any byte, any observed input, or any commit line cannot be
+        covered by an audit written for another change.
+        """
+        from rm_audit import bytes_field
+
+        return {
+            "operation": self.operation,
+            "intent": _plain(self.intent),
+            "commit_message": self.commit_message,
+            "publish": [str(path) for path in self.publish_paths],
+            "context": _plain(self.context),
+            "observations": {
+                key: [_plain(item.path), item.digest, item.kind]
+                for key, item in self.observations.items()
+            },
+            "effects": [
+                {
+                    "kind": effect.kind,
+                    "path": str(effect.path),
+                    "destination": (
+                        str(effect.destination)
+                        if effect.destination is not None
+                        else None
+                    ),
+                    "before": bytes_field(effect.before),
+                    "after": bytes_field(effect.after),
+                    "observed": (
+                        bytes_field(effect.observed)
+                        if effect.observed is None or isinstance(effect.observed, bytes)
+                        else _plain(effect.observed)
+                    ),
+                }
+                for effect in self.effects
+            ],
+        }
+
+    def audit_digest(self) -> str:
+        """The digest the audit must name to describe exactly this change."""
+        from rm_audit import canonical
+
+        return hashlib.sha256(canonical(self.payload())).hexdigest()
+
+
+def _plain(value: Any) -> Any:
+    """One recorded value as JSON: paths as text, tuples as lists."""
+    if isinstance(value, dict):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
 
 
 def describe(effects: Iterable[FileEffect]) -> str:
