@@ -12,6 +12,21 @@ on a host whose conventions forbid that path the run broke the rule it was
 testing. The default is now the hidden root, beside the tree the other test
 modules already use, and `AGENT_MEM_STRUCT_TEST_TMP` still overrides it.
 
+## 2026-11-12T01:10:00-05:00 - a judged write is given the time its judge needs
+
+The bridge let one `memory_update` call run for 30 seconds, and it told the hook
+that this was its whole budget. The hook spends the budget on planning, on the
+judge and on the publication, so the judge's own share on this host was about 21
+seconds - and the first judged commit refused as `judge-unavailable` although
+the configured model answered the same 77 KB draft in 38 seconds when the
+launcher was run by hand. A call budget is the time a healthy call needs, not
+the time the judge may use: the ceiling is now 180 seconds, which leaves a
+host's `timeout_s` plus its `completion_reserve_s` room inside it, while a call
+answered sooner still returns at once. The judge's own deadline and the shipped
+limits are unchanged - it still stops at `timeout_s`, and it still takes only
+what remains of the hook's budget minus the reserve - so a host that raises
+`timeout_s` states a timeout this ceiling can hold.
+
 ## 2026-11-12T00:15:00-05:00 - the judge reads the change, not two copies of the file
 
 The draft shown to the judge printed both sides of every write in full, so a

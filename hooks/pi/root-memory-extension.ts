@@ -52,7 +52,13 @@ const CANONICAL_ROOT = "__AMS_CANONICAL_ROOT__";
 const DEFAULT_TIMEOUT_MS = 8000;
 const PRECOMPACT_TIMEOUT_MS = 120000;
 const PREMEMORY_TIMEOUT_MS = 30000;
-const MEMORYUPDATE_TIMEOUT_MS = 30000;
+/** The ceiling for one judged write, and the budget the hook is told it has.
+ *  It must exceed the judge's configured `timeout_s` plus `completion_reserve_s`
+ *  with room for planning and publishing, or a prompt the model needs a minute
+ *  to read is cut short and the write refuses as `judge-unavailable`; the judge
+ *  still answers within its own policy limit, so this ceiling never lengthens a
+ *  call that is answered sooner. */
+const MEMORYUPDATE_TIMEOUT_MS = 180000;
 const MAX_INLINE_ENTRIES = 150;
 const LISTER_TIMEOUT_MS = 30000;
 // A host timer cannot hold a larger millisecond delay; the hook bounds
