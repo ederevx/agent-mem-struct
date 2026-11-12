@@ -2782,22 +2782,64 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.log.read_bytes(), before)
 
-    def test_a_deleted_tracked_file_is_published_as_a_deletion(self) -> None:
+    def test_a_hand_deleted_leaf_is_refused_and_points_at_retire(self) -> None:
         self.create_note(body="alpha\nbeta")
         self.leaf.unlink()
         message = "commit: drop the note\n\nRetires it without a successor."
         result = self.call(operation="commit", commit_message=message)
-        self.assertEqual(result.returncode, 0, self.text(result))
-        files = git_run(
+        self.assertNotEqual(result.returncode, 0, self.text(result))
+        self.assertIn("retire-required", self.text(result))
+        kept = subprocess.run(
+            ["git", "cat-file", "-e", "HEAD:nodes/note.md"],
+            cwd=str(self.origin), capture_output=True, check=False,
+        )
+        self.assertEqual(kept.returncode, 0, "the deletion was published")
+
+    def test_a_named_hand_deleted_leaf_is_refused_the_same_way(self) -> None:
+        self.create_note(body="alpha\nbeta")
+        self.leaf.unlink()
+        message = "commit: drop the note\n\nRetires it without a successor."
+        result = self.call(
+            operation="commit", path=str(self.leaf), commit_message=message
+        )
+        self.assertNotEqual(result.returncode, 0, self.text(result))
+        self.assertIn("retire-required", self.text(result))
+        self.assertNotIn("not-found", self.text(result))
+
+    def test_a_branch_holding_unpublished_commits_is_refused(self) -> None:
+        self.create_note()
+        extra = self.shared / "unpublished.txt"
+        extra.write_text("never published\n", encoding="utf-8")
+        git_run("add", "--", "unpublished.txt", cwd=self.shared)
+        git_run("commit", "-m", "local: unpublished", cwd=self.shared)
+        result = self.call(
+            operation="set",
+            path=str(self.leaf),
+            body="# Note\nalpha\n",
+            commit_message="set: note\n\nRefreshes the body.",
+        )
+        self.assertNotEqual(result.returncode, 0, self.text(result))
+        self.assertIn("shared-unpushed", self.text(result))
+        published = git_run(
             "show", "--name-only", "--format=", "HEAD", cwd=self.origin
         ).stdout
-        self.assertIn("nodes/note.md", files)
-        self.assertFalse(
-            subprocess.run(
-                ["git", "cat-file", "-e", "HEAD:nodes/note.md"],
-                cwd=str(self.shared), capture_output=True, check=False,
-            ).returncode == 0
+        self.assertNotIn("unpublished.txt", published)
+
+    def test_an_upstream_with_no_published_tip_keeps_the_commit_local(self) -> None:
+        self.create_note()
+        git_run("update-ref", "-d", "refs/remotes/origin/main", cwd=self.shared)
+        published = git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip()
+        result = self.call(
+            operation="set",
+            path=str(self.leaf),
+            body="# Note\nalpha\n",
+            commit_message="set: note\n\nRefreshes the body.",
         )
+        self.assertEqual(result.returncode, 0, self.text(result))
+        self.assertIn("no upstream to push to", self.text(result))
+        self.assertEqual(git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip(), published)
+        local = git_run("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+        self.assertNotEqual(local, published, "the new commit was published")
 
     def test_a_clean_set_reports_nothing_to_commit(self) -> None:
         self.create_note()

@@ -273,7 +273,11 @@ The bridge maps Pi events onto the hook's event vocabulary:
   with no planned change applied. A refusal, an unreachable launcher, an
   answer that is not exactly `yes`, or a draft over the input bound returns
   `judge-refused`, `judge-unavailable`, `judge-invalid-answer`,
-  `judge-prompt-too-large`, or `judge-no-budget`, and writes nothing.
+  `judge-prompt-too-large`, or `judge-no-budget`, and writes nothing. A
+  settings document that cannot be read as the policy, a governing document
+  that cannot be read, or an answer over the capture bound returns
+  `judge-invalid-config`, `judge-missing-source`, or `judge-oversized-response`
+  instead of approving anything.
   `rm_update.MemoryUpdater` materializes every required
   counterpart (the same-named log, the nodes index, and group scaffolding),
   moves displaced current state into the log unless the edit is declared
@@ -304,12 +308,22 @@ The bridge maps Pi events onto the hook's event vocabulary:
   tip, and never force-pushes; without a remote or an upstream it commits
   locally and says so. Every git invocation goes through `rm_git.GitWorktree`.
   A `commit` whose target set is already clean is a no-op, not a failure: it
-  reports `nothing-to-commit` and succeeds without committing. The tool never
+  reports `nothing-to-commit` and succeeds without committing. A commit is
+  refused when the shared branch holds commits the published tip does not,
+  when the commit's own parent is not that published tip, or when the upstream
+  has no published tip at all, so a push can never carry an earlier rejection
+  - or a history nobody reviewed against a tip - along with an approved
+  commit. It is also refused when a tracked leaf was deleted by hand while its
+  paired log is not part of the same publication: that removal is
+  `retire-required`, because only `retire` keeps the leaf's final state. A
+  target Git will not report on is `unreadable-target` rather than a
+  deletion. The tool never
   resolves a conflict itself: `control-invalid`, `stale-protocol`,
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
-  `exists`, `would-overwrite`, `message-lint`, `non-ascii`, `bad-request`,
-  and the `judge-` refusals above come back as a conflict report for the
+  `exists`, `would-overwrite`, `retire-required`, `unreadable-target`,
+  `message-lint`, `non-ascii`, `bad-request`, `judge-publish-mismatch`,
+  and the other `judge-` refusals above come back as a conflict report for the
   agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`

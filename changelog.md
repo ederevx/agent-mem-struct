@@ -4,6 +4,35 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-11T20:46:00-05:00 - a publication is checked against what the commit holds
+
+Three states were being flattened into one, and each flattening let a write
+through on evidence the judge never saw. A plan write recorded "the current
+bytes" for an omitted prior state and for an explicit absence alike, so an
+addition could be judged as an unchanged file; the sentinel is now an object
+that cannot be mistaken for either. A tree lookup that failed or timed out was
+read as an absent path, so a deletion was verified by an unanswered query; the
+lookup now reports whether Git answered at all: the update path refuses an
+unanswered query as `unreadable-target`, and a publication whose committed tree
+or object cannot be read is refused as `judge-publish-mismatch` instead of
+passing for a deletion.
+And a shared branch holding commits the published tip lacks is refused as
+`shared-unpushed`, because a push sends every ancestor and would carry an
+earlier rejection along with an approved commit; the same guard requires the
+approved commit's own parent to be the published tip, which a concurrent writer
+in the shared worktree can otherwise break, and refuses a branch whose upstream
+has no published tip at all, since nothing there would show the history was
+reviewed against one.
+
+A tracked leaf deleted by hand while its paired log stays out of the same
+publication is now `retire-required`: publishing that removal would drop the
+last state the protocol keeps for the leaf, and only `retire` preserves it. Its
+removal is judged against the bytes HEAD holds rather than the previous body
+the edit declared. The judge's teardown bound is used as configured, since the
+policy already refuses a non-positive value, and the containment note states
+that the POSIX bound reaches the process group and no descendant that leaves
+it.
+
 ## 2026-11-11T20:11:52-05:00 - the refusals are named as the code returns them
 
 The hook documentation listed conflicts no path produces and left out the

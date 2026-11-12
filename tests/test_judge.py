@@ -648,6 +648,23 @@ class ApplyTests(Temp):
         updater = integration().load_hook_module("rm_update").MemoryUpdater
         self.assertIn("leaf.md", updater.stale_effect(self.plan([effect])))
 
+    def test_an_absent_before_is_a_real_prior_state(self) -> None:
+        target = self.temp / "new.md"
+        target.write_bytes(b"untracked body\n")
+        recorder = integration().load_hook_module("rm_update_plan").PlanRecorder()
+        recorder.write(target, b"untracked body\n", before=None)
+        effect = recorder.effects[0]
+        self.assertIsNone(effect.before)
+        self.assertEqual(effect.observed, b"untracked body\n")
+
+    def test_an_omitted_before_is_the_observed_bytes(self) -> None:
+        target = self.temp / "edited.md"
+        target.write_bytes(b"working bytes\n")
+        recorder = integration().load_hook_module("rm_update_plan").PlanRecorder()
+        recorder.write(target, b"new bytes\n")
+        effect = recorder.effects[0]
+        self.assertEqual(effect.before, b"working bytes\n")
+
 
 class LineEndingTests(Temp):
     """Only the CRLF-to-LF rewrite Git performs is accepted as the same content."""
@@ -871,6 +888,79 @@ class GatingTests(Temp):
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("judge-unavailable", self.text(result))
         self.assertFalse((local / "nodes" / "gone.md").exists())
+
+
+class PublicationGuardTests(unittest.TestCase):
+    """The publication guard reads every unanswered query as a refusal."""
+
+    def setUp(self) -> None:
+        self.commit = load("rm_commit")
+        self.git = load("rm_git")
+        self.temp = Path(tempfile.mkdtemp(dir=SCRATCH, prefix="ams-publish-guard-"))
+        self.addCleanup(shutil.rmtree, self.temp, True)
+        self.publisher = self.commit.CommitPublisher(self.temp)
+        self.worktree = mock.Mock()
+        self.publisher.worktree = self.worktree
+
+    @staticmethod
+    def answer(returncode: int = 0, stdout: str = "", stderr: str = ""):
+        return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+    def queries(
+        self, published: str | None, parents: list[str] | None, head: str | None = "c" * 40
+    ) -> None:
+        """Answer the guard's queries, or fail the ones named None.
+
+        An empty `published` is Git answering that the ref exists nowhere in
+        this repository, which is how an upstream with no published tip reads.
+        """
+        def run(*args, **_kwargs):
+            if args[0] == "rev-parse":
+                named = head if args[-1] == "HEAD" else published
+                if named is None:
+                    return self.answer(128, "", "fatal: not a repository")
+                if not named:
+                    return self.answer(1, "", "")
+                return self.answer(0, named + "\n", "")
+            if args[0] == "rev-list":
+                if parents is None:
+                    return self.answer(1, "", "boom")
+                return self.answer(0, " ".join([args[-1], *parents]) + "\n", "")
+            return self.answer(1, "", "unexpected query")
+
+        self.worktree.run.side_effect = run
+        self.worktree.upstream.return_value = ("origin", "refs/heads/main")
+        self.worktree.upstream_ref.return_value = "refs/remotes/origin/main"
+
+    def test_a_commit_based_elsewhere_than_the_published_tip_is_refused(self) -> None:
+        self.queries("a" * 40, ["b" * 40])
+        self.assertIn("based on", self.publisher.carries("c" * 40))
+
+    def test_a_commit_on_the_published_tip_is_allowed(self) -> None:
+        self.queries("a" * 40, ["a" * 40])
+        self.assertEqual(self.publisher.carries("b" * 40), "")
+
+    def test_an_unanswered_parent_query_is_refused(self) -> None:
+        self.queries("a" * 40, None)
+        self.assertIn("would not report the parents", self.publisher.carries("b" * 40))
+
+    def test_an_unanswered_published_tip_is_refused(self) -> None:
+        self.queries(None, ["a" * 40])
+        self.assertIn("would not report the published tip", self.publisher.carries("b" * 40))
+        self.assertIn("would not report the published tip", self.publisher.unpublished())
+
+    def test_a_commit_with_no_published_tip_is_refused(self) -> None:
+        self.queries("", ["a" * 40])
+        self.assertIn("no published tip", self.publisher.carries("b" * 40))
+
+    def test_history_with_no_published_tip_is_refused(self) -> None:
+        self.queries("", ["a" * 40], head="c" * 40)
+        self.assertIn("no published tip", self.publisher.unpublished())
+
+    def test_a_failed_tree_lookup_is_not_an_absent_path(self) -> None:
+        worktree = self.git.GitWorktree(REPO)
+        with mock.patch.object(worktree, "run", return_value=self.answer(1, "", "boom")):
+            self.assertEqual(worktree.tree_entry("HEAD", "RULES.md"), (False, None))
 
 
 if __name__ == "__main__":

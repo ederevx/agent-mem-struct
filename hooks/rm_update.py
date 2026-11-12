@@ -47,6 +47,7 @@ from rm_git import GitWorktree
 from rm_control import RootControl, RootState
 from rm_support import under
 from rm_update_plan import (
+    ABSENT,
     DELETE,
     FILE,
     MKDIR,
@@ -553,13 +554,20 @@ class MemoryUpdater:
         dirty = {str(path) for path in edits.dirty_paths()}
         raw = self.required(request, "path")
         if raw:
-            leaf, error = self.resolve_history(request, "commit")
+            leaf, error = self.resolve_history(request, "commit", allow_missing=True)
             if error is not None:
                 return error
             if not edits.is_repo(leaf):
                 return self.unbacked_commit(leaf)
             log = leaf.parent / "log" / leaf.name
-            targets = [leaf] if self.tree.exists(leaf) else []
+            known = self.exists_or_tracked(leaf, edits)
+            if known is None:
+                return self.unreadable_target(
+                    "commit", leaf,
+                    "Git would not report what it holds for it, so the target "
+                    "set cannot be decided.",
+                )
+            targets = [leaf] if known else []
             if self.tree.exists(log) and self.dirty(log, dirty):
                 targets.append(log)
         else:
@@ -571,6 +579,9 @@ class MemoryUpdater:
             return self.ok(
                 "commit", note="nothing-to-commit: no target has working-tree changes."
             )
+        removed = self.retire_required(dirty_targets, dirty, edits)
+        if removed is not None:
+            return removed
         active = [path for path in dirty_targets if self.is_active_leaf(path)]
         for leaf in active:
             if not self.tree.exists(leaf.parent / "log" / leaf.name):
@@ -603,6 +614,65 @@ class MemoryUpdater:
             appended=appended,
         )
 
+    def exists_or_tracked(self, path: Path, edits: WorktreeEdits) -> bool | None:
+        """Whether the leaf is there to commit, or None when Git did not say."""
+        if self.tree.exists(path):
+            return True
+        return self.tracked(path, edits)
+
+    def tracked(self, path: Path, edits: WorktreeEdits) -> bool | None:
+        """Whether HEAD holds `path`, or None when Git did not say."""
+        target = self.git_target(path, edits)
+        if target is None:
+            return None
+        worktree, relative = target
+        found, entry = worktree.tree_entry("HEAD", relative)
+        return None if not found else entry is not None
+
+    def unreadable_target(self, operation: str, path: Path, detail: str) -> UpdateResult:
+        """A path Git would not describe is never judged as absent or empty."""
+        return self.conflict(
+            operation,
+            "unreadable-target",
+            f"{path} {detail}",
+            fix="repair the repository, then re-call",
+        )
+
+    def retire_required(
+        self, targets: list[Path], dirty: set[str], edits: WorktreeEdits
+    ) -> UpdateResult | None:
+        """A leaf deleted by hand is refused: only `retire` keeps its final state.
+
+        Publishing the removal of a leaf whose paired log is not part of the
+        same publication would drop the last state the protocol keeps, so the
+        commit points at `retire` instead of committing the deletion.
+        """
+        for path in targets:
+            if not self.is_active_leaf(path) or self.tree.state(path) != ABSENT:
+                continue
+            held = self.tracked(path, edits)
+            if held is None:
+                return self.unreadable_target(
+                    "commit", path,
+                    "is missing, and Git would not report what HEAD holds for it, "
+                    "so its removal cannot be judged.",
+                )
+            if not held:
+                continue
+            log = path.parent / "log" / path.name
+            if self.dirty(log, dirty):
+                continue
+            return self.conflict(
+                "commit",
+                "retire-required",
+                f"{path} was deleted by hand and its paired log is not part of "
+                "this publication, so the leaf's final state would be lost.",
+                fix="restore the leaf, then call memory_update with operation "
+                "`retire` so the final state reaches the paired log before the "
+                "removal is published",
+            )
+        return None
+
     def record_target(self, path: Path, edits: WorktreeEdits) -> UpdateResult | None:
         """Record one dirty target as the equality write or deletion to publish.
 
@@ -621,13 +691,26 @@ class MemoryUpdater:
             )
         if state == FILE:
             data = self.tree.observe(path)
+            found, committed = self.head_blob(path, edits)
+            if not found:
+                return self.unreadable_target(
+                    "commit", path,
+                    "exists, but Git would not report what it holds in HEAD, so its "
+                    "change cannot be judged.",
+                )
             # The judge compares a publication with what is committed, not with
             # the working file that already holds the hand edit.
-            self.tree.write(path, data, before=self.head_bytes(path, edits))
+            self.tree.write(path, data, before=committed)
             self.pin(path, edits)
             return None
-        previous = edits.previous_body(path) or ""
-        self.tree.write(path, None, before=previous.encode("utf-8"))
+        found, committed = self.head_blob(path, edits)
+        if not found:
+            return self.unreadable_target(
+                "commit", path,
+                "is missing, but Git would not report what it held in HEAD, so its "
+                "removal cannot be judged.",
+            )
+        self.tree.write(path, None, before=committed)
         self.pin(path, edits)
         return None
 
@@ -643,13 +726,26 @@ class MemoryUpdater:
             return None
         return GitWorktree(root), relative
 
-    def head_bytes(self, path: Path, edits: WorktreeEdits) -> bytes | None:
-        """The bytes `path` had in HEAD, which is what a publication replaces."""
+    def head_blob(self, path: Path, edits: WorktreeEdits) -> tuple[bool, bytes | None]:
+        """What `path` held in HEAD, and whether Git could say.
+
+        An untracked path is reported as `(True, None)` - genuinely absent - so
+        the judge reads an addition rather than an unchanged file, while an
+        unanswered query is `(False, None)` and refuses the publication. A path
+        Git cannot even place in a worktree is unanswered too: failed repository
+        discovery proves nothing about what HEAD holds.
+        """
         target = self.git_target(path, edits)
         if target is None:
-            return None
+            return False, None
         worktree, relative = target
-        return worktree.blob_bytes("HEAD", relative)
+        found, entry = worktree.tree_entry("HEAD", relative)
+        if not found:
+            return False, None
+        if entry is None:
+            return True, None
+        read, data = worktree.object_bytes(entry[1])
+        return (True, data) if read else (False, None)
 
     def pin(
         self, path: Path, edits: WorktreeEdits, previous: str | None = None
@@ -995,7 +1091,19 @@ class MemoryUpdater:
             f"{resolved} is outside this agent's memory tree and the declared shared root.",
         )
 
-    def resolve_leaf(self, request: dict[str, Any], operation: str) -> tuple[Path, UpdateResult | None]:
+    def resolve_leaf(
+        self,
+        request: dict[str, Any],
+        operation: str,
+        *,
+        allow_missing: bool = False,
+    ) -> tuple[Path, UpdateResult | None]:
+        """The named leaf, refused when it is not a leaf this operation edits.
+
+        `allow_missing` is for `commit`, which is the one operation that may
+        address a leaf already deleted from the working tree: only it can tell
+        a tracked deletion from a path that never existed.
+        """
         leaf, error = self.resolve(self.required(request, "path"))
         if error is not None:
             error.operation = operation
@@ -1008,14 +1116,18 @@ class MemoryUpdater:
                 "log-target",
                 "logs are history; use the log operation, not a direct edit.",
             )
-        if not self.tree.exists(leaf):
+        if not allow_missing and not self.tree.exists(leaf):
             return leaf, self.conflict(
                 operation, "not-found", f"{leaf} does not exist.", fix="create it first"
             )
         return leaf, None
 
     def resolve_history(
-        self, request: dict[str, Any], operation: str
+        self,
+        request: dict[str, Any],
+        operation: str,
+        *,
+        allow_missing: bool = False,
     ) -> tuple[Path, UpdateResult | None]:
         """The leaf whose paired log `log` and `commit` address.
 
@@ -1025,7 +1137,7 @@ class MemoryUpdater:
         """
         log, error = self.resolve(self.required(request, "path"))
         if error is not None or log.parent.name != "log" or log.suffix != ".md":
-            return self.resolve_leaf(request, operation)
+            return self.resolve_leaf(request, operation, allow_missing=allow_missing)
         leaf = log.parent.parent / log.name
         if self.tree.exists(leaf):
             return leaf, self.conflict(

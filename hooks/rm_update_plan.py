@@ -30,7 +30,7 @@ FILE = "file"
 DIRECTORY = "directory"
 ABSENT = "absent"
 UNREADABLE = "unreadable"
-
+# The absence of an argument, kept apart from an explicit "no prior bytes".
 _UNOBSERVED: Any = object()
 
 
@@ -230,12 +230,22 @@ class PlanRecorder:
 
     # -- effects -------------------------------------------------------------
 
-    def write(self, path: Path, data: bytes | None, before: bytes | None = None) -> None:
+    def write(
+        self, path: Path, data: bytes | None, before: Any = _UNOBSERVED
+    ) -> None:
+        """Record the bytes `path` gains, and the bytes it holds now.
+
+        `before` is what the judge is shown as the prior state, and it differs
+        from `observed` exactly when a publication is judged against the
+        committed bytes rather than an uncommitted working edit. Omitting it
+        means "the current bytes", which is a real state distinct from
+        `before=None`, the explicit absence of a path.
+        """
         key = self.key(path)
         current = self.observe(path)
         if key in self.planned:
             before = self.planned[key]
-        elif before is None:
+        elif before is _UNOBSERVED:
             before = current
         kind = WRITE if data is not None else DELETE
         self.effects.append(FileEffect(kind, path, before, data, observed=current))

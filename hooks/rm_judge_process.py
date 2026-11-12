@@ -1,11 +1,11 @@
 """Run one judge command under a bounded deadline and a killable process tree.
 
 One owner for the judge's process boundary: `JudgeProcess` resolves the
-launcher to a real executable, starts it so the whole tree can be terminated,
-writes the prompt to its standard input, collects a bounded standard output,
-and reports the outcome as a `ProcessResult` - never raising, never leaving a
-child or a grandchild running, and never reading more of the answer than the
-configured bound.
+launcher to a real executable, starts it in a process group or job object its
+own code cannot leave, writes the prompt to its standard input, collects a
+bounded standard output, and reports the outcome as a `ProcessResult` - never
+raising, never leaving a child it can still reach running, and never reading
+more of the answer than the configured bound.
 
 Containment is the reason this is a class of its own. A child that keeps its
 own children can outlive a leader-only kill and hold the answer pipe open, so
@@ -13,7 +13,10 @@ on POSIX the child leads its own session and its process group is killed, and
 on Windows the child is created suspended inside a Job Object configured with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, before any of its code runs, and is only
 then resumed. A job that cannot be configured is refused rather than run
-uncontained: the tree is killed before the failure is reported.
+uncontained: the tree is killed before the failure is reported. The POSIX
+bound reaches the child's process group and every descendant that stays in it;
+a descendant that starts a new session of its own leaves that group and is not
+reached - containment on POSIX is bounded by the process group, not a sandbox.
 """
 from __future__ import annotations
 
@@ -285,7 +288,7 @@ class JudgeProcess:
         if error:
             self._kill(child, None)
             try:
-                child.wait(timeout=max(0.1, self.teardown_s))
+                child.wait(timeout=self.teardown_s)
             except subprocess.TimeoutExpired:
                 pass
             return None, None, error

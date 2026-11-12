@@ -112,38 +112,58 @@ class GitWorktree:
     def failed(self, args: tuple[str, ...], detail: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([*args], 1, "", detail)
 
-    def blob(self, sha: str, relative: str) -> bytes | None:
-        """One path's exact committed bytes at `sha`, or None when absent."""
-        result = self.run_bytes(
-            "cat-file", "blob", f"{sha}:{relative}",
-            budget=self.limit(default=QUERY_BUDGET),
-        )
-        return result.stdout if result.returncode == 0 else None
+    def tree_entry(
+        self, sha: str, relative: str
+    ) -> tuple[bool, tuple[str, str] | None]:
+        """One path's tree entry at `sha`, with the query result kept apart.
 
-    def blob_id(self, sha: str, relative: str) -> str | None:
-        """The blob Git stored for `relative` at `sha`, or None when absent."""
+        The first value says whether Git answered at all, so a failed or
+        timed-out lookup is never read as an absent path - a deletion is
+        verified by absence, and an unanswered query proves nothing. The second
+        is `(mode, object id)` when the path is in the tree.
+        """
         result = self.run(
             "ls-tree", "-z", sha, "--", relative,
             budget=self.limit(default=QUERY_BUDGET),
         )
         if result.returncode != 0:
-            return None
+            return False, None
         for record in result.stdout.split("\0"):
             meta, _, name = record.partition("\t")
             if name != relative:
                 continue
             fields = meta.split()
-            if len(fields) == 3 and fields[1] == "blob":
-                return fields[2]
-        return None
+            if len(fields) == 3:
+                return True, (fields[0], fields[2])
+        return True, None
+
+    def object_bytes(self, object_id: str) -> tuple[bool, bytes | None]:
+        """One object's exact bytes, with unreadability kept apart from empty."""
+        result = self.run_bytes(
+            "cat-file", "blob", object_id, budget=self.limit(default=QUERY_BUDGET)
+        )
+        if result.returncode != 0:
+            return False, None
+        return True, result.stdout
+
+    def blob_id(self, sha: str, relative: str) -> str | None:
+        """The blob Git stored for `relative` at `sha`, or None when it is not one."""
+        found, entry = self.tree_entry(sha, relative)
+        if not found or entry is None or entry[0] not in ("100644", "100755"):
+            return None
+        return entry[1]
 
     def blob_bytes(self, sha: str, relative: str) -> bytes | None:
-        """The exact bytes Git committed for `relative` at `sha`, or None."""
-        result = self.run_bytes(
-            "cat-file", "blob", f"{sha}:{relative}",
-            budget=self.limit(default=QUERY_BUDGET),
-        )
-        return result.stdout if result.returncode == 0 else None
+        """The exact bytes Git committed for `relative` at `sha`, or None.
+
+        None covers both an absent path and an unreadable one, so a caller that
+        must tell them apart asks `tree_entry` first.
+        """
+        found, entry = self.tree_entry(sha, relative)
+        if not found or entry is None:
+            return None
+        read, data = self.object_bytes(entry[1])
+        return data if read else None
 
     def transformed(self, relative: str) -> bool | None:
         """Whether Git rewrites this path's bytes on its way into a commit.

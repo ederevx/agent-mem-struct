@@ -90,6 +90,19 @@ class CommitPublisher:
                 note="no `commit_message` was given, so the written shared paths were "
                 "left uncommitted.",
             )
+        if can_push:
+            unpublished = self.unpublished()
+            if unpublished:
+                # A commit's ancestors travel with it, so publishing on top of
+                # a commit that was never published would publish that one too.
+                return CommitOutcome(
+                    conflict=self.conflict(
+                        "shared-unpushed",
+                        unpublished,
+                        "reconcile the shared worktree so its branch tip is the "
+                        "published tip, then retry",
+                    )
+                )
         violations = MessageLint(self.worktree).violations(message)
         if violations:
             return CommitOutcome(
@@ -145,15 +158,21 @@ class CommitPublisher:
             )
             return f"the commit changed a different path set ({detail})"
         for name, data in expected.items():
-            committed = self.worktree.blob_id(sha, name)
+            found, entry = self.worktree.tree_entry(sha, name)
+            if not found:
+                return f"{name} could not be read back from the commit"
             if data is None:
-                if committed is not None:
+                if entry is not None:
                     return f"{name} was approved for deletion but is still committed"
                 continue
-            mode = self.worktree.mode(sha, name)
-            if mode not in ("100644", "100755"):
+            if entry is None:
+                return f"{name} is not committed"
+            if entry[0] not in ("100644", "100755"):
                 return f"{name} is not committed as a regular file"
-            if self.worktree.blob_bytes(sha, name) != data:
+            readable, committed = self.worktree.object_bytes(entry[1])
+            if not readable or committed is None:
+                return f"{name} could not be read back from the commit"
+            if committed != data:
                 rewrite = self.worktree.transformed(name)
                 if rewrite is None:
                     return (
@@ -166,13 +185,129 @@ class CommitPublisher:
                 # content the judge approved intact. A declared clean filter is
                 # not: it can turn approved text into anything, so a commit
                 # made under one is refused rather than trusted.
-                committed = self.worktree.blob_bytes(sha, name)
-                if committed is None or not converted(committed, data):
+                if not converted(committed, data):
                     return (
                         f"{name} is not the approved bytes; the repository's "
                         "clean filter rewrote them"
                     )
         return ""
+
+    def revision(self, name: str) -> tuple[bool, str | None]:
+        """One revision's object id, and whether Git answered at all.
+
+        `(True, None)` is an answer too: Git answered that the revision does not
+        exist. `(False, None)` is a query that failed or never came back, which
+        is never read as absence.
+        """
+        result = self.worktree.run("rev-parse", "--verify", "--quiet", name)
+        if result.returncode == 0:
+            return True, result.stdout.strip() or None
+        if result.returncode == 1 and not (result.stderr or "").strip():
+            return True, None
+        return False, None
+
+    def published_tip(self) -> tuple[bool, str | None]:
+        """The tip the shared branch is published at, and whether Git answered.
+
+        `(True, None)` is a branch with nothing published: the upstream is named
+        but no tip is available, which proves nothing about the commits the
+        branch already holds.
+        """
+        published_ref = self.worktree.upstream_ref()
+        if published_ref is None:
+            return False, None
+        return self.revision(published_ref)
+
+    def parents(self, sha: str) -> list[str] | None:
+        """One commit's parents, or None when Git did not report them."""
+        result = self.worktree.run("rev-list", "--parents", "-n", "1", sha)
+        if result.returncode != 0:
+            return None
+        fields = result.stdout.split()
+        if not fields or fields[0] != sha:
+            return None
+        return fields[1:]
+
+    def unpublished(self) -> str:
+        """Why the branch holds commits the remote does not, or "" when it does not.
+
+        A push sends the commit and every ancestor, so an earlier commit that
+        failed its snapshot check would travel with a later, approved one.
+        """
+        target = self.worktree.upstream()
+        if target is None:
+            return ""
+        answered, published = self.published_tip()
+        if not answered:
+            return (
+                "Git would not report the published tip of the shared branch, so "
+                "whether a push would carry an earlier commit cannot be ruled out"
+            )
+        answered, head = self.revision("HEAD")
+        if not answered:
+            return (
+                "Git would not report the shared branch's HEAD, so whether a push "
+                "would carry an earlier commit cannot be ruled out"
+            )
+        if head is None:
+            return ""
+        if published is None:
+            return (
+                "the shared branch has no published tip, so every commit on it "
+                "would be published without having been reviewed against one"
+            )
+        if head == published:
+            return ""
+        return (
+            "the shared branch holds commits the published tip does not, and a "
+            "push would send them all"
+        )
+
+    def carries(self, sha: str) -> str:
+        """Why publishing `sha` could send an earlier commit too, or "" when it could not.
+
+        The branch can move between the preflight check and this commit - another
+        writer may commit in the same worktree - so the commit's own parent is
+        what proves it sits directly on the published tip.
+        """
+        answered, published = self.published_tip()
+        if not answered:
+            return (
+                "Git would not report the published tip of the shared branch, so "
+                "whether the push would carry an earlier commit cannot be ruled out"
+            )
+        parents = self.parents(sha)
+        if parents is None:
+            return (
+                f"Git would not report the parents of commit {sha[:12]}, so whether "
+                "the push would carry an earlier commit cannot be ruled out"
+            )
+        if published is None:
+            return (
+                "the branch has no published tip, so the push would publish earlier "
+                "local history that was never reviewed against one"
+            )
+        if parents != [published]:
+            based = ", ".join(parent[:12] for parent in parents) or "no commit"
+            return (
+                f"commit {sha[:12]} is based on {based} rather than the published "
+                f"tip {published[:12]}"
+            )
+        return ""
+
+    def carried(self, sha: str, reason: str) -> CommitOutcome:
+        """A commit that would publish an unapproved ancestor is never pushed."""
+        return CommitOutcome(
+            committed=True,
+            sha=sha,
+            conflict=self.conflict(
+                "shared-unpushed",
+                f"commit {sha[:12]} holds the approved snapshot, but {reason}; it was "
+                "not pushed.",
+                "reconcile the shared worktree with the published tip, then "
+                "rejudge the change",
+            ),
+        )
 
     def mismatch(self, sha: str, mismatch: str) -> CommitOutcome:
         """A local commit that does not hold the approved snapshot is never pushed."""
@@ -216,6 +351,9 @@ class CommitPublisher:
             mismatch = self.verify_snapshot(sha, expected)
             if mismatch:
                 return self.mismatch(sha, mismatch)
+            carried = self.carries(sha)
+            if carried:
+                return self.carried(sha, carried)
             if target is None:
                 # A bare `git push` would pick its own destination, so a
                 # worktree with no upstream keeps its commit local and says so.
