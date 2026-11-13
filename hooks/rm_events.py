@@ -32,21 +32,6 @@ GIT_PULL_TIMEOUT = 15
 COMMIT_CREATING_SUBCOMMANDS = (
     "am", "cherry-pick", "commit", "commit-tree", "merge", "rebase", "revert",
 )
-# The conventions reminder Pi injects at the settle boundary. It names the gates
-# and the one required line, never the convention content itself.
-CONVENTION_REMINDER = (
-    "Work the task in this order: run the conventions check - call "
-    "`pre_memory`, read the applicable sources it lists, and follow the "
-    "applicable memory-tree protocol - then prepare, then execute, then draft "
-    "the memory update. Run the conventions check again against the completed "
-    "task and that draft, resolve what it finds within the current task's "
-    "authorized scope, and only then write the memory update and settle. "
-    "Settle by stating the conclusion of the task as it settled, with the "
-    "convention-compliance verdict summarized beneath it. When acting as an "
-    "implementation consultant reviewing finished work, include the required "
-    "`Convention audit:` line immediately before the `Consultant verdict:` "
-    "line."
-)
 
 
 def is_subagent_event(event: dict[str, Any]) -> bool:
@@ -463,15 +448,3 @@ class EventDispatcher:
         allowed, reason = self.gate.receipt_covers(event, scoped=False)
         if not allowed:
             json.dump({"decision": "block", "reason": reason}, sys.stdout, separators=(",", ":"))
-
-    def handle_convention_reminder(
-        self, event: dict[str, Any], state: RootState
-    ) -> int:
-        """Return the conventions reminder the Pi bridge injects before settling.
-
-        Pi's settle boundary is the last point that can reach the model, so the
-        reminder text lives here with the conventions it names. It judges
-        nothing and blocks nothing: Pi decides when a run may continue.
-        """
-        json.dump({"reminder": CONVENTION_REMINDER}, sys.stdout, separators=(",", ":"))
-        return 0
