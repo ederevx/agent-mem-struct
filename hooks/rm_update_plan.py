@@ -408,7 +408,7 @@ class UpdatePlan:
         differs in any byte, any observed input, or any commit line cannot be
         covered by an audit written for another change.
         """
-        from rm_audit import bytes_field
+        from rm_conventions import bytes_field
 
         return {
             "operation": self.operation,
@@ -443,7 +443,7 @@ class UpdatePlan:
 
     def audit_digest(self) -> str:
         """The digest the audit must name to describe exactly this change."""
-        from rm_audit import canonical
+        from rm_conventions import canonical
 
         return hashlib.sha256(canonical(self.payload())).hexdigest()
 

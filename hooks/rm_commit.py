@@ -315,7 +315,7 @@ class CommitPublisher:
             committed=True,
             sha=sha,
             conflict=self.conflict(
-                "audit-publish-mismatch",
+                "publish-mismatch",
                 f"commit {sha[:12]} does not hold the approved snapshot: {mismatch}; "
                 "it was not pushed.",
                 "inspect the shared worktree, reread the required sources, and "

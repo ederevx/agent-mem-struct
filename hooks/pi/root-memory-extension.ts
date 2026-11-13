@@ -333,12 +333,12 @@ export class RootMemoryBridge {
 				"with the built-in edit tool and captures the displaced current " +
 				"state into the paired log. `path` is absolute or relative to the " +
 				"agent home and must resolve inside this agent's memory tree or the " +
-				"declared shared root. An update is applied only after you audit it " +
-				"yourself: a call without `readings` and `audit` is refused with the " +
-				"computed change and the digests to bind to, after which you reread " +
-				"every required source and re-call with both. An audit reporting a " +
-				"violation blocks the update and states the fix; no model or provider " +
-				"is invoked.",
+				"declared shared root. An update is applied only after you assess it " +
+				"yourself: a call without `checklist` is refused with the computed " +
+				"change and every convention the update must satisfy, one numbered " +
+				"entry each, after which you report one assessment per convention and " +
+				"re-call. A `violation` entry blocks the update and states the fix; no " +
+				"model or provider is invoked.",
 			parameters: Type.Object({
 				operation: Type.Union([
 					Type.Literal("create"), Type.Literal("set"),
@@ -399,29 +399,91 @@ export class RootMemoryBridge {
 				overwrite: Type.Optional(Type.Boolean({
 					description: "attach: replace an existing attachment file.",
 				})),
-				readings: Type.Optional(Type.Array(Type.Object({
-					path: Type.String({
-						description: "One required source path, as the refusal listed it.",
+				checklist: Type.Optional(Type.Object({
+					schema: Type.Literal(1, {
+						description: "The checklist schema version.",
 					}),
-					digest: Type.Union([Type.String(), Type.Null()], {
+					plan_digest: Type.String({
+						pattern: "^[0-9a-f]{64}$",
+						description: "The `plan_digest` the refusal lists.",
+					}),
+					documents_digest: Type.String({
+						pattern: "^[0-9a-f]{64}$",
+						description: "The `documents_digest` the refusal lists.",
+					}),
+					checks: Type.Array(Type.Union([
+						Type.Object({
+							source: Type.String({
+								minLength: 1,
+								description:
+									"The absolute path of one enumerated source.",
+							}),
+							ordinal: Type.Integer({
+								minimum: 1,
+								description:
+									"That source's convention number, as enumerated.",
+							}),
+							status: Type.Union([
+								Type.Literal("pass"),
+								Type.Literal("not-applicable"),
+							], {
+								description:
+									"`pass` or `not-applicable`; a `violation` entry " +
+									"states its `fix`.",
+							}),
+							reasoning: Type.String({
+								minLength: 1,
+								description:
+									"Why this update satisfies that one convention, or " +
+									"why it does not apply.",
+							}),
+						}, {
+							additionalProperties: false,
+							description: "One convention the update satisfies.",
+						}),
+						Type.Object({
+							source: Type.String({
+								minLength: 1,
+								description:
+									"The absolute path of one enumerated source.",
+							}),
+							ordinal: Type.Integer({
+								minimum: 1,
+								description:
+									"That source's convention number, as enumerated.",
+							}),
+							status: Type.Literal("violation", {
+								description:
+									"A declared violation, which blocks the update.",
+							}),
+							reasoning: Type.String({
+								minLength: 1,
+								description:
+									"Why this update does not satisfy that convention.",
+							}),
+							fix: Type.String({
+								minLength: 1,
+								description:
+									"The correction the update needs.",
+							}),
+						}, {
+							additionalProperties: false,
+							description: "One convention the update violates.",
+						}),
+					]), {
 						description:
-							"Its current sha256, or null for a source the refusal listed " +
-							"as absent.",
+							"Exactly one entry per enumerated convention, in any order.",
 					}),
-				}), {
+				}, {
+					additionalProperties: false,
 					description:
-						"Every required reading, with the digest of the bytes just read. " +
-						"A refusal lists them under `required_readings`; the hook checks " +
-						"them against its own record of the reads this attempt made, and " +
-						"consumes that record, so a retry needs a new read of every source.",
-				})),
-				audit: Type.Optional(Type.Object({}, {
-					description:
-						"Your conventions audit of the computed change: {schema: 1, " +
-						"plan_digest, documents_digest, checks: [{source, rule, status, " +
-						"reasoning, fix}], evidence}. Bind it to the digests the refusal " +
-						"lists, cite rules verbatim from each required source, and report " +
-						"a violation instead of hiding it.",
+						"Your own assessment of every convention this update is bound " +
+						"by: {schema: 1, plan_digest, documents_digest, checks: " +
+						"[{source, ordinal, status, reasoning, fix}]}. A call without it " +
+						"is refused with the computed change and one entry per " +
+						"enumerated convention; assess each one and re-call. A violation, " +
+						"or a digest that no longer matches the recomputed change or the " +
+						"current conventions, blocks the update.",
 				})),
 			}),
 			annotations: { readOnlyHint: false },

@@ -431,39 +431,6 @@ class ConventionGate:
                 missing.append(path)
         return missing
 
-    def take_update_reads(self, event: dict[str, Any]) -> dict[str, str]:
-        """The reads one memory-update attempt consumes, cleared before it runs.
-
-        A submitted reading is a claim, never evidence: only a read the tool
-        itself recorded opens this gate, and every attempt consumes those reads
-        so a refused attempt cannot be retried on them. The acknowledged sources
-        and the tree reading stay, since they are the turn's convention
-        acknowledgment rather than one update's proof of reading.
-        """
-        try:
-            current = self.read_receipt(event)
-        except (OSError, ValueError):
-            # No stable session means no receipt, and so no recorded reads.
-            return {}
-        recorded = current.get("reads")
-        observed = dict(recorded) if isinstance(recorded, dict) else {}
-        if not observed:
-            return {}
-        sources = current.get("sources")
-        tree = current.get("tree")
-        try:
-            self._store_receipt(
-                event,
-                sources if isinstance(sources, dict) else {},
-                {},
-                tree=tree if isinstance(tree, dict) else None,
-            )
-        except (OSError, ReceiptTooLarge, ValueError):
-            # Reads that could not be cleared prove nothing about a new attempt:
-            # offering them would let one reading open two updates.
-            return {}
-        return observed
-
     def record_read(self, event: dict[str, Any]) -> None:
         """Record the memory sources opened by this read-tool call.
 

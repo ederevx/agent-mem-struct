@@ -59,7 +59,10 @@ def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
         f"Structure-Version: test-v1\nStructure: ../STRUCTURE.md\nShared: {shared}\n\n# Root\n",
         encoding="utf-8",
     )
-    (path / "RULES.md").write_text("# Rules\n\nKeep continuity.\n", encoding="utf-8")
+    (path / "RULES.md").write_text(
+        "# Memory rules\n\n1. **Keep continuity.** Read the agent root header first.\n",
+        encoding="utf-8",
+    )
     (path / "STRUCTURE.md").write_text("Structure-Version: test-v1\n", encoding="utf-8")
     local = path / "memory" / "local"
     local.mkdir()
@@ -150,14 +153,14 @@ def invoke_pi(
     home: Path, event: dict[str, object], *, canonical_root: Path | None = None,
     config_home: Path | None = None, audited: bool = True, agent: str = "pi",
 ) -> subprocess.CompletedProcess[str]:
-    """Run one hook event, completing the audit protocol for a memory update.
+    """Run one hook event, completing the checklist protocol for a memory update.
 
-    A memory update is applied only after its caller read the required sources
-    again and audited the computed change, so a test that submits one goes
-    through the same two calls an agent must make: the first refusal carries
-    the plan and the digests, the reads are really dispatched, and the second
-    call carries the audit. `audited=False` sends one raw event instead, for
-    the tests that check the protocol itself.
+    A memory update is applied only after its caller assessed every enumerated
+    convention of the computed change, so a test that submits one goes through
+    the same two calls an agent must make: the first refusal carries the plan,
+    both digests and the enumeration, and the second call carries the
+    checklist. `audited=False` sends one raw event instead, for the tests that
+    check the protocol itself.
     """
     name = event.get("hook_event_name")
     if name != "MemoryUpdate" or not audited:
@@ -165,7 +168,6 @@ def invoke_pi(
             home, event, canonical_root=canonical_root, config_home=config_home,
             agent=agent,
         )
-    # The protocol is session-scoped: reads are recorded on the session receipt.
     event = dict(event)
     event.setdefault("session_id", "pi-session")
     event.setdefault("turn_id", "turn-1")
@@ -176,45 +178,24 @@ def invoke_pi(
     preview = update_preview(first)
     if preview is None:
         return first
-    session = str(event.get("session_id") or "pi-session")
-    turn = str(event.get("turn_id") or "turn-1")
-    rows = list(preview.get("required_readings") or [])
-    for row in rows:
-        if not isinstance(row, dict) or row.get("digest") is None:
-            continue
-        raw_invoke(home, {
-            "hook_event_name": "PreToolUse",
-            "session_id": session,
-            "turn_id": turn,
-            "tool_name": "read",
-            "tool_input": {"path": row["path"]},
-            "cwd": str(home),
-        }, canonical_root=canonical_root, config_home=config_home, agent=agent)
-    checks = []
-    for row in rows:
-        if not isinstance(row, dict) or row.get("digest") is None:
-            continue
-        text = Path(str(row["path"])).read_text(encoding="utf-8")
-        rule = next((line for line in text.splitlines() if line.strip()), text)
-        checks.append({
-            "source": row["path"],
-            "rule": rule,
-            "status": "pass",
-            "reasoning": "The computed change complies with this rule.",
-            "fix": None,
-        })
-    audit = {
+    checklist = {
         "schema": 1,
         "plan_digest": preview["plan_digest"],
         "documents_digest": preview["documents_digest"],
-        "checks": checks,
-        "evidence": ["Read every required source again before this update."],
+        "checks": [
+            {
+                "source": row["source"],
+                "ordinal": row["ordinal"],
+                "status": "pass",
+                "reasoning": "The computed change complies with this convention.",
+            }
+            for row in preview.get("conventions") or []
+        ],
     }
-    audited_event = dict(event)
-    audited_event["readings"] = rows
-    audited_event["audit"] = audit
+    assessed = dict(event)
+    assessed["checklist"] = checklist
     return raw_invoke(
-        home, audited_event, canonical_root=canonical_root, config_home=config_home,
+        home, assessed, canonical_root=canonical_root, config_home=config_home,
         agent=agent,
     )
 
@@ -1529,6 +1510,7 @@ class PiPackageTests(unittest.TestCase):
             "  Object: (properties = {}) => ({ type: 'object', properties }),\n"
             "  String: (extra = {}) => schema('string', extra),\n"
             "  Number: () => schema('number'),\n"
+            "  Integer: () => schema('integer'),\n"
             "  Boolean: () => schema('boolean'),\n"
             "  Array: (items) => schema('array', { items }),\n"
             "  Optional: (inner) => ({ optional: true, ...(inner || {}) }),\n"
@@ -2088,10 +2070,18 @@ class PiPackageTests(unittest.TestCase):
         self.assertTrue(entry.is_file(), str(entry))
         return entry
 
-    def test_a_nullable_digest_needs_type_null_for_the_host_typebox(self) -> None:
+    def test_every_type_constructor_the_extension_uses_exists_on_the_host(self) -> None:
+        """A constructor the host typebox lacks takes the whole bridge down.
+
+        The tool schema is built when the bridge registers, so one missing
+        `Type.<name>` leaves the package inactive and every hook with it: this
+        pins the constructors the extension names against the host's own
+        exports, which is a cheaper contract than booting the bundle.
+        """
         content = EXTENSION_TEMPLATE.read_text(encoding="utf-8")
-        self.assertNotIn("Type.Literal(null)", content)
-        self.assertIn("Type.Union([Type.String(), Type.Null()]", content)
+        used = sorted(set(re.findall(r"\bType\.([A-Z][A-Za-z]*)", content)))
+        self.assertIn("Integer", used)
+        self.assertNotIn("Literal(null)", content)
         host = self.host_typebox()
         if host is None:
             self.skipTest("AGENT_MEM_STRUCT_TEST_TYPEBOX is not set")
@@ -2099,21 +2089,18 @@ class PiPackageTests(unittest.TestCase):
         self.assertIsNotNone(node, "a configured host contract check needs node")
         script = (
             "const {Type} = await import(process.argv[1]);\n"
-            "const union = JSON.stringify(Type.Union([Type.String(), Type.Null()]));\n"
-            "let rejected = null;\n"
-            "try { Type.Literal(null); } catch (error) { rejected = error.message; }\n"
-            "console.log(JSON.stringify({ union, rejected }));\n"
+            "const used = JSON.parse(process.argv[2]);\n"
+            "const missing = used.filter((name) => typeof Type[name] !== 'function');\n"
+            "console.log(JSON.stringify({ missing }));\n"
         )
         completed = subprocess.run(
-            [node, "--input-type=module", "-e", script, host.resolve().as_uri()],
+            [node, "--input-type=module", "-e", script, host.resolve().as_uri(),
+             json.dumps(used)],
             capture_output=True, text=True, check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         observed = json.loads(completed.stdout)
-        self.assertEqual(
-            observed["union"], '{"anyOf":[{"type":"string"},{"type":"null"}]}'
-        )
-        self.assertEqual(observed["rejected"], "Invalid Literal value")
+        self.assertEqual(observed["missing"], [])
 
     def test_session_compact_injects_the_memory_pointer_immediately(self) -> None:
         # A mid-run compaction resumes without another before_agent_start, so
@@ -2545,12 +2532,12 @@ class MemoryUpdateTests(unittest.TestCase):
         return json.loads(result.stdout)
 
 
-class MemoryUpdateAuditTests(unittest.TestCase):
-    """A memory update is admitted only on a fresh read and its own audit."""
+class MemoryUpdateChecklistTests(unittest.TestCase):
+    """A memory update is admitted only on its own complete checklist."""
 
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-        self.temp = Path(tempfile.mkdtemp(prefix="ams-audit-", dir=SCRATCH_ROOT))
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-checklist-", dir=SCRATCH_ROOT))
         self.home, self.shared = make_home(self.temp / "home")
         self.local = self.home / "memory" / "local"
 
@@ -2581,180 +2568,166 @@ class MemoryUpdateAuditTests(unittest.TestCase):
         self.assertIsNotNone(preview, self.text(result))
         return preview
 
-    def read_required(self, preview: dict) -> None:
-        """Open every present required source, as the read tool must."""
-        for row in preview["required_readings"]:
-            if row.get("digest") is None:
-                continue
-            invoke_pi(self.home, {
-                "hook_event_name": "PreToolUse",
-                "session_id": "pi-session",
-                "turn_id": "turn-1",
-                "tool_name": "read",
-                "tool_input": {"path": row["path"]},
-                "cwd": str(self.home),
-            }, audited=False)
-
-    def checks(self, preview: dict, *, status: str = "pass", rule: str | None = None,
+    def checks(self, preview: dict, *, status: str = "pass",
                fix: str | None = None) -> list[dict[str, object]]:
         checks = []
-        for row in preview["required_readings"]:
-            if row.get("digest") is None:
-                continue
-            text = Path(row["path"]).read_text(encoding="utf-8")
-            first = next((line for line in text.splitlines() if line.strip()), text)
-            checks.append({
-                "source": row["path"],
-                "rule": first if rule is None else rule,
+        for row in preview["conventions"]:
+            check: dict[str, object] = {
+                "source": row["source"],
+                "ordinal": row["ordinal"],
                 "status": status,
-                "reasoning": "The change complies with this rule.",
-                "fix": fix,
-            })
+                "reasoning": "The change complies with this convention.",
+            }
+            if status == "violation":
+                check["fix"] = fix or "shorten the body first"
+            checks.append(check)
         return checks
 
-    def audit(self, preview: dict, **overrides: object) -> dict[str, object]:
-        audit: dict[str, object] = {
+    def checklist(self, preview: dict, **overrides: object) -> dict[str, object]:
+        checklist: dict[str, object] = {
             "schema": 1,
             "plan_digest": preview["plan_digest"],
             "documents_digest": preview["documents_digest"],
             "checks": self.checks(preview),
-            "evidence": ["Read every required source again before this update."],
         }
-        audit.update(overrides)
-        return audit
+        checklist.update(overrides)
+        return checklist
 
     def admit(self, name: str, **fields: object) -> subprocess.CompletedProcess[str]:
-        """Preview, record the required reads, then submit the audited call."""
+        """Preview, then submit the change with its own checklist."""
         values: dict[str, object] = dict(
             operation="create", path=str(self.local), name=name,
             body="body", summary="A test node.",
         )
         values.update(fields)
         preview = self.preview(self.submit(**values))
-        self.read_required(preview)
-        return self.submit(
-            **values,
-            readings=preview["required_readings"],
-            audit=self.audit(preview),
-        )
+        return self.submit(**values, checklist=self.checklist(preview))
 
-    def test_an_unaudited_update_is_refused_with_the_computed_change(self) -> None:
+    def test_an_unassessed_update_is_refused_with_the_computed_change(self) -> None:
         result = self.create()
         self.assertEqual(result.returncode, 3, result.stderr)
         text = self.text(result)
-        self.assertIn("audit-missing", text)
+        self.assertIn("checklist-missing", text)
         preview = self.preview(result)
         self.assertIn("plan_digest", preview)
         self.assertIn("documents_digest", preview)
-        # The agent audits the change itself, not a summary of it.
+        # Every convention is enumerated, one entry each, with its own text.
+        self.assertTrue(preview["conventions"])
+        for row in preview["conventions"]:
+            self.assertTrue(row["source"].strip())
+            self.assertIsInstance(row["ordinal"], int)
+            self.assertTrue(row["text"].strip())
         self.assertIn("## Every change this operation will make", text)
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_a_reading_that_was_not_read_is_refused(self) -> None:
+    def test_every_enumerated_convention_is_required(self) -> None:
         preview = self.preview(self.create())
         result = self.submit(
             operation="create", path=str(self.local), name="note",
             body="body", summary="A test node.",
-            readings=preview["required_readings"], audit=self.audit(preview),
+            checklist=self.checklist(preview, checks=self.checks(preview)[:-1]),
         )
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("audit-readings-stale", self.text(result))
+        self.assertIn("checklist-coverage", self.text(result))
+        self.assertIn("conventions unassessed", self.text(result))
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_the_reads_one_attempt_consumes_cannot_open_another(self) -> None:
+    def test_a_convention_assessed_twice_is_refused(self) -> None:
         preview = self.preview(self.create())
-        self.read_required(preview)
-        refused = self.submit(
+        checks = self.checks(preview)
+        result = self.submit(
             operation="create", path=str(self.local), name="note",
             body="body", summary="A test node.",
-            readings=preview["required_readings"],
-            audit=self.audit(preview, plan_digest="0" * 64),
+            checklist=self.checklist(preview, checks=checks + checks[:1]),
         )
-        self.assertEqual(refused.returncode, 3, refused.stderr)
-        self.assertIn("audit-plan-mismatch", self.text(refused))
-        retried = self.submit(
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("more than once", self.text(result))
+
+    def test_a_convention_this_update_does_not_have_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        checks = self.checks(preview) + [{
+            "source": preview["conventions"][0]["source"],
+            "ordinal": 99,
+            "status": "pass",
+            "reasoning": "Nothing to comply with.",
+        }]
+        result = self.submit(
             operation="create", path=str(self.local), name="note",
             body="body", summary="A test node.",
-            readings=preview["required_readings"], audit=self.audit(preview),
+            checklist=self.checklist(preview, checks=checks),
         )
-        self.assertEqual(retried.returncode, 3, retried.stderr)
-        self.assertIn("audit-readings-stale", self.text(retried))
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("conventions this update does not have", self.text(result))
+
+    def test_a_checklist_bound_to_another_change_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            checklist=self.checklist(preview, plan_digest="0" * 64),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("checklist-plan-mismatch", self.text(result))
+
+    def test_a_checklist_bound_to_another_inventory_is_refused(self) -> None:
+        preview = self.preview(self.create())
+        result = self.submit(
+            operation="create", path=str(self.local), name="note",
+            body="body", summary="A test node.",
+            checklist=self.checklist(preview, documents_digest="0" * 64),
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("checklist-documents-stale", self.text(result))
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_an_audit_bound_to_another_change_is_refused(self) -> None:
+    def test_a_convention_changed_after_the_checklist_is_refused(self) -> None:
         preview = self.preview(self.create())
-        self.read_required(preview)
+        shared = self.shared / "MEMORY.md"
+        shared.write_text(
+            shared.read_text(encoding="utf-8")
+            + "- A convention added mid-update.\n",
+            encoding="utf-8",
+        )
         result = self.submit(
             operation="create", path=str(self.local), name="note",
             body="body", summary="A test node.",
-            readings=preview["required_readings"],
-            audit=self.audit(preview, plan_digest="0" * 64),
+            checklist=self.checklist(preview),
         )
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("audit-plan-mismatch", self.text(result))
+        self.assertIn("checklist-documents-stale", self.text(result))
+        self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_a_cited_rule_must_appear_in_its_source(self) -> None:
+    def test_a_checklist_reporting_a_violation_blocks_the_update(self) -> None:
         preview = self.preview(self.create())
-        self.read_required(preview)
         result = self.submit(
             operation="create", path=str(self.local), name="note",
             body="body", summary="A test node.",
-            readings=preview["required_readings"],
-            audit=self.audit(
-                preview, checks=self.checks(preview, rule="a rule nobody wrote")
-            ),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("cites a rule that is not in", self.text(result))
-
-    def test_an_audit_reporting_a_violation_blocks_the_update(self) -> None:
-        preview = self.preview(self.create())
-        self.read_required(preview)
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            readings=preview["required_readings"],
-            audit=self.audit(
-                preview,
-                checks=self.checks(
-                    preview, status="violation", fix="shorten the body first"
-                ),
+            checklist=self.checklist(
+                preview, checks=self.checks(preview, status="violation")
             ),
         )
         self.assertEqual(result.returncode, 3, result.stderr)
         text = self.text(result)
-        self.assertIn("audit-violations", text)
-        self.assertIn("shorten the body first", text)
+        self.assertIn("checklist-violations", text)
+        self.assertNotIn("shorten the body first", text)
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_an_admitted_update_records_its_audit(self) -> None:
-        preview = self.preview(self.create())
-        self.read_required(preview)
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            readings=preview["required_readings"], audit=self.audit(preview),
+    def test_an_admitted_update_is_applied_and_records_nothing(self) -> None:
+        result = self.admit("note")
+        self.assertEqual(result.returncode, 0, self.text(result))
+        self.assertEqual(
+            (self.local / "nodes" / "note.md").read_text(encoding="utf-8"), "body\n"
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("conventions audit recorded:", self.text(result))
-        records = list((self.home / ".agent-mem-struct" / "memory-audits").glob("*.json"))
-        self.assertEqual(len(records), 1)
-        record = json.loads(records[0].read_text(encoding="utf-8"))
-        self.assertEqual(record["plan_digest"], preview["plan_digest"])
-        self.assertEqual(record["documents_digest"], preview["documents_digest"])
-        present = [row for row in record["documents"] if row["digest"] is not None]
-        self.assertEqual(len(record["audit"]["checks"]), len(present))
+        self.assertFalse((self.home / ".agent-mem-struct" / "memory-audits").exists())
 
-    def test_an_audit_whose_schema_is_not_the_number_one_is_refused(self) -> None:
+    def test_a_schema_that_is_not_the_number_one_is_refused(self) -> None:
         preview = self.preview(self.create())
-        self.read_required(preview)
         for schema in (True, "1", 1.0):
             with self.subTest(schema=schema):
                 result = self.submit(
                     operation="create", path=str(self.local), name="note",
                     body="body", summary="A test node.",
-                    readings=preview["required_readings"],
-                    audit=self.audit(preview, schema=schema),
+                    checklist=self.checklist(preview, schema=schema),
                 )
                 self.assertEqual(result.returncode, 3, result.stderr)
                 self.assertIn("`schema` must be 1", self.text(result))
@@ -2762,14 +2735,12 @@ class MemoryUpdateAuditTests(unittest.TestCase):
 
     def test_a_check_status_that_is_not_a_word_is_refused(self) -> None:
         preview = self.preview(self.create())
-        self.read_required(preview)
-        for status in (1, True, None, [], {}):
+        for status in (1, True, None, [], {}, "passed"):
             with self.subTest(status=status):
                 result = self.submit(
                     operation="create", path=str(self.local), name="note",
                     body="body", summary="A test node.",
-                    readings=preview["required_readings"],
-                    audit=self.audit(
+                    checklist=self.checklist(
                         preview, checks=self.checks(preview, status=status)
                     ),
                 )
@@ -2778,46 +2749,18 @@ class MemoryUpdateAuditTests(unittest.TestCase):
                               self.text(result))
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_a_source_changed_after_its_read_is_refused(self) -> None:
+    def test_a_check_carrying_an_unknown_key_is_refused(self) -> None:
         preview = self.preview(self.create())
-        self.read_required(preview)
-        (self.home / "RULES.md").write_text(
-            "# Rules\n\nEdited after the read.\n", encoding="utf-8"
-        )
+        checks = self.checks(preview)
+        checks[0]["evidence"] = "a claim the hook never asked for"
         result = self.submit(
             operation="create", path=str(self.local), name="note",
             body="body", summary="A test node.",
-            readings=preview["required_readings"], audit=self.audit(preview),
+            checklist=self.checklist(preview, checks=checks),
         )
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("audit-readings-stale", self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
-
-    def test_a_present_source_omitted_from_the_checks_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        self.read_required(preview)
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            readings=preview["required_readings"],
-            audit=self.audit(preview, checks=self.checks(preview)[:-1]),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("leaves governing sources unchecked", self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
-
-    def test_an_audit_bound_to_another_inventory_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        self.read_required(preview)
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            readings=preview["required_readings"],
-            audit=self.audit(preview, documents_digest="0" * 64),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("audit-documents-stale", self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
+        self.assertIn("checklist-invalid", self.text(result))
+        self.assertNotIn("the hook never asked for", self.text(result))
 
     def test_an_obsolete_judge_document_has_no_effect(self) -> None:
         document = self.home / ".agent-mem-struct" / "memory-judge.json"
@@ -2871,7 +2814,7 @@ class MemoryUpdateAuditTests(unittest.TestCase):
                 if kept is not None:
                     self.assertEqual(document.read_text(encoding="utf-8"), kept)
 
-    def test_every_harness_is_held_to_the_same_audit(self) -> None:
+    def test_every_harness_is_held_to_the_same_checklist(self) -> None:
         for agent in ("claude", "codex"):
             with self.subTest(agent=agent):
                 refused = self.submit(
@@ -2879,10 +2822,10 @@ class MemoryUpdateAuditTests(unittest.TestCase):
                     name=f"{agent}-note", body="body", summary="A test node.",
                 )
                 self.assertEqual(refused.returncode, 3, refused.stderr)
-                self.assertIn("audit-missing", self.text(refused))
+                self.assertIn("checklist-missing", self.text(refused))
                 self.assertFalse((self.local / "nodes" / f"{agent}-note.md").exists())
 
-    def test_every_harness_admits_the_same_audited_update(self) -> None:
+    def test_every_harness_admits_the_same_assessed_update(self) -> None:
         for agent in ("pi", "claude", "codex"):
             with self.subTest(agent=agent):
                 result = invoke_pi(

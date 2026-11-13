@@ -6,11 +6,12 @@ materializes every required counterpart (active leaf, paired log, nodes
 index, group scaffolding), and returns the exact conflicts the agent must
 fix before re-calling.
 
-Nothing is written until the mutation has been audited. `run` first records the
-complete change set through `rm_update_plan.PlanRecorder` - no file system
+Nothing is written until the mutation has been assessed. `run` first records
+the complete change set through `rm_update_plan.PlanRecorder` - no file system
 write, every path the operation read captured as a dependency - then requires
-the caller's own conventions audit of that exact plan, bound to one captured
-inventory of governing sources. Only an admitted audit reaches `apply`, which
+the caller's own checklist of that exact plan, one assessment per enumerated
+convention of one captured inventory of governing sources. Only an admitted
+checklist reaches `apply`, which
 re-records the plan first so a mutation whose inputs moved after the audit
 capture is refused, rechecks the captured documents, then materializes exactly
 the recorded bytes. A mutation that lands under the
@@ -44,12 +45,10 @@ from pathlib import Path
 from typing import Any
 
 from rm_commit import CommitPublisher
-from rm_audit import (
-    AuditStore,
-    audit as audit_request,
-    preview as audit_preview,
-    readings as audit_readings,
-    source_key,
+from rm_conventions import (
+    ConventionChecklist,
+    ConventionError,
+    inventory_digest,
 )
 from rm_draft import DraftRenderer
 from rm_edit import WorktreeEdits
@@ -85,12 +84,12 @@ REQUEST_FIELDS = frozenset({
     "operation", "path", "name", "body", "text", "requires", "summary",
     "kind", "mechanical", "commit_message", "attachment_name",
     "attachment_content", "attachment_source", "overwrite",
-    "readings", "audit",
+    "checklist",
 })
-# The request fields a convention audit covers. The audit protocol is verified
-# by the hook, so it never enters the plan's intent or its digest; that is the
-# same exclusion `budget_ms` has as transport metadata.
-INTENT_FIELDS = REQUEST_FIELDS - {"readings", "audit"}
+# The request fields the convention checklist covers. The checklist is verified
+# and consumed by the hook, so it never enters the plan's intent or its digest;
+# that is the same exclusion `budget_ms` has as transport metadata.
+INTENT_FIELDS = REQUEST_FIELDS - {"checklist"}
 # Identity the host adds to every event; never part of an audited draft.
 TRANSPORT_FIELDS = frozenset({
     "hook_event_name", "hookEventName", "session_id", "turn_id", "agent_id",
@@ -166,6 +165,7 @@ class MemoryUpdater:
             state.memory_root, state.home, state.shared_resolved
         )
         self.draft = DraftRenderer()
+        self.conventions = ConventionChecklist()
         self.tree = PlanRecorder()
         self.deadline: float | None = None
         self.date: str = datetime.date.today().isoformat()
@@ -173,26 +173,45 @@ class MemoryUpdater:
     # -- entry ---------------------------------------------------------------
 
     def run(
-        self, request: dict[str, Any], *, gate: Any, budget_s: float | None = None
+        self, request: dict[str, Any], *, budget_s: float | None = None
     ) -> UpdateResult:
-        """Record the mutation, audit it, then write exactly what was audited.
+        """Record the mutation, take its checklist, then write what it assessed.
 
         `budget_s` is the hook's remaining time; the publication draws on it, so
         it never outlives the caller's own deadline. The log date is fixed here,
         at the start of the one update, so a draft recorded again is identical
         even across midnight.
 
-        The recorded reads are consumed at the start, so a refused attempt can
-        never be retried on the same reads. Nothing is applied until the
-        caller's own audit is structurally sound, bound to this exact plan and
-        inventory, free of violations, and backed by real reads of every
-        required source.
+        The checklist is consumed by the one evaluation that reads it: it is
+        held here, never written, recorded or repeated back, and released before
+        any write, so nothing of it is bound to the applied change.
         """
         self.date = datetime.date.today().isoformat()
         self.deadline = (
             None if budget_s is None else time.monotonic() + float(budget_s)
         )
-        observed = gate.take_update_reads(request)
+        mutation = dict(request)
+        submitted = mutation.pop("checklist", None)
+        del request
+        try:
+            assessed = self.assess(mutation, submitted)
+        finally:
+            del submitted
+        if isinstance(assessed, UpdateResult):
+            return assessed
+        prepared, inventory = assessed
+        return self.commit(prepared, inventory, mutation)
+
+    def assess(
+        self, request: dict[str, Any], submitted: Any
+    ) -> tuple[UpdatePlan, list[dict[str, Any]]] | UpdateResult:
+        """Plan the change and take its checklist, writing nothing.
+
+        Nothing is admitted until the checklist assesses every enumerated
+        convention of this exact plan and inventory, one entry each, and reports
+        no violation. A mutation that changes nothing needs no checklist, since
+        there is no change to assess; its own result is returned instead.
+        """
         operation = self.operation(request)
         prepared = self.prepare(request)
         if isinstance(prepared, UpdateResult):
@@ -205,82 +224,67 @@ class MemoryUpdater:
         except SourceError as refusal:
             return self.conflict(
                 operation,
-                "audit-missing-source",
+                "conventions-missing-source",
                 str(refusal) + ".",
-                fix="restore the governing document, reread the required sources, "
-                    "and audit the update again",
+                fix="restore the governing document and submit the checklist again",
+            )
+        try:
+            conventions = self.conventions.enumerate(inventory)
+        except ConventionError as refusal:
+            return self.conflict(
+                operation,
+                "conventions-invalid",
+                f"the governing conventions cannot be enumerated: {refusal}.",
+                fix="repair the convention markup, then submit the checklist "
+                    "again",
             )
 
-        preview = audit_preview(
-            prepared, inventory, self.draft.effects(prepared)
+        preview = self.conventions.preview(
+            prepared, inventory, conventions, self.draft.effects(prepared)
         )
-        cwd = Path(str(request.get("cwd") or self.state.home)).expanduser()
-        declared, conflicts = audit_readings(
-            request.get("readings"), inventory, observed, cwd
+        conflicts = self.conventions.validate(
+            submitted,
+            plan_digest=prepared.audit_digest(),
+            documents_digest=inventory_digest(inventory),
+            conventions=conventions,
         )
-        audited, audit_conflicts = audit_request(
-            request.get("audit"),
-            prepared,
-            inventory,
-            {source_key(row["path"]): row["text"] for row in inventory},
-        )
-        conflicts += audit_conflicts
         if conflicts:
             return UpdateResult(
                 False, operation, conflicts=conflicts, preview=preview
             )
+        return prepared, inventory
 
-        record = self.record_audit(prepared, inventory, declared, audited)
-        if isinstance(record, UpdateResult):
-            return record
+    def commit(
+        self,
+        prepared: UpdatePlan,
+        inventory: list[dict[str, Any]],
+        request: dict[str, Any],
+    ) -> UpdateResult:
+        """Apply the assessed plan, after proving its inputs did not move.
 
-        repeated = self.prepare(request)
+        The plan is recorded a second time and must say exactly what the first
+        one did, so a mutation whose inputs moved after the checklist was
+        written is refused rather than applied on a stale assessment.
+        """
+        operation = prepared.operation
+        repeated = self.prepare(dict(request))
         if isinstance(repeated, UpdateResult):
             return self.conflict(
                 operation,
-                "audit-stale-draft",
-                "the audited update could no longer be prepared; no planned "
+                "stale-draft",
+                "the assessed update could no longer be prepared; no planned "
                 "changes applied. " + repeated.text(),
-                fix="reread the required sources and affected memory, then audit "
-                    "the recomputed update",
+                fix="review the recomputed change and submit a new checklist",
             )
         matched, detail = prepared.matches(repeated)
         if not matched:
             return self.conflict(
                 operation,
-                "audit-stale-draft",
+                "stale-draft",
                 detail + "; no planned changes applied.",
-                fix="reread the required sources and affected memory, then audit "
-                    "the recomputed update",
+                fix="review the recomputed change and submit a new checklist",
             )
-        return self.apply(prepared, inventory=inventory, record=record)
-
-    def record_audit(
-        self,
-        plan: UpdatePlan,
-        inventory: list[dict[str, Any]],
-        declared: dict[str, str | None],
-        audited: dict[str, Any] | None,
-    ) -> Path | UpdateResult:
-        """Write the attempt's evidence before the plan is applied.
-
-        A store that cannot be written refuses, because an update whose audit
-        has no record could not be told apart from one never audited.
-        """
-        try:
-            return AuditStore(self.state.home).record(
-                plan=plan,
-                inventory=inventory,
-                declared=declared,
-                evidence=audited or {},
-            )
-        except OSError as failure:
-            return self.conflict(
-                plan.operation,
-                "audit-store-unwritable",
-                f"the conventions audit could not be recorded: {failure}.",
-                fix="repair the agent memory tree's permissions, then retry",
-            )
+        return self.apply(prepared, inventory=inventory)
 
     def prepare(self, request: dict[str, Any]) -> UpdatePlan | UpdateResult:
         """Record what this mutation would change, writing none of it."""
@@ -309,39 +313,32 @@ class MemoryUpdater:
         plan: UpdatePlan,
         *,
         inventory: list[dict[str, Any]],
-        record: Path | None = None,
     ) -> UpdateResult:
-        """Materialize the recorded changes, then publish what was audited."""
+        """Materialize the recorded changes, then publish what was assessed."""
         stale = self.stale_effect(plan)
         if stale:
             return self.conflict(
                 plan.operation,
-                "audit-stale-draft",
-                f"{stale} changed after the audited plan was captured; "
+                "stale-draft",
+                f"{stale} changed after the assessed plan was captured; "
                 "no planned changes applied.",
-                fix="reread the required sources and affected memory, then audit "
-                    "the recomputed update",
+                fix="review the recomputed change and submit a new checklist",
             )
         if not self.sources.unchanged(inventory):
             return self.conflict(
                 plan.operation,
-                "audit-documents-stale",
-                "a governing document changed after the audit inventory was "
+                "stale-documents",
+                "a governing document changed after the checklist inventory was "
                 "captured; no planned changes applied.",
-                fix="reread the governing documents and audit the update again",
+                fix="review the governing conventions and submit a new checklist",
             )
 
         self.materialize(plan)
-        result = (
+        return (
             self.publish_worktree(plan)
             if plan.operation == "commit"
             else self.publish(plan)
         )
-        if record is not None:
-            result.verified.insert(
-                0, f"conventions audit recorded: {record}"
-            )
-        return result
 
     @staticmethod
     def stale_effect(plan: UpdatePlan) -> str:

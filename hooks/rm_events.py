@@ -255,7 +255,7 @@ class EventDispatcher:
                 return 3
             state = self.control.load(self.agent)
         result = MemoryUpdater(self.control, state).run(
-            event, gate=self.gate, budget_s=memory_budget(event)
+            event, budget_s=memory_budget(event)
         )
         self.emit_hook_context("MemoryUpdate", result.text())
         return 0 if result.ok else 3

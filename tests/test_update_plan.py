@@ -2,15 +2,16 @@
 """Plan freshness, working-tree staleness, line endings, and publication guards."""
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import gc
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from unittest import mock
 
@@ -46,7 +47,7 @@ plan_module = load("rm_update_plan")
 update_module = load("rm_update")
 commit_module = load("rm_commit")
 control_module = load("rm_control")
-audit_module = load("rm_audit")
+conventions_module = load("rm_conventions")
 
 
 class Temp(unittest.TestCase):
@@ -56,7 +57,7 @@ class Temp(unittest.TestCase):
 
 
 class StaleEffectTests(Temp):
-    """A plan applies only while the files on disk are still the audited ones."""
+    """A plan applies only while the files on disk are still the captured ones."""
 
     def plan(self, effects: list[object]) -> object:
         return type("Plan", (), {"effects": effects})()
@@ -64,40 +65,40 @@ class StaleEffectTests(Temp):
     def effect(self, path: Path, before: bytes, after: bytes):
         return plan_module.FileEffect("write", path, before, after)
 
-    def test_a_file_changed_after_the_audit_is_reported_stale(self) -> None:
+    def test_a_file_changed_after_the_plan_is_reported_stale(self) -> None:
         target = self.temp / "leaf.md"
         target.write_bytes(b"changed\n")
         stale = update_module.MemoryUpdater.stale_effect(
-            self.plan([self.effect(target, b"audited\n", b"new\n")])
+            self.plan([self.effect(target, b"captured\n", b"new\n")])
         )
         self.assertIn("leaf.md", stale)
 
-    def test_a_file_still_holding_the_audited_bytes_is_not_stale(self) -> None:
+    def test_a_file_still_holding_the_captured_bytes_is_not_stale(self) -> None:
         target = self.temp / "leaf.md"
-        target.write_bytes(b"audited\n")
+        target.write_bytes(b"captured\n")
         stale = update_module.MemoryUpdater.stale_effect(
-            self.plan([self.effect(target, b"audited\n", b"new\n")])
+            self.plan([self.effect(target, b"captured\n", b"new\n")])
         )
         self.assertEqual(stale, "")
 
     def test_a_second_effect_on_one_path_is_not_stale(self) -> None:
         target = self.temp / "index.md"
-        target.write_bytes(b"audited\n")
+        target.write_bytes(b"captured\n")
         effects = [
-            self.effect(target, b"audited\n", b"first\n"),
+            self.effect(target, b"captured\n", b"first\n"),
             self.effect(target, b"first\n", b"second\n"),
         ]
         self.assertEqual(
             update_module.MemoryUpdater.stale_effect(self.plan(effects)), ""
         )
 
-    def test_an_absent_path_that_was_absent_at_audit_is_not_stale(self) -> None:
+    def test_an_absent_path_that_was_absent_at_capture_is_not_stale(self) -> None:
         absent = self.effect(self.temp / "missing.md", None, b"new\n")
         self.assertEqual(
             update_module.MemoryUpdater.stale_effect(self.plan([absent])), ""
         )
 
-    def test_a_publication_audits_the_committed_bytes_not_the_working_ones(
+    def test_a_publication_compares_the_committed_bytes_not_the_working_ones(
         self,
     ) -> None:
         target = self.temp / "leaf.md"
@@ -234,26 +235,6 @@ class PublicationGuardTests(unittest.TestCase):
             self.assertEqual(worktree.tree_entry("HEAD", "RULES.md"), (False, None))
 
 
-def read_digest(path: Path) -> str | None:
-    """The digest of one source as a recorded read hashes it, or None."""
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        return None
-    text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-class Observed(dict):
-    """The reads one attempt recorded, answered from the files on disk."""
-
-    def take_update_reads(self, request: dict) -> "Observed":
-        return self
-
-    def get(self, key, default=None):
-        return read_digest(Path(key))
-
-
 class InProcess(Temp):
     """One `MemoryUpdater` over an isolated agent home, with no harness around it."""
 
@@ -321,62 +302,50 @@ class InProcess(Temp):
             "commit_message": "memory: publish the hand edit\n\nPublishes the edit.",
         }
 
-    # -- the audit protocol --------------------------------------------------
+    # -- the checklist protocol ----------------------------------------------
 
-    def checks(self, inventory: list[dict]) -> list[dict[str, object]]:
-        checks = []
-        for row in inventory:
-            if row["digest"] is None:
-                continue
-            rule = next(
-                (line for line in row["text"].splitlines() if line.strip()),
-                row["text"],
-            )
-            checks.append(
-                {
-                    "source": row["path"],
-                    "rule": rule,
-                    "status": "pass",
-                    "reasoning": "The change complies with this rule.",
-                    "fix": None,
-                }
-            )
-        return checks
+    def checks(self, conventions: list[dict]) -> list[dict[str, object]]:
+        return [
+            {
+                "source": row["source"],
+                "ordinal": row["ordinal"],
+                "status": "pass",
+                "reasoning": "The change complies with this convention.",
+            }
+            for row in conventions
+        ]
 
     def event(self, updater, request: dict) -> dict[str, object]:
-        """The request as an audited call, bound to the plan it computes."""
+        """The request as an assessed call, bound to the plan it computes."""
         plan = updater.prepare(request)
         self.assertIsInstance(
             plan, plan_module.UpdatePlan, getattr(plan, "text", lambda: "")()
         )
         inventory = updater.sources.inventory(plan)
+        conventions = conventions_module.ConventionChecklist().enumerate(inventory)
         event = dict(request)
-        event["readings"] = [
-            {"path": row["path"], "digest": row["digest"]} for row in inventory
-        ]
-        event["audit"] = {
+        event["checklist"] = {
             "schema": 1,
             "plan_digest": plan.audit_digest(),
-            "documents_digest": audit_module.inventory_digest(inventory),
-            "checks": self.checks(inventory),
-            "evidence": ["Read every required source again before this update."],
+            "documents_digest": conventions_module.inventory_digest(inventory),
+            "checks": self.checks(conventions),
         }
         return event
 
     def admit(self, request: dict, mutate=None):
-        """Run one audited update whose `mutate` lands after the evidence."""
+        """Run one assessed update whose `mutate` lands after the checklist."""
         updater = self.updater()
         event = self.event(updater, request)
         if mutate is not None:
-            recorded = updater.record_audit
+            validated = updater.conventions.validate
 
-            def recording(*args, **kwargs):
-                outcome = recorded(*args, **kwargs)
+            def validated_then_mutate(*args, **kwargs):
+                conflicts = validated(*args, **kwargs)
                 mutate()
-                return outcome
+                return conflicts
 
-            updater.record_audit = recording  # type: ignore[method-assign]
-        return updater.run(event, gate=Observed())
+            updater.conventions.validate = validated_then_mutate  # type: ignore[method-assign]
+        return updater.run(event)
 
     @staticmethod
     def code(result) -> str:
@@ -384,7 +353,7 @@ class InProcess(Temp):
 
 
 class PlanFreshnessTests(InProcess):
-    """A second preparation must be the plan the audit was admitted on."""
+    """A second preparation must be the plan the checklist was assessed on."""
 
     def test_an_unchanged_plan_matches_its_second_preparation(self) -> None:
         updater = self.updater()
@@ -393,26 +362,51 @@ class PlanFreshnessTests(InProcess):
         second = updater.prepare(request)
         self.assertEqual(first.matches(second), (True, ""))
 
+    def test_the_submitted_checklist_is_not_bound_to_the_applied_change(self) -> None:
+        updater = self.updater()
+        event = self.event(updater, self.create_request())
+
+        class Envelope(dict):
+            """A submitted checklist that can be watched outlive its evaluation."""
+
+        submitted = Envelope(event["checklist"])
+        event["checklist"] = submitted
+        reference = weakref.ref(submitted)
+        result = updater.run(event)
+        self.assertTrue(result.ok, result.text())
+        # The updater keeps no copy: once the caller's own request is gone and
+        # the written state is read back, nothing of the checklist survives.
+        event.clear()
+        del event, submitted
+        gc.collect()
+        self.assertIsNone(reference(), "the checklist outlived its assessment")
+
     def test_a_changed_target_is_refused_and_never_materialized(self) -> None:
         def mutate() -> None:
-            self.leaf.write_text("# Note\n\nan edit after the audit\n", encoding="utf-8")
+            self.leaf.write_text("# Note\n\nan edit after the checklist\n", encoding="utf-8")
 
         result = self.admit(self.set_request(), mutate)
         self.assertFalse(result.ok)
-        self.assertEqual(self.code(result), "audit-stale-draft")
+        self.assertEqual(self.code(result), "stale-draft")
         self.assertIn(
-            "an edit after the audit", self.leaf.read_text(encoding="utf-8")
+            "an edit after the checklist", self.leaf.read_text(encoding="utf-8")
         )
 
     def test_a_changed_governing_document_is_refused_and_never_materialized(
         self,
     ) -> None:
         def mutate() -> None:
-            (self.home / "RULES.md").write_text("# Rules\n\nedited\n", encoding="utf-8")
+            rules = self.home / "RULES.md"
+            rules.write_text(
+                rules.read_text(encoding="utf-8").replace(
+                    "Keep continuity.", "Keep continuity always."
+                ),
+                encoding="utf-8",
+            )
 
         result = self.admit(self.create_request(), mutate)
         self.assertFalse(result.ok)
-        self.assertEqual(self.code(result), "audit-documents-stale")
+        self.assertEqual(self.code(result), "stale-documents")
         self.assertFalse((self.nodes / "fresh.md").exists())
 
     def test_changed_directory_membership_is_refused_and_never_materialized(
@@ -423,7 +417,7 @@ class PlanFreshnessTests(InProcess):
 
         result = self.admit(self.create_request(), mutate)
         self.assertFalse(result.ok)
-        self.assertEqual(self.code(result), "audit-stale-draft")
+        self.assertEqual(self.code(result), "stale-draft")
         self.assertFalse((self.nodes / "fresh.md").exists())
 
     def test_a_changed_read_only_dependency_is_refused_and_never_materialized(
@@ -437,7 +431,7 @@ class PlanFreshnessTests(InProcess):
 
         result = self.admit(self.attach_request(source), mutate)
         self.assertFalse(result.ok)
-        self.assertEqual(self.code(result), "audit-stale-draft")
+        self.assertEqual(self.code(result), "stale-draft")
         self.assertFalse((self.nodes / "note" / "figure.txt").exists())
 
     def test_a_changed_publication_path_set_is_refused(self) -> None:
@@ -452,7 +446,7 @@ class PlanFreshnessTests(InProcess):
 
         result = self.admit(self.commit_request(), mutate)
         self.assertFalse(result.ok)
-        self.assertEqual(self.code(result), "audit-stale-draft")
+        self.assertEqual(self.code(result), "stale-draft")
         self.assertIn("set of published paths", result.conflicts[0]["message"])
 
     def test_changed_repository_facts_are_refused(self) -> None:
@@ -467,7 +461,7 @@ class PlanFreshnessTests(InProcess):
 
         result = self.admit(self.commit_request(), mutate)
         self.assertFalse(result.ok)
-        self.assertEqual(self.code(result), "audit-stale-draft")
+        self.assertEqual(self.code(result), "stale-draft")
         self.assertIn("repository facts", result.conflicts[0]["message"])
 
 
@@ -487,26 +481,16 @@ class PrivateMemoryWithoutSubprocessTests(InProcess):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def test_a_valid_audited_update_succeeds_with_no_subprocess(self) -> None:
+    def test_a_valid_assessed_update_succeeds_with_no_subprocess(self) -> None:
         self.forbid_subprocesses()
         result = self.admit(self.create_request())
         self.assertTrue(result.ok, result.text())
         self.assertEqual(
             (self.nodes / "fresh.md").read_text(encoding="utf-8"), "body\n"
         )
-        self.assertTrue(result.verified)
-        self.assertIn("conventions audit recorded:", result.verified[0])
-
-    def test_a_store_that_cannot_be_written_blocks_the_update(self) -> None:
-        with mock.patch.object(
-            update_module.AuditStore,
-            "record",
-            side_effect=OSError("the store is read-only"),
-        ):
-            result = self.admit(self.create_request())
-        self.assertFalse(result.ok)
-        self.assertEqual(self.code(result), "audit-store-unwritable")
-        self.assertFalse((self.nodes / "fresh.md").exists())
+        self.assertFalse(
+            (self.home / ".agent-mem-struct" / "memory-audits").exists()
+        )
 
     def test_an_obsolete_judge_document_is_ignored_and_preserved(self) -> None:
         document = self.home / ".agent-mem-struct" / "memory-judge.json"

@@ -52,7 +52,10 @@ def make_home(path: Path, shared: Path | None = None) -> tuple[Path, Path]:
         f"Structure-Version: test-v1\nStructure: ../STRUCTURE.md\nShared: {shared}\n\n# Root\n",
         encoding="utf-8",
     )
-    (path / "RULES.md").write_text("# Rules\n\nKeep continuity.\n", encoding="utf-8")
+    (path / "RULES.md").write_text(
+        "# Memory rules\n\n1. **Keep continuity.** Read the agent root header first.\n",
+        encoding="utf-8",
+    )
     (path / "STRUCTURE.md").write_text("Structure-Version: test-v1\n", encoding="utf-8")
     local = path / "memory" / "local"
     local.mkdir()
@@ -103,7 +106,7 @@ def invoke(
 
 
 def update_preview(result: subprocess.CompletedProcess[str]) -> dict | None:
-    """The plan a refused, unaudited memory update hands back for auditing."""
+    """The plan a refused, unassessed memory update hands back."""
     try:
         text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -125,7 +128,7 @@ def update_preview(result: subprocess.CompletedProcess[str]) -> dict | None:
 def audited_call(
     agent: str, home: Path, event: dict[str, object]
 ) -> subprocess.CompletedProcess[str]:
-    """Submit a memory update the way an agent must: read, audit, then call."""
+    """Submit a memory update the way an agent must: assess, then call."""
     event = dict(event)
     event.setdefault("session_id", "pi-session")
     event.setdefault("turn_id", "turn-1")
@@ -133,39 +136,23 @@ def audited_call(
     preview = update_preview(first)
     if preview is None:
         return first
-    rows = [row for row in preview.get("required_readings") or [] if isinstance(row, dict)]
-    for row in rows:
-        if row.get("digest") is None:
-            continue
-        invoke(agent, home, {
-            "hook_event_name": "PreToolUse",
-            "session_id": event["session_id"],
-            "turn_id": event["turn_id"],
-            "tool_name": "read",
-            "tool_input": {"path": row["path"]},
-            "cwd": str(home),
-        })
-    checks = []
-    for row in rows:
-        if row.get("digest") is None:
-            continue
-        source = Path(str(row["path"])).read_text(encoding="utf-8")
-        checks.append({
-            "source": row["path"],
-            "rule": next((line for line in source.splitlines() if line.strip()), source),
+    checks = [
+        {
+            "source": item["source"],
+            "ordinal": item["ordinal"],
             "status": "pass",
-            "reasoning": "The computed change complies with this rule.",
-            "fix": None,
-        })
+            "reasoning": "The computed change complies with this convention.",
+        }
+        for item in preview.get("conventions") or []
+        if isinstance(item, dict)
+    ]
     return invoke(agent, home, {
         **event,
-        "readings": rows,
-        "audit": {
+        "checklist": {
             "schema": 1,
             "plan_digest": preview["plan_digest"],
             "documents_digest": preview["documents_digest"],
             "checks": checks,
-            "evidence": ["Read every required source again before this update."],
         },
     })
 

@@ -4,6 +4,58 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-12T22:10:00-05:00 - the checklist replaces the reading-and-audit envelope
+
+`memory_update` no longer takes `readings` and `audit`. It takes one `checklist`
+of `{source, ordinal, status, reasoning}` entries, bound to the same
+`plan_digest` and `documents_digest`, and one entry per convention the hook
+itself enumerates.
+
+The two read envelopes were doing one job badly. A refusal had to render every
+required source with the digest its bytes held so the writer could declare it
+had read them, and the hook then compared the declaration with its own reads and
+consumed the reads so a retry could not replay them - a receipt protocol whose
+only product was a claim that could not be checked. The refusal now lists the
+conventions themselves, each with its source and ordinal, so the writer assesses
+what it is asked about instead of re-reading documents to build a list the hook
+already had. Nothing is recorded: the `memory-audits` store, its admitted
+readings and its admitted audit are gone, and the read inventory the gate
+needed to compare them is no longer kept.
+
+The checks keep their order, stated as the order of the news. A checklist bound
+to another plan or another document set is stale whatever it assessed, so the
+two digests are compared first and reported before any other conflict; then any
+declared violation, named by source and ordinal with generic correction
+guidance; then coverage, exactly once per enumerated convention and with
+nothing left over. Reporting "one convention unassessed"
+to a writer whose conventions had changed underneath it was the misleading
+order, and it is what a mid-update convention exposed.
+
+Nothing the caller submitted is repeated back. An unsupported envelope key is
+refused as such rather than named, a violation on a convention the hook did not
+enumerate is a coverage refusal, and the reasoning and fix of every entry are
+read and dropped. The checklist is also released before anything is written:
+the mutation is planned and assessed, its checklist reference is dropped, and
+only the change it assessed is applied, so no write is bound to the text of its
+own assessment.
+
+The enumeration is conservative. A document with more than one *Mandatory
+conventions* section, a numbered rule that states nothing, a rule number out of
+sequence, an unclosed code fence and content that belongs to no convention are
+each a refusal rather than a silent omission, and one path captured under two
+different source kinds refuses too, since its conventions would otherwise be
+enumerated twice or not at all. Sources that state no convention region -
+memories, `STRUCTURE.md`, leaves - contribute no entry and no artificial one.
+
+The schema carries no nullable field any more, so the `Type.Null()` union the
+previous entry added is gone with the digest that needed it, and `ordinal` is a
+`Type.Integer`. The host contract test now pins every `Type.<name>` the
+extension names against the host TypeBox entry's exports instead of checking one
+union and one rejected literal: `Integer` is the constructor the old check would
+not have covered, and a missing one aborts registration for the whole bridge
+exactly as the nullable literal did. A non-string `status` is refused as a shape
+error rather than reaching a comparison that would raise.
+
 ## 2026-11-12T17:40:00-05:00 - a nullable reading digest registers with the null schema
 
 `memory_update`'s `readings` schema spelled an absent source's digest as

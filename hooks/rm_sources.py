@@ -1,14 +1,15 @@
-"""The governing documents one memory update is audited against.
+"""The governing documents one memory update is assessed against.
 
 `GoverningSources` is the one owner for source capture. It names every document
 that binds a change - the owner's root documents, the declared shared root's
 documents, each ancestor group's mandatory conventions, and the leaf an
 attachment belongs to - and reads each of them once into an inventory row that
-carries the raw bytes, the normalized text, and the digest of that text.
+carries the raw bytes, the normalized text, the digest of that text, and the
+kind of convention region the document states.
 
-One read, one revision: the digest an audit binds to, the text its checks are
-verified against and the bytes a final freshness check compares all derive from
-the same capture, so no later read can silently describe a different revision.
+One read, one revision: the digest a checklist binds to, the text its entries
+assess and the bytes a final freshness check compares all derive from the same
+capture, so no later read can silently describe a different revision.
 An absent optional document is captured too, with a null digest, so creating it
 during an update is a visible change rather than a silent one.
 """
@@ -19,9 +20,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from rm_conventions import MEMORY_KIND, RULES_KIND
+
 ROOT_DOCUMENT = "MEMORY.md"
 RULES_DOCUMENT = "RULES.md"
 STRUCTURE_DOCUMENT = "STRUCTURE.md"
+STRUCTURE_KIND = "structure"
+LEAF_KIND = "leaf"
 
 
 class SourceError(Exception):
@@ -41,13 +46,14 @@ class GoverningSources:
         self.agent_home = Path(agent_home) if agent_home is not None else None
         self.shared_root = Path(shared_root) if shared_root is not None else None
 
-    def sources(self, plan: Any = None) -> list[tuple[str, Path, bool]]:
+    def sources(self, plan: Any = None) -> list[tuple[str, Path, bool, str]]:
         """Every document that governs this change, and whether it is required."""
-        entries: list[tuple[str, Path, bool]] = [
+        entries: list[tuple[str, Path, bool, str]] = [
             (
                 f"The owner's document ({ROOT_DOCUMENT})",
                 self.memory_root / ROOT_DOCUMENT,
                 True,
+                MEMORY_KIND,
             )
         ]
         if self.agent_home is not None:
@@ -56,11 +62,13 @@ class GoverningSources:
                     f"The owner's document ({RULES_DOCUMENT})",
                     self.agent_home / RULES_DOCUMENT,
                     True,
+                    RULES_KIND,
                 ),
                 (
                     f"The owner's document ({STRUCTURE_DOCUMENT})",
                     self.agent_home / STRUCTURE_DOCUMENT,
                     True,
+                    STRUCTURE_KIND,
                 ),
             ]
         if self.shared_root is not None:
@@ -69,31 +77,41 @@ class GoverningSources:
                     f"The owner's document (shared {ROOT_DOCUMENT})",
                     self.shared_root / ROOT_DOCUMENT,
                     True,
+                    MEMORY_KIND,
                 )
             )
-        entries += [(label, path, False) for label, path in self.context_documents()]
+        entries += [
+            (label, path, False, kind) for label, path, kind in self.context_documents()
+        ]
         entries += self.group_documents(plan)
         return entries
 
     def inventory(self, plan: Any = None) -> list[dict[str, Any]]:
         """Every governing source with the exact bytes a reading binds to.
 
-        It is the one list the audit challenge, the submitted readings and the
-        final freshness check share: deduped by resolved path, in capture order,
-        with an absent optional document bound by a null digest so its creation
-        during the update is a visible change rather than a silent one. An
-        unreadable or missing required source refuses here, so no change is ever
-        audited against a requirement that could not be read.
-        Each row is read once, so its digest, the text an audit renders and the
-        bytes its recheck compares describe one revision.
+        It is the one list the convention enumeration, the submitted checklist's
+        document digest and the final freshness check share: deduped by resolved
+        path, in capture order, with an absent optional document bound by a null
+        digest so its creation during the update is a visible change rather than
+        a silent one. One path captured under two different kinds is a refusal,
+        since the conventions it states would then be enumerated twice or not at
+        all. An unreadable or missing required source refuses here, so no change
+        is ever assessed against a requirement that could not be read.
+        Each row is read once, so its digest, the conventions it enumerates and
+        the bytes its recheck compares describe one revision.
         """
         rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for label, path, required in self.sources(plan):
+        seen: dict[str, str] = {}
+        for label, path, required, kind in self.sources(plan):
             key = os.path.normcase(str(path.resolve(strict=False)))
             if key in seen:
+                if seen[key] != kind:
+                    raise SourceError(
+                        f"the governing document {path} is captured both as "
+                        f"{seen[key]} and as {kind}"
+                    )
                 continue
-            seen.add(key)
+            seen[key] = kind
             if path.is_symlink() or (path.exists() and not path.is_file()):
                 raise SourceError(
                     f"the governing document {path} is not a readable regular file"
@@ -131,6 +149,7 @@ class GoverningSources:
                     ),
                     "text": text or "",
                     "data": data,
+                    "kind": kind,
                 }
             )
         return rows
@@ -152,7 +171,7 @@ class GoverningSources:
         except OSError:
             return False, None
 
-    def group_documents(self, plan: Any) -> list[tuple[str, Path, bool]]:
+    def group_documents(self, plan: Any) -> list[tuple[str, Path, bool, str]]:
         """Every document above the changed paths that binds a write there.
 
         A group's **Mandatory conventions** bind writes inside it and are
@@ -166,12 +185,12 @@ class GoverningSources:
         if plan is None:
             return []
         roots = [root for root in (self.memory_root, self.shared_root) if root]
-        found: dict[str, tuple[str, Path, bool]] = {}
+        found: dict[str, tuple[str, Path, bool, str]] = {}
         for anchor, owning in self.anchors(plan):
             if owning:
                 found.setdefault(
                     os.path.normcase(str(anchor)),
-                    ("The leaf this attachment belongs to", anchor, True),
+                    ("The leaf this attachment belongs to", anchor, True, LEAF_KIND),
                 )
             for root in roots:
                 current = anchor.parent
@@ -190,6 +209,7 @@ class GoverningSources:
                             "The conventions an ancestor group declares",
                             candidate,
                             present,
+                            MEMORY_KIND,
                         ),
                     )
                     if current == current.parent:
@@ -235,23 +255,32 @@ class GoverningSources:
         leaf = directory.parent / f"{directory.name}.md"
         return leaf if leaf.is_file() else None
 
-    def context_documents(self) -> list[tuple[str, Path]]:
+    def context_documents(self) -> list[tuple[str, Path, str]]:
         """Further governing documents, whether or not they exist yet.
 
         Absent candidates are watched too: one created during the update
         changes the requirement, and the final check refuses rather than
         applying a change audited against an incomplete requirement.
         """
-        candidates: list[tuple[str, Path]] = [
+        candidates: list[tuple[str, Path, str]] = [
             (
                 "The memory root's structure",
                 self.memory_root / STRUCTURE_DOCUMENT,
+                STRUCTURE_KIND,
             )
         ]
         if self.shared_root is not None:
             candidates += [
-                ("The shared root's rules", self.shared_root / RULES_DOCUMENT),
-                ("The shared root's structure", self.shared_root / STRUCTURE_DOCUMENT),
+                (
+                    "The shared root's rules",
+                    self.shared_root / RULES_DOCUMENT,
+                    RULES_KIND,
+                ),
+                (
+                    "The shared root's structure",
+                    self.shared_root / STRUCTURE_DOCUMENT,
+                    STRUCTURE_KIND,
+                ),
             ]
         return candidates
 

@@ -81,12 +81,14 @@ then read root `RULES.md` before scoped memory work.
 consolidated where possible; rationale and examples belong outside the routine
 checklist.
 
-### The conventions audit
+### The convention checklist
 
-Every non-no-op `memory_update` requires the writer's conventions audit of the
-exact computed plan. The shared hook validates fresh recorded readings, rule
-citations, source coverage, and both digest bindings. A reported violation
-blocks the update with its stated fix. No independent model or provider is
+Every non-no-op `memory_update` requires the writer's own checklist of the
+exact computed plan. The hook enumerates the conventions that update is bound
+by - one entry per numbered rule of `RULES.md` and per bullet of a governing
+document's *Mandatory conventions* section - and accepts the update only once
+the caller has assessed every one of them. A reported violation blocks the
+update with generic correction guidance. No independent model or provider is
 invoked.
 
 The hook records the mutation as a write-free plan - every file's bytes, every
@@ -96,41 +98,50 @@ lines of context, its line ranges and its section, so an unchanged body is
 never sent twice and a small edit stays small however large the file is. A
 shared write is pushed only when its commit holds exactly the approved paths
 and bytes - a line-ending conversion aside - and only while the governing
-documents still read as they did when the audit captured them, checked again
-immediately before the audited plan is applied.
+documents still read as they did when the checklist was assessed, checked again
+immediately before the required change is applied.
 
-No write is admitted on the strength of a claim. Before a plan may be applied,
-its caller must read the governing sources again and audit the exact change the
-hook computed. A call without `readings` and `audit` is refused with that
-change, its `plan_digest`, the `documents_digest` of the governing inventory,
-and every required source with the digest its bytes hold now - so the agent can
-audit the change it is about to make instead of guessing at it. Nothing about
+Every changing update requires a structurally complete self-assessment bound
+to the computed plan and governing inventory. Before a plan may be applied, its
+caller must assess the exact change the hook computed, one convention at a
+time. A call without `checklist` is refused with that change, its
+`plan_digest`, the `documents_digest` of the governing inventory, and the
+complete enumeration - `{source, ordinal, text}` for every convention - so the
+agent answers the list it was handed rather than rereading the conventions and
+guessing at what it owes. A mutation that changes nothing needs no checklist:
+there is no change to assess, and its own result is returned. Nothing about
 this is advisory:
 
-- the readings are compared with the reads the hook itself recorded, and those
-  recorded reads are consumed at the start of every attempt, so a refused
-  attempt cannot be replayed - the retry needs a genuinely new read of every
-  required source, and a submitted reading is only a declaration of what was
-  seen; every required source must be declared, one that does not exist yet
-  with a null digest, and a declared source is stale when its bytes changed or
-  it was never opened;
-- the audit is bound to the computed plan and to the current governing
-  documents, so an audit written for another change, or for another revision of
-  the conventions, is refused (`audit-plan-mismatch`, `audit-documents-stale`);
-- every check names a governing source that exists and cites a rule that must
-  appear verbatim in that source, and every present source must be covered;
-- an audit that reports a violation blocks the update and returns the fix it
-  states, so the agent corrects the change rather than retrying it;
-- the readings and the audit are recorded under
-  `<agent-home>/.agent-mem-struct/memory-audits/` before applying the plan.
+- the checklist carries `{source, ordinal, status, reasoning}` for every
+  enumerated convention, in any order, with status `pass` or `not-applicable`,
+  and a `fix` only when the status is `violation`; an entry left out, repeated,
+  or naming a convention this update does not have is `checklist-coverage`, and
+  any other shape is `checklist-invalid`;
+- it is bound to the computed plan and to the current governing documents, so a
+  checklist written for another change, or for another revision of the
+  conventions, is refused (`checklist-plan-mismatch`,
+  `checklist-documents-stale`);
+- an entry that reports a violation blocks the update and returns generic
+  correction guidance, so the agent corrects the change rather than retrying
+  it; the submitted reasoning and fix are never echoed, recorded or returned;
+- the admitted checklist is discarded with the call: the hook stores no
+  checklist, digest or reasoning and repeats none of it back.
 
-What no digest can prove is that the agent did the thinking: the structural
-checks establish that the audit covers the sources and is bound to this exact
-plan, not that its reasoning is sound or that it found every applicable rule.
-The writer remains responsible for a complete audit. The gate lives in the
-hook, not in one harness's bridge: Pi, Claude Code and Codex are all held to
-the same audit, because they all reach `MemoryUpdate` through the same
-dispatcher and the same `rm_update` mutation path.
+What no checklist can prove is that the agent did the thinking. The hook
+validates coverage and bindings - that every enumerated convention was answered
+and that the answers are bound to this exact plan - not the truth of the
+assessment, and it cannot reach what the host transcribed: the submitted
+checklist stays in the caller's transcript after the hook has released it.
+Every enumerated convention needs one entry. A rules document must state at
+least one numbered rule, or the update is refused; a memory document without a
+*Mandatory conventions* section contributes no entries, and neither does a
+section left empty or holding only `(none)`. The memories themselves,
+`STRUCTURE.md` and the leaves are governed by their own documents without
+adding entries. Per-convention granularity is deliberate - a
+source stating forty conventions needs forty answers, not one per document. The gate lives in the hook, not in
+one harness's bridge: Pi, Claude Code and Codex are all held to the same
+checklist, because they all reach `MemoryUpdate` through the same dispatcher
+and the same `rm_update` mutation path.
 
 Obsolete judge configuration is ignored and preserved. An existing
 `<agent-home>/.agent-mem-struct/memory-judge.json` and the `AMS_JUDGE_*`

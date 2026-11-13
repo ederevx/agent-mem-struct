@@ -265,46 +265,49 @@ The bridge maps Pi events onto the hook's event vocabulary:
   which runs the hook's `MemoryUpdate` event once the shared worktree has
   fast-forwarded. Every mutation is first recorded as a plan - the bytes each
   path would gain, the bytes it holds now, and every rename, removal, and
-  directory - and written nowhere; the caller must then have read every
-  governing source again and audited that exact plan. `rm_sources.GoverningSources`
-  captures each governing document once and `rm_draft.DraftRenderer` renders
-  that plan as the change it makes; the audit validator in `rm_audit` checks
-  the caller's `readings` and `audit` against that one capture and the computed
-  plan, and only an admitted audit lets `rm_update.MemoryUpdater.apply`
-  materialize it. No independent model, provider or judge launcher is
-  invoked; the Git synchronization and publication around it are unchanged.
+  directory - and written nowhere; the caller must then assess that exact
+  plan. The conventions it is bound by are enumerated, not reread:
+  `rm_sources.GoverningSources` captures each governing document once and
+  `rm_draft.DraftRenderer` renders that plan as the change it makes;
+  `rm_conventions.ConventionChecklist` turns each numbered rule of `RULES.md`
+  and each bullet of a document's *Mandatory conventions* section into one
+  enumerated convention, and checks the caller's own checklist of them against
+  that one capture and the computed plan. Only an admitted checklist lets
+  `rm_update.MemoryUpdater.apply` materialize it. No independent model,
+  provider or judge launcher is invoked; the Git synchronization and
+  publication around it are unchanged.
   The freshness snapshot derives from the same captured read of each governing
-  document, so a requirement edited between the audit and the write is never
-  the text the write is approved against. The audit is not advisory: a
-  call without `readings` and `audit` is refused with the computed change, its
+  document, so a requirement edited between the assessment and the write is
+  never the text the write is approved against. The checklist is not advisory:
+  a call without `checklist` is refused with the computed change, its
   `plan_digest`, the `documents_digest` of the governing inventory, and every
-  required source with the digest its bytes hold now; the recorded reads are
-  consumed at the start of each attempt so a retry needs new ones, and a
-  declared reading no recorded read backs, or one whose source changed since,
-  is `audit-readings-stale`; an audit
-  bound to another plan or another revision of the conventions, a check that
-  cites a rule absent from its source, a check left out, or a check that
-  reports a violation returns `audit-plan-mismatch`, `audit-documents-stale`,
-  `audit-invalid`, or `audit-violations` with the fix it states, writing
-  nothing. A governing document that cannot be captured is
-  `audit-missing-source`, and an audit record that cannot be stored is
-  `audit-store-unwritable`; neither writes anything. The admitted readings and
-  audit are recorded under
-  `<agent-home>/.agent-mem-struct/memory-audits/` before the plan is applied.
+  enumerated convention as a `{source, ordinal, text}` row, so the caller
+  answers one entry per convention instead of rereading the conventions. The
+  verdict is structural: one entry per enumerated convention, `pass` or
+  `not-applicable`, a `fix` only for a declared `violation`. An entry left
+  out, repeated, or naming a convention this update does not have is
+  `checklist-coverage`; an unsupported shape is `checklist-invalid`; a digest
+  bound to another plan or another revision of the conventions is
+  `checklist-plan-mismatch` or `checklist-documents-stale`; and a declared
+  violation is `checklist-violations`, naming the convention by source and
+  ordinal with generic correction guidance rather than repeating the
+  submitted reasoning or fix. Each of them
+  writes nothing, and the admitted checklist is discarded: no checklist,
+  digest or reasoning is recorded or repeated back.
   This gate is the hook's, not the bridge's: every harness that reaches the
-  `MemoryUpdate` event is held to it. The audit preview is
-  the change the plan makes - both whole states by size and SHA-256, then every
+  `MemoryUpdate` event is held to it. The preview is the change
+  the plan makes - both whole states by size and SHA-256, then every
   changed line with three lines of context, its line ranges and its section,
   each row an exact JSON `[tag, string]` pair - so an unchanged body is never
   printed twice and a large store does not push a small edit out of view. The
   bridge allows the whole call three minutes and states that as the hook's
   budget, a general operation deadline rather than a model's. Before applying,
-  the plan is prepared a second time and compared with the audited one - its
+  the plan is prepared a second time and compared with the assessed one - its
   observations, directory membership, repository context, publication paths,
   intent and effects - and then the bytes each path held when the plan was
-  recorded, and every governing document in the audited inventory, are
-  compared again; a change to either returns `audit-stale-draft` or
-  `audit-documents-stale` with no planned change applied, and the audited plan
+  recorded, and every governing document in the assessed inventory, are
+  compared again; a change to either returns `stale-draft` or
+  `stale-documents` with no planned change applied, and the assessed plan
   itself is the one materialized.
   `rm_update.MemoryUpdater` materializes every required
   counterpart (the same-named log, the nodes index, and group scaffolding),
@@ -350,9 +353,9 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
   `exists`, `would-overwrite`, `retire-required`, `unreadable-target`,
-  `message-lint`, `non-ascii`, `bad-request`, `audit-publish-mismatch`,
-  and the other `audit-` refusals above come back as a conflict report for the
-  agent to fix and retry. Every
+  `message-lint`, `non-ascii`, `bad-request`, `publish-mismatch`,
+  and the `checklist-`, `stale-` refusals above come back as a conflict report
+  for the agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`
   inspects the worktree the publish committed into and the report gains
