@@ -404,26 +404,18 @@ The bridge maps Pi events onto the hook's event vocabulary:
   inline, so checkpoints need no transcript file. A failed checkpoint cancels a
   manual compaction; an automatic one proceeds with a warning (cancelling an
   overflow recovery would wedge the session at its context ceiling).
-- `agent_before_settle` drives `ConventionReminder`: before a completed run may
-  settle, the hook returns the conventions reminder and the bridge proposes it
-  together with the claim that answers the current ordinary-input generation,
-  setting `continue: true`. The reminder is extension-authored user-role
-  context, so it cannot re-arm the generation it answers, and a later boundary
-  finds it claimed and settles normally. A failed or aborted run asks for
-  nothing and claims nothing; a hook failure leaves one operational notice for
-  the next turn instead of looping. The reminder names the order of the work:
-  the conventions check first, then preparation and execution, then the memory
-  update drafted and the conventions check run again against that draft and the
-  finished work, and only then the memory update written and the run settled,
-  with the task's settled conclusion stated above the convention-compliance
-  verdict.
+- No settle-boundary handler: the bridge registers no `agent_before_settle`
+  hook, so a completed run settles exactly as the model ended it. The
+  PreToolUse gate remains the enforcement point, and nothing the bridge
+  injects holds a run open.
 
 Limitations: Pi exposes no subagent identity on events, so the bridge cannot
 mark a spawned child as read-only the way `SubagentStart` does for the other
 hosts — a Pi subagent session must report memory additions back to its parent
 (enforced only by instruction, not by the hook). Turn-end convention checking
-(`Stop`) has no Pi surface: the settle boundary leaves a reminder before a run
-ends but blocks nothing, so the PreToolUse gate remains the enforcement point. A project-local `.pi/extensions/agent-mem-struct.ts`
+(`Stop`) has no Pi surface: a completed run settles with nothing pending, so
+the PreToolUse gate remains the enforcement point. A project-local
+`.pi/extensions/agent-mem-struct.ts`
 shadows the managed copy; remove it if the managed bridge seems inert.
 
 Uninstall removes only the owned bridge and its state:

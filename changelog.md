@@ -4,6 +4,22 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-13T01:33:00-05:00 - no reminder at the settle boundary
+
+Pi's bridge registers no `agent_before_settle` handler and the hook answers
+no `ConventionReminder` event, so a finished run settles exactly where the
+model ended it. The reminder was a second conventions voice: it restated, at
+the end of every run, an order of work the admission gate and the task text
+already give, it was re-injected on each settle, and it was the only text
+the bridge added to a completed run - so a host that kept showing it had no
+way to turn it off. Turn-end checking is the PreToolUse gate's job alone: a
+run that breaks a convention is refused at the tool call, not reminded
+after it.
+
+The generation state that fed the reminder - an ordinary-input generation
+and its claim, plus the fork suppression that cleared it - goes with it, as
+does the `input` registration that opened a generation mid-run.
+
 ## 2026-11-12T22:10:00-05:00 - the checklist replaces the reading-and-audit envelope
 
 `memory_update` no longer takes `readings` and `audit`. It takes one `checklist`
