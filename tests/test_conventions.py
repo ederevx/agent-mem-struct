@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 HOOKS = REPO / "hooks"
@@ -685,14 +686,26 @@ class ValidateTests(unittest.TestCase):
             [],
         )
 
-    def test_invalid_separation_paths_are_refused_without_echo(self) -> None:
+    def _validate_with_failing_expansion(self, raw, source: str) -> list[dict]:
+        expands = Path.expanduser
+
+        def expanduser(path):
+            if str(path) == source:
+                raise RuntimeError("SENTINEL-HOME")
+            return expands(path)
+
+        with mock.patch.object(
+            Path, "expanduser", autospec=True, side_effect=expanduser
+        ):
+            return self.validate(raw)
+
+    def test_invalid_separation_sources_are_refused_without_echo(self) -> None:
         checks = [self.entry(1), self.entry(2)]
-        named = {
+        sources = {
             "embedded null": "/sentinel\x00private",
-            "unresolvable home":
-                "~agent_mem_struct_no_such_user_824532c7/RULES.md",
+            "failed expansion": "~sentinel/RULES.md",
         }
-        for name, source in named.items():
+        for name, source in sources.items():
             with self.subTest(name):
                 separation = self.separation(
                     checks,
@@ -701,16 +714,19 @@ class ValidateTests(unittest.TestCase):
                         self.reference(2),
                     ],
                 )
-                conflicts = self.validate(
-                    self.envelope(checks, separation=separation)
-                )
+                envelope = self.envelope(checks, separation=separation)
+                if source.startswith("~"):
+                    conflicts = self._validate_with_failing_expansion(
+                        envelope, source
+                    )
+                else:
+                    conflicts = self.validate(envelope)
                 self.assertEqual(
                     [conflict["code"] for conflict in conflicts],
                     ["checklist-separation-invalid"],
                 )
                 text = json.dumps(conflicts)
                 self.assertNotIn("sentinel", text.lower())
-                self.assertNotIn("no_such_user", text)
 
     def test_the_separation_never_echoes_submitted_text(self) -> None:
         checks = [self.entry(1), self.entry(2)]
