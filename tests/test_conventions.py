@@ -685,6 +685,33 @@ class ValidateTests(unittest.TestCase):
             [],
         )
 
+    def test_invalid_separation_paths_are_refused_without_echo(self) -> None:
+        checks = [self.entry(1), self.entry(2)]
+        named = {
+            "embedded null": "/sentinel\x00private",
+            "unresolvable home":
+                "~agent_mem_struct_no_such_user_824532c7/RULES.md",
+        }
+        for name, source in named.items():
+            with self.subTest(name):
+                separation = self.separation(
+                    checks,
+                    significant=[
+                        self.reference(1, source=source),
+                        self.reference(2),
+                    ],
+                )
+                conflicts = self.validate(
+                    self.envelope(checks, separation=separation)
+                )
+                self.assertEqual(
+                    [conflict["code"] for conflict in conflicts],
+                    ["checklist-separation-invalid"],
+                )
+                text = json.dumps(conflicts)
+                self.assertNotIn("sentinel", text.lower())
+                self.assertNotIn("no_such_user", text)
+
     def test_the_separation_never_echoes_submitted_text(self) -> None:
         checks = [self.entry(1), self.entry(2)]
         separation = self.separation(

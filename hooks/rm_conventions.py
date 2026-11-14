@@ -590,12 +590,16 @@ class ConventionChecklist:
                 ordinal = reference.get("ordinal")
                 if not isinstance(named, str) or not named.strip():
                     return [_separation_invalid()]
-                candidate = Path(named).expanduser()
-                if not candidate.is_absolute():
-                    return [_separation_invalid()]
                 if type(ordinal) is not int or ordinal < 1:
                     return [_separation_invalid()]
-                identities.append((source_key(candidate), ordinal))
+                try:
+                    candidate = Path(named).expanduser()
+                    if not candidate.is_absolute():
+                        return [_separation_invalid()]
+                    identity = (source_key(candidate), ordinal)
+                except (OSError, RuntimeError, ValueError):
+                    return [_separation_invalid()]
+                identities.append(identity)
             classified[field] = identities
         significant = classified["significant"]
         remaining = classified["not_applicable"]
