@@ -733,7 +733,9 @@ class ValidateTests(unittest.TestCase):
         separation = self.separation(
             checks,
             significant=[
-                self.reference(1, source="/sentinel/path/MEMORY.md"),
+                self.reference(
+                    1, source=str(SCRATCH / "sentinel" / "MEMORY.md")
+                ),
                 self.reference(2),
             ],
         )
@@ -741,8 +743,7 @@ class ValidateTests(unittest.TestCase):
             self.validate(self.envelope(checks, separation=separation))
         )
         self.assertEqual(text.count("checklist-separation-coverage"), 1)
-        for sentinel in ("SENTINEL", "/sentinel/path"):
-            self.assertNotIn(sentinel, text)
+        self.assertNotIn("sentinel", text.lower())
 
 
 if __name__ == "__main__":
