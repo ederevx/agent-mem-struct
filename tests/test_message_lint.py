@@ -152,6 +152,14 @@ def audited_call(
             "schema": 1,
             "plan_digest": preview["plan_digest"],
             "documents_digest": preview["documents_digest"],
+            "separation": {
+                "significant": [
+                    {"source": item["source"], "ordinal": item["ordinal"]}
+                    for item in preview.get("conventions") or []
+                    if isinstance(item, dict)
+                ],
+                "not_applicable": [],
+            },
             "checks": checks,
         },
     })

@@ -309,11 +309,33 @@ class ValidateTests(unittest.TestCase):
         entry.update(changes)
         return entry
 
+    def reference(self, ordinal: int, **changes) -> dict:
+        reference = {"source": self.source, "ordinal": ordinal}
+        reference.update(changes)
+        return reference
+
+    def separation(self, checks: list[dict], **changes) -> dict:
+        separation = {
+            "significant": [
+                self.reference(check["ordinal"])
+                for check in checks
+                if check["status"] != "not-applicable"
+            ],
+            "not_applicable": [
+                self.reference(check["ordinal"])
+                for check in checks
+                if check["status"] == "not-applicable"
+            ],
+        }
+        separation.update(changes)
+        return separation
+
     def envelope(self, checks: list[dict], **changes) -> dict:
         envelope = {
             "schema": 1,
             "plan_digest": PLAN,
             "documents_digest": self.documents_digest,
+            "separation": self.separation(checks),
             "checks": checks,
         }
         envelope.update(changes)
@@ -511,6 +533,173 @@ class ValidateTests(unittest.TestCase):
             )
         )
         self.assertNotIn("SENTINEL", text)
+
+    # -- separation ----------------------------------------------------------
+
+    def test_a_missing_separation_is_refused(self) -> None:
+        envelope = self.envelope([self.entry(1), self.entry(2)])
+        del envelope["separation"]
+        self.assertEqual(
+            self.codes(envelope), ["checklist-separation-missing"]
+        )
+
+    def test_the_separation_shape_is_strict(self) -> None:
+        checks = [self.entry(1), self.entry(2)]
+        malformed = {
+            "null": None,
+            "extra key": self.separation(checks, other=[]),
+            "missing list": {"significant": self.reference(1)},
+            "not a list": self.separation(checks, significant={}),
+            "extra reference key": self.separation(
+                checks, significant=[self.reference(1, note="x")]
+            ),
+            "relative source": self.separation(
+                checks, significant=[self.reference(1, source="RELATIVE.md")]
+            ),
+            "boolean ordinal": self.separation(
+                checks, significant=[self.reference(True)]
+            ),
+        }
+        for name, separation in malformed.items():
+            with self.subTest(name):
+                self.assertEqual(
+                    self.codes(
+                        self.envelope(checks, separation=separation)
+                    ),
+                    ["checklist-separation-invalid"],
+                )
+
+    def test_the_separation_partitions_the_conventions_exactly(self) -> None:
+        checks = [self.entry(1), self.entry(2)]
+        malformed = {
+            "omitted": self.separation(
+                checks, significant=[self.reference(1)]
+            ),
+            "unknown": self.separation(
+                checks,
+                significant=[
+                    self.reference(1), self.reference(2), self.reference(3)
+                ],
+            ),
+            "repeated": self.separation(
+                checks,
+                significant=[
+                    self.reference(1), self.reference(1), self.reference(2)
+                ],
+            ),
+            "overlap": self.separation(
+                checks, not_applicable=[self.reference(1)]
+            ),
+            "path alias": self.separation(
+                checks,
+                significant=[
+                    self.reference(1),
+                    self.reference(1, source=self.source + "/"),
+                    self.reference(2),
+                ],
+            ),
+        }
+        for name, separation in malformed.items():
+            with self.subTest(name):
+                self.assertEqual(
+                    self.codes(
+                        self.envelope(checks, separation=separation)
+                    ),
+                    ["checklist-separation-coverage"],
+                )
+
+    def test_a_significant_convention_must_pass(self) -> None:
+        checks = [self.entry(1, status="not-applicable"), self.entry(2)]
+        separation = self.separation(
+            checks,
+            significant=[self.reference(1), self.reference(2)],
+            not_applicable=[],
+        )
+        self.assertEqual(
+            self.codes(self.envelope(checks, separation=separation)),
+            ["checklist-separation-mismatch"],
+        )
+
+    def test_a_not_applicable_convention_must_not_pass(self) -> None:
+        checks = [self.entry(1), self.entry(2)]
+        separation = self.separation(
+            checks,
+            significant=[self.reference(1)],
+            not_applicable=[self.reference(2)],
+        )
+        self.assertEqual(
+            self.codes(self.envelope(checks, separation=separation)),
+            ["checklist-separation-mismatch"],
+        )
+
+    def test_priority_order_is_independent_of_check_order(self) -> None:
+        checks = [self.entry(1), self.entry(2)]
+        separation = self.separation(
+            checks, significant=[self.reference(2), self.reference(1)]
+        )
+        self.assertEqual(
+            self.validate(self.envelope(checks, separation=separation)), []
+        )
+
+    def test_stale_digests_precede_a_missing_separation(self) -> None:
+        envelope = self.envelope(
+            [self.entry(1), self.entry(2)], plan_digest="c" * 64
+        )
+        del envelope["separation"]
+        self.assertEqual(self.codes(envelope), ["checklist-plan-mismatch"])
+
+    def test_a_violation_precedes_a_missing_separation(self) -> None:
+        envelope = self.envelope(
+            [self.entry(1, status="violation", fix="Do better."), self.entry(2)]
+        )
+        del envelope["separation"]
+        self.assertEqual(self.codes(envelope), ["checklist-violations"])
+
+    def test_a_coverage_gap_precedes_the_separation(self) -> None:
+        envelope = self.envelope([self.entry(1)])
+        del envelope["separation"]
+        self.assertEqual(self.codes(envelope), ["checklist-coverage"])
+
+    def test_an_empty_partition_is_admitted_when_nothing_is_enumerated(
+        self,
+    ) -> None:
+        inventory = rows(
+            ("/home/memory/MEMORY.md", MEMORY, "# Memory\n\nprose\n")
+        )
+        conventions = self.checklist.enumerate(inventory)
+        documents = conventions_module.inventory_digest(inventory)
+        envelope = {
+            "schema": 1,
+            "plan_digest": PLAN,
+            "documents_digest": documents,
+            "separation": {"significant": [], "not_applicable": []},
+            "checks": [],
+        }
+        self.assertEqual(
+            self.checklist.validate(
+                envelope,
+                plan_digest=PLAN,
+                documents_digest=documents,
+                conventions=conventions,
+            ),
+            [],
+        )
+
+    def test_the_separation_never_echoes_submitted_text(self) -> None:
+        checks = [self.entry(1), self.entry(2)]
+        separation = self.separation(
+            checks,
+            significant=[
+                self.reference(1, source="/sentinel/path/MEMORY.md"),
+                self.reference(2),
+            ],
+        )
+        text = json.dumps(
+            self.validate(self.envelope(checks, separation=separation))
+        )
+        self.assertEqual(text.count("checklist-separation-coverage"), 1)
+        for sentinel in ("SENTINEL", "/sentinel/path"):
+            self.assertNotIn(sentinel, text)
 
 
 if __name__ == "__main__":

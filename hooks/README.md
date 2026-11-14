@@ -291,9 +291,19 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `checklist-plan-mismatch` or `checklist-documents-stale`; and a declared
   violation is `checklist-violations`, naming the convention by source and
   ordinal with generic correction guidance rather than repeating the
-  submitted reasoning or fix. Each of them
+  submitted reasoning or fix. Beside those assessments the envelope carries a
+  `separation`: the same enumerated conventions, each listed exactly once
+  under `significant` or `not_applicable`, with `significant` in compliance
+  priority order, first satisfied first. That order is a declaration, not proof
+  of the agent's own sequence of work. A missing separation is
+  `checklist-separation-missing`; a malformed object, list or reference is
+  `checklist-separation-invalid`; a duplicate, overlap, unknown or omitted
+  convention is `checklist-separation-coverage`; and a significant convention
+  whose assessment is `not-applicable`, or a not-applicable one whose
+  assessment is `pass`, is `checklist-separation-mismatch`. Each of them
   writes nothing, and the admitted checklist is discarded: no checklist,
-  digest or reasoning is recorded or repeated back.
+  digest, reasoning, classification or priority order is recorded or repeated
+  back.
   This gate is the hook's, not the bridge's: every harness that reaches the
   `MemoryUpdate` event is held to it. The preview is the change
   the plan makes - both whole states by size and SHA-256, then every

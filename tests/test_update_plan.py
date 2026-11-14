@@ -328,6 +328,13 @@ class InProcess(Temp):
             "schema": 1,
             "plan_digest": plan.audit_digest(),
             "documents_digest": conventions_module.inventory_digest(inventory),
+            "separation": {
+                "significant": [
+                    {"source": row["source"], "ordinal": row["ordinal"]}
+                    for row in conventions
+                ],
+                "not_applicable": [],
+            },
             "checks": self.checks(conventions),
         }
         return event

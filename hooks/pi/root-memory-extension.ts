@@ -297,6 +297,16 @@ export class RootMemoryBridge {
 	 *  it creates or updates a node and its required counterparts, and returns
 	 *  any conflicts for the agent to fix before re-calling. */
 	private registerMemoryUpdateTool(pi: any): void {
+		const conventionReference = Type.Object({
+			source: Type.String({
+				minLength: 1,
+				description: "The absolute path of one enumerated source.",
+			}),
+			ordinal: Type.Integer({
+				minimum: 1,
+				description: "That source's convention number, as enumerated.",
+			}),
+		}, { additionalProperties: false });
 		pi.registerTool({
 			name: "memory_update",
 			label: "memory_update",
@@ -316,9 +326,10 @@ export class RootMemoryBridge {
 				"declared shared root. An update is applied only after you assess it " +
 				"yourself: a call without `checklist` is refused with the computed " +
 				"change and every convention the update must satisfy, one numbered " +
-				"entry each, after which you report one assessment per convention and " +
-				"re-call. A `violation` entry blocks the update and states the fix; no " +
-				"model or provider is invoked.",
+				"entry each, after which you report one assessment per convention, " +
+				"separate them into significant and not-applicable in compliance " +
+				"order, and re-call. A `violation` entry blocks the update and states " +
+				"the fix; no model or provider is invoked.",
 			parameters: Type.Object({
 				operation: Type.Union([
 					Type.Literal("create"), Type.Literal("set"),
@@ -390,6 +401,21 @@ export class RootMemoryBridge {
 					documents_digest: Type.String({
 						pattern: "^[0-9a-f]{64}$",
 						description: "The `documents_digest` the refusal lists.",
+					}),
+					separation: Type.Object({
+						significant: Type.Array(conventionReference, {
+							description:
+								"The conventions that bear on this update, in " +
+								"compliance priority order, first satisfied first.",
+						}),
+						not_applicable: Type.Array(conventionReference, {
+							description: "Every remaining enumerated convention.",
+						}),
+					}, {
+						additionalProperties: false,
+						description:
+							"Every enumerated convention, separated by whether it " +
+							"bears on this update.",
 					}),
 					checks: Type.Array(Type.Union([
 						Type.Object({

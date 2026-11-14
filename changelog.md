@@ -4,6 +4,23 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-13T23:11:46-05:00 - a memory update separates and ranks its conventions
+
+`memory_update`'s checklist now carries a `separation` beside its assessments:
+every enumerated convention listed exactly once under `significant`, in
+compliance priority order, or under `not_applicable`. The checklist proved that
+each convention was answered, never which of them the update actually rested
+on or which was satisfied first, so the gate requires that judgement in writing
+before the write is applied.
+
+A missing separation is `checklist-separation-missing`; a malformed object,
+list or reference is `checklist-separation-invalid`; a duplicate, overlap,
+unknown or omitted convention is `checklist-separation-coverage`; and a
+classification that contradicts its assessment is
+`checklist-separation-mismatch`. The declaration is required, not verified: the
+hook cannot observe the order the agent worked in, and the separation is
+discarded with the checklist rather than recorded.
+
 ## 2026-11-13T01:33:00-05:00 - no reminder at the settle boundary
 
 Pi's bridge registers no `agent_before_settle` handler and the hook answers

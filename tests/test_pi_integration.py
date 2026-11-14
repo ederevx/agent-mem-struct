@@ -182,6 +182,13 @@ def invoke_pi(
         "schema": 1,
         "plan_digest": preview["plan_digest"],
         "documents_digest": preview["documents_digest"],
+        "separation": {
+            "significant": [
+                {"source": row["source"], "ordinal": row["ordinal"]}
+                for row in preview.get("conventions") or []
+            ],
+            "not_applicable": [],
+        },
         "checks": [
             {
                 "source": row["source"],
@@ -2292,6 +2299,13 @@ class MemoryUpdateChecklistTests(unittest.TestCase):
             "schema": 1,
             "plan_digest": preview["plan_digest"],
             "documents_digest": preview["documents_digest"],
+            "separation": {
+                "significant": [
+                    {"source": row["source"], "ordinal": row["ordinal"]}
+                    for row in preview.get("conventions") or []
+                ],
+                "not_applicable": [],
+            },
             "checks": self.checks(preview),
         }
         checklist.update(overrides)

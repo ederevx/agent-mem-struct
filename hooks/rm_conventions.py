@@ -27,8 +27,10 @@ from typing import Any
 
 DIGEST_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 ENVELOPE_KEYS = frozenset(
-    {"schema", "plan_digest", "documents_digest", "checks"}
+    {"schema", "plan_digest", "documents_digest", "separation", "checks"}
 )
+SEPARATION_KEYS = frozenset({"significant", "not_applicable"})
+REFERENCE_KEYS = frozenset({"source", "ordinal"})
 PASS_KEYS = frozenset({"source", "ordinal", "status", "reasoning"})
 VIOLATION_KEYS = PASS_KEYS | {"fix"}
 STATUSES = frozenset({"pass", "not-applicable"})
@@ -45,7 +47,13 @@ FOOTER = "---"
 
 CHECKLIST_FIX = (
     "Submit one assessment for every convention listed below, each with its "
-    "source, ordinal, status and reasoning."
+    "source, ordinal, status and reasoning, and a separation that classifies "
+    "every one of them."
+)
+SEPARATION_FIX = (
+    "List every enumerated convention exactly once in significant or "
+    "not_applicable, order significant by compliance priority, and make "
+    "each assessment agree with its classification."
 )
 SCHEMA_FIX = (
     "Correct the checklist to match the documented schema and re-call with it."
@@ -107,6 +115,40 @@ def _invalid(detail: str) -> dict[str, str]:
         "checklist-invalid",
         f"Invalid convention checklist: {detail}.",
         SCHEMA_FIX,
+    )
+
+
+def _separation_missing() -> dict[str, str]:
+    return _refusal(
+        "checklist-separation-missing",
+        "A convention separation is required for this memory update.",
+        SEPARATION_FIX,
+    )
+
+
+def _separation_invalid() -> dict[str, str]:
+    return _refusal(
+        "checklist-separation-invalid",
+        "Invalid convention separation: expected `significant` and "
+        "`not_applicable` lists of `source` and `ordinal` references.",
+        SEPARATION_FIX,
+    )
+
+
+def _separation_coverage() -> dict[str, str]:
+    return _refusal(
+        "checklist-separation-coverage",
+        "The convention separation must classify every enumerated convention "
+        "exactly once.",
+        SEPARATION_FIX,
+    )
+
+
+def _separation_mismatch() -> dict[str, str]:
+    return _refusal(
+        "checklist-separation-mismatch",
+        "The convention separation disagrees with the checklist assessments.",
+        SEPARATION_FIX,
     )
 
 
@@ -330,8 +372,8 @@ class ConventionChecklist:
         cover one entry at a time.
         """
         return (
-            "\n\ncomputed memory update: assess every convention below, then "
-            "re-call with `checklist`:\n```json\n"
+            "\n\ncomputed memory update: assess and separate every convention "
+            "below, then re-call with `checklist`:\n```json\n"
             + json.dumps(
                 {
                     "schema": 1,
@@ -363,8 +405,8 @@ class ConventionChecklist:
         The order of the checks is the order of the news: a checklist bound to
         another plan or another document set is stale whatever it assessed, so
         those digests are compared before any entry is read, then a declared
-        violation, and only then whether every enumerated convention got one
-        entry.
+        violation, then whether every enumerated convention got one entry, and
+        last whether the separation classifies them in compliance order.
         """
         if raw is None:
             return [
@@ -380,7 +422,7 @@ class ConventionChecklist:
         unknown = sorted(set(raw) - ENVELOPE_KEYS)
         if unknown:
             return [_invalid("the checklist contains unsupported keys")]
-        missing = sorted(ENVELOPE_KEYS - set(raw))
+        missing = sorted((ENVELOPE_KEYS - {"separation"}) - set(raw))
         if missing:
             return [_invalid("the checklist omits: " + ", ".join(missing))]
         if type(raw.get("schema")) is not int or raw.get("schema") != 1:
@@ -415,6 +457,7 @@ class ConventionChecklist:
         if stale:
             return stale
         assessed: set[tuple[str, int]] = set()
+        statuses: dict[tuple[str, int], str] = {}
         violations: list[dict[str, str]] = []
         for index, check in enumerate(checks):
             where = f"check {index + 1}"
@@ -497,6 +540,7 @@ class ConventionChecklist:
                     )
                 ]
             assessed.add(identity)
+            statuses[identity] = status
         conflicts: list[dict[str, str]] = list(violations)
         if conflicts:
             return conflicts
@@ -522,4 +566,46 @@ class ConventionChecklist:
                     CHECKLIST_FIX,
                 )
             ]
+        if "separation" not in raw:
+            return [_separation_missing()]
+        separation = raw["separation"]
+        if (
+            not isinstance(separation, dict)
+            or set(separation) != SEPARATION_KEYS
+        ):
+            return [_separation_invalid()]
+        classified: dict[str, list[tuple[str, int]]] = {}
+        for field in ("significant", "not_applicable"):
+            listed = separation[field]
+            if not isinstance(listed, list):
+                return [_separation_invalid()]
+            identities: list[tuple[str, int]] = []
+            for reference in listed:
+                if (
+                    not isinstance(reference, dict)
+                    or set(reference) != REFERENCE_KEYS
+                ):
+                    return [_separation_invalid()]
+                named = reference.get("source")
+                ordinal = reference.get("ordinal")
+                if not isinstance(named, str) or not named.strip():
+                    return [_separation_invalid()]
+                candidate = Path(named).expanduser()
+                if not candidate.is_absolute():
+                    return [_separation_invalid()]
+                if type(ordinal) is not int or ordinal < 1:
+                    return [_separation_invalid()]
+                identities.append((source_key(candidate), ordinal))
+            classified[field] = identities
+        significant = classified["significant"]
+        remaining = classified["not_applicable"]
+        every = significant + remaining
+        if len(set(every)) != len(every) or set(every) != expected:
+            return [_separation_coverage()]
+        if any(statuses[identity] != "pass" for identity in significant):
+            return [_separation_mismatch()]
+        if any(
+            statuses[identity] != "not-applicable" for identity in remaining
+        ):
+            return [_separation_mismatch()]
         return []
