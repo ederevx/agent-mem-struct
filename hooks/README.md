@@ -345,14 +345,18 @@ The bridge maps Pi events onto the hook's event vocabulary:
   written (it never composes, wraps, or annotates one, but it checks it
   against the mechanical convention and returns a `message-lint` conflict,
   creating no commit, when it breaks it; it leaves the paths uncommitted when
-  none is given), replays its commit onto a racing shared
-  tip, and never force-pushes; without a remote or an upstream it commits
-  locally and says so. The message is measured twice: the assessment refuses
-  one that breaks the convention before the mutation writes anything, showing
-  it in the checklist payload with its subject width, its nonblank body lines
-  and its parsed trailer block, and each push attempt reads the message back
-  out of the commit Git is about to publish and lints that one, so a replay
-  cannot carry a message nobody reviewed (`publish-message`). Every git
+  none is given), and never force-pushes; without a remote or an upstream it
+  commits locally and says so. A rejected push is not replayed onto a moved
+  tip: it leaves the commit local and returns `shared-diverged`, because
+  replaying would publish under an assessment made against the tip it left.
+  Assessment displays the proposed message and its measured shape, and where
+  the plan publishes into a Git-backed shared root a mechanical violation is
+  refused before planned memory changes are applied; a plan that publishes
+  nothing runs no executable to measure its message. The publisher checks the
+  message again before committing, and before pushing it compares the stored
+  message with the submitted one and reruns mechanical lint, returning
+  `publish-message` on failure. These checks do not establish semantic review
+  or renew approval after the governing context changes. Every git
   invocation goes through `rm_git.GitWorktree`.
   A `commit` whose target set is already clean is a no-op, not a failure: it
   reports `nothing-to-commit` and succeeds without committing. A commit is

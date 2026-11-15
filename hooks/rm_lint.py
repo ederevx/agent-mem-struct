@@ -34,9 +34,8 @@ from rm_git import GitWorktree
 from rm_trailer_policy import TrailerPolicy
 
 MAX_COLS = 80
-# How much one message may carry before the trailer block: the convention's one
-# numeric limit on the body, so a message that grew into a report is refused
-# before it exists rather than read and regretted afterwards.
+# The convention allows a body of at most ten nonblank lines before the trailer
+# block; a message that grew into a report is refused before it exists.
 MAX_BODY_LINES = 10
 PUSH_MAX_COMMITS = 200
 PUSH_SECONDS = 3.0
@@ -68,8 +67,19 @@ class MessageLint:
 
     def violations(self, message: str) -> list[str]:
         """Every mechanical violation of this message, in reading order."""
+        return self.inspect(message)["violations"]
+
+    def inspect(self, message: str) -> dict[str, Any]:
+        """One message measured once: the numbers and the findings together.
+
+        One `git interpret-trailers` call establishes the boundary for both,
+        so the review the agent is shown and the refusal the publisher acts on
+        cannot disagree because a second parse failed or answered differently.
+        """
         lines = self.message_lines(message)
-        block_start, findings = self.resolve_block(lines, message)
+        block_start, unresolved = self.resolve_block(lines, message)
+        findings = list(unresolved)
+        findings.extend(self._presence(lines))
         findings.extend(self._columns(lines, block_start))
         findings.extend(self._body_length(lines, block_start))
         findings.extend(self._trailer_spacing(lines, block_start))
@@ -79,7 +89,10 @@ class MessageLint:
         findings.extend(self._indented(lines, block_start))
         findings.extend(self._escapes(lines))
         findings.extend(self._attribution(lines))
-        return findings
+        return {
+            "facts": self._facts(lines, block_start, unresolved),
+            "violations": findings,
+        }
 
     @staticmethod
     def message_lines(message: str) -> list[str]:
@@ -203,38 +216,49 @@ class MessageLint:
         could not be established is reported as such and its length left
         unstated rather than counted to the end of the message.
         """
-        lines = self.message_lines(message)
-        block_start, unresolved = self.resolve_block(lines, message)
-        body = (
-            []
-            if block_start is None
-            else [
-                number
-                for number, line in enumerate(lines[1:block_start], start=2)
-                if line.strip()
-            ]
-        )
+        return self.inspect(message)["facts"]
+
+    def _facts(
+        self, lines: list[str], block_start: int | None, unresolved: list[str]
+    ) -> dict[str, Any]:
+        """One already-resolved message as the numbers a review reads."""
+        body = self._body_line_numbers(lines, block_start)
         return {
             "subject": lines[0] if lines else "",
             "subject_columns": len(lines[0]) if lines else 0,
             "subject_limit": MAX_COLS,
-            "body_nonblank_lines": None if block_start is None else len(body),
-            "body_line_numbers": body,
+            "body_nonblank_lines": None if body is None else len(body),
+            "body_line_numbers": body or [],
             "body_limit": MAX_BODY_LINES,
             "trailer_block_start": block_start,
-            "trailers": (
-                [] if block_start is None else lines[block_start:]
-            ),
+            "trailers": [] if block_start is None else lines[block_start:],
             "trailer_block_unresolved": unresolved,
         }
 
     @staticmethod
-    def _body_length(lines: list[str], block_start: int | None) -> list[str]:
-        """The body is at most `MAX_BODY_LINES` nonblank lines before the block."""
-        if block_start is None:
+    def _presence(lines: list[str]) -> list[str]:
+        """A message states a subject; whether it says anything is judgement."""
+        if lines and lines[0].strip():
             return []
-        body = [line for line in lines[1:block_start] if line.strip()]
-        if len(body) <= MAX_BODY_LINES:
+        return ["the message states no subject line"]
+
+    @staticmethod
+    def _body_line_numbers(
+        lines: list[str], block_start: int | None
+    ) -> list[int] | None:
+        """The body lines of an established message, or None when none was."""
+        if block_start is None:
+            return None
+        return [
+            number
+            for number, line in enumerate(lines[1:block_start], start=2)
+            if line.strip()
+        ]
+
+    def _body_length(self, lines: list[str], block_start: int | None) -> list[str]:
+        """The body is at most `MAX_BODY_LINES` nonblank lines before the block."""
+        body = self._body_line_numbers(lines, block_start)
+        if body is None or len(body) <= MAX_BODY_LINES:
             return []
         return [
             f"the body is {len(body)} nonblank lines before the trailer block, "

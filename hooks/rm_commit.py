@@ -5,13 +5,12 @@ One owner for turning written shared files into shared history:
 rest of the index), checks the caller's message against the mechanical
 convention in `rm_lint.MessageLint`, commits it under that message and
 nothing else, and pushes the shared branch. It never composes, rewrites, or
-annotates that message. When
-another agent pushed first, the local commit is replayed with `git pull
---rebase --autostash` and the push retried inside a fixed budget; a failed
-replay is aborted and reported rather than forced. Every attempt reads the
-message back out of the commit Git is about to publish and lints that one, so
-a replay cannot carry a message nobody reviewed. A worktree with no remote
-or no upstream branch is detected and committed locally instead.
+annotates that message. A pushed commit is verified against the approved
+snapshot and its own stored message before it leaves the worktree; a rejected
+push is not replayed onto a moved tip, because that would publish under an
+assessment made against the tip it left - the commit stays local and the
+update must be assessed again. A worktree with no remote or no upstream branch
+is detected and committed locally instead.
 """
 from __future__ import annotations
 
@@ -23,7 +22,6 @@ from rm_lint import MessageLint
 from rm_support import under
 
 PUBLISH_SECONDS = 15.0
-PUSH_ATTEMPTS = 3
 
 
 def converted(committed: bytes, approved: bytes) -> bool:
@@ -119,7 +117,13 @@ class CommitPublisher:
         if isinstance(staged, CommitOutcome):
             return staged
         commit = self.worktree.run(
-            "commit", "-F", "-", "--", *staged, input_text=message.rstrip("\n") + "\n"
+            "commit",
+            "--cleanup=verbatim",
+            "-F",
+            "-",
+            "--",
+            *staged,
+            input_text=message.rstrip("\n") + "\n",
         )
         if commit.returncode != 0:
             if "nothing to commit" in commit.stdout + commit.stderr:
@@ -343,68 +347,57 @@ class CommitPublisher:
         sha: str,
         expected: dict[str, bytes | None] | None = None,
         *,
-        reviewed: str = "",
+        reviewed: str,
     ) -> CommitOutcome:
-        """Push the verified local commit, replaying it onto the shared tip if it raced.
+        """Push the verified local commit, or leave it local and say why.
 
         The remote and branch are named explicitly, so a
         `branch.<name>.merge` the environment adds cannot make Git refuse the
-        push or the replay as a multi-head one. The exact commit is pushed, not
-        whatever `HEAD` happens to name, and a replay that changed the
-        approved bytes is reported rather than pushed.
+        push as a multi-head one. The exact commit is pushed, not whatever
+        `HEAD` happens to name.
 
-        Each attempt is measured again, and the message is read back out of the
-        commit Git is about to publish, not trusted from the call: a replay
-        creates a new commit object, so the message that leaves this worktree
-        is the stored one.
+        The message is read back out of the commit Git is about to publish and
+        linted again, because the review bound the message the mutation
+        submitted rather than the object a commit created.
+
+        A rejected push is not retried onto a moved tip. Replaying would
+        publish under an assessment made against the tip it left, and the
+        conventions that assessment covered may have moved with it, so the
+        commit stays local and the update has to be assessed again.
         """
         target = self.worktree.upstream()
-        for _ in range(PUSH_ATTEMPTS):
-            mismatch = self.verify_snapshot(sha, expected)
-            if mismatch:
-                return self.mismatch(sha, mismatch)
-            moved = self.message_moved(sha, reviewed)
-            if moved:
-                return self.message_refused(sha, moved)
-            carried = self.carries(sha)
-            if carried:
-                return self.carried(sha, carried)
-            if target is None:
-                # A bare `git push` would pick its own destination, so a
-                # worktree with no upstream keeps its commit local and says so.
-                return self.unpushed(
-                    sha, "the worktree names no upstream to publish to."
-                )
-            refspec = (target[0], f"{sha}:{target[1]}")
-            if self.worktree.run("push", *refspec).returncode == 0:
-                return CommitOutcome(
-                    committed=True,
-                    pushed=True,
-                    sha=sha,
-                    note=f"committed {sha[:12]} and pushed.",
-                )
-            if self.expired():
-                return self.unpushed(
-                    sha, f"publishing it did not finish within {PUBLISH_SECONDS:g}s."
-                )
-            replay = self.worktree.run(
-                "pull", "--rebase", "--autostash", *target
+        mismatch = self.verify_snapshot(sha, expected)
+        if mismatch:
+            return self.mismatch(sha, mismatch)
+        moved = self.message_moved(sha, reviewed)
+        if moved:
+            return self.message_refused(sha, moved)
+        carried = self.carries(sha)
+        if carried:
+            return self.carried(sha, carried)
+        if target is None:
+            # A bare `git push` would pick its own destination, so a worktree
+            # with no upstream keeps its commit local and says so.
+            return self.unpushed(sha, "the worktree names no upstream to publish to.")
+        refspec = (target[0], f"{sha}:{target[1]}")
+        if self.worktree.run("push", *refspec).returncode == 0:
+            return CommitOutcome(
+                committed=True,
+                pushed=True,
+                sha=sha,
+                note=f"committed {sha[:12]} and pushed.",
             )
-            if replay.returncode != 0:
-                self.abort_replay()
-                return CommitOutcome(
-                    committed=True,
-                    sha=self.worktree.head() or sha,
-                    conflict=self.conflict(
-                        "shared-diverged",
-                        f"commit {sha[:12]} is local: replaying it onto the shared tip "
-                        f"failed ({self.worktree.detail(replay)}).",
-                        "reconcile the shared worktree and push the local commit "
-                        "before the turn ends",
-                    ),
-                )
-            sha = self.worktree.head() or sha
-        return self.unpushed(sha, f"the push was rejected {PUSH_ATTEMPTS} times.")
+        return CommitOutcome(
+            committed=True,
+            sha=sha,
+            conflict=self.conflict(
+                "shared-diverged",
+                f"commit {sha[:12]} is local: the shared branch moved after this "
+                "update was assessed, and it was not replayed onto the new tip.",
+                "reconcile the shared worktree, reread the required sources and "
+                "assess the update again before retrying",
+            ),
+        )
 
     def stored_message(self, sha: str) -> str | None:
         """The message one commit actually carries, or None when Git did not answer."""
@@ -416,20 +409,20 @@ class CommitPublisher:
     def message_moved(self, sha: str, reviewed: str) -> str:
         """Why this commit's stored message is not the reviewed one, or "" when it is.
 
-        The review bound the message the mutation submitted. A replay writes a
-        new commit object, and nothing guarantees the message inside it is the
-        one that was assessed, so the stored message is compared and linted
+        The review bound the message the mutation submitted. Git, a `commit-msg`
+        hook or the repository's cleanup setting can store a different message
+        than the one submitted, so the stored message is compared and linted
         again before any push can publish it.
         """
         if not reviewed.strip():
-            return ""
+            return "the reviewed message is missing"
         stored = self.stored_message(sha)
         if stored is None:
             return (
                 f"the stored message of commit {sha[:12]} could not be read back, "
                 "so whether it is the reviewed one cannot be shown"
             )
-        if stored.strip() != reviewed.strip():
+        if stored != reviewed.rstrip("\n"):
             return f"commit {sha[:12]} does not carry the reviewed message"
         broken = MessageLint(self.worktree).violations(stored)
         if broken:
@@ -447,8 +440,9 @@ class CommitPublisher:
             conflict=self.conflict(
                 "publish-message",
                 f"commit {sha[:12]} was not pushed: {reason}.",
-                "rewrite commit_message against the message convention and "
-                "audit the update again before retrying",
+                "reconcile the shared worktree so its branch tip is the "
+                "published tip, then rewrite commit_message against the message "
+                "convention and audit the update again",
             ),
         )
 
@@ -462,17 +456,6 @@ class CommitPublisher:
                 "push the local shared commit before the turn ends",
             ),
         )
-
-    def abort_replay(self) -> None:
-        """Leave no rebase in progress, whether or not this attempt started one."""
-        if self.replaying():
-            self.worktree.run("rebase", "--abort", budget=5.0)
-
-    def replaying(self) -> bool:
-        path = self.worktree.run(
-            "rev-parse", "--git-path", "rebase-merge", budget=5.0
-        ).stdout.strip()
-        return bool(path) and (self.root / path).exists()
 
     def stageable(self, paths: list[Path]) -> list[str]:
         """The mutation's paths inside this worktree, as repo-relative names."""

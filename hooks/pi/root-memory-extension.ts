@@ -330,10 +330,11 @@ export class RootMemoryBridge {
 				"separate them into significant and not-applicable in compliance " +
 				"order, and re-call. That refusal shows the exact `commit_message` " +
 				"and its measured facts - subject columns, which body lines are " +
-				"nonblank, the parsed trailer block - and a message that breaks the " +
-				"mechanical convention is refused there, before anything is written " +
-				"or published, and again out of the commit itself before it is " +
-				"pushed. A `violation` entry blocks the update and states " +
+				"nonblank, the parsed trailer block - and, where the plan publishes " +
+				"into a Git repository, a message that breaks the mechanical " +
+				"convention is refused before planned memory changes are applied, " +
+				"and checked again out of the commit itself before it is pushed. " +
+				"A `violation` entry blocks the update and states " +
 				"the fix; no model or provider is invoked.",
 			parameters: Type.Object({
 				operation: Type.Union([

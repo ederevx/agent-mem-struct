@@ -2646,21 +2646,23 @@ class MemoryUpdateCommitTests(unittest.TestCase):
         self.assertIn("writer change", subjects)
         self.assertIn("memory_update set: note", subjects)
 
-    def test_a_racing_push_is_replayed_and_the_note_names_the_replayed_commit(self) -> None:
+    def test_a_racing_push_is_left_local_for_reassessment(self) -> None:
         self.create_note()
         self.writer_push("MEMORY.md", "# Shared\n\n**Scope:** *\n\n## Mandatory conventions\n\n- Verify first.\n- Raced.\n", "writer change")
-        base = git_run("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+        published = git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip()
         self.leaf.write_text("second\n", encoding="utf-8")
         publisher = load_hook_module("rm_commit").CommitPublisher(self.shared)
         outcome = publisher.publish([self.leaf], "racing-probe\n\nReplays the commit.")
-        self.assertTrue(outcome.pushed)
-        self.assertIsNone(outcome.conflict)
-        subjects = git_run("log", "--format=%s", cwd=self.origin).stdout
-        self.assertIn("writer change", subjects)
-        self.assertIn("racing-probe", subjects)
-        self.assertNotEqual(outcome.sha, base)
-        self.assertEqual(outcome.sha, git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip())
-        self.assertIn(outcome.sha[:12], outcome.note)
+        self.assertTrue(outcome.committed)
+        self.assertFalse(outcome.pushed)
+        self.assertEqual(outcome.conflict["code"], "shared-diverged")
+        self.assertIn("assess the update again", outcome.conflict["fix"])
+        self.assertEqual(git_run("rev-parse", "HEAD", cwd=self.origin).stdout.strip(), published)
+        self.assertNotIn(
+            "racing-probe", git_run("log", "--format=%s", cwd=self.origin).stdout
+        )
+        self.assertIn("racing-probe", git_run("log", "--format=%s", cwd=self.shared).stdout)
+        self.assertFalse((self.shared / ".git" / "rebase-merge").exists())
 
     def test_rename_with_an_attachment_dir_commits_both_sides(self) -> None:
         self.create_note()

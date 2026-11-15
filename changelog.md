@@ -6,22 +6,24 @@ current mandatory behavior.
 
 ## 2026-11-14T20:41:49-05:00 - a message is measured in the assessment, not after publication
 
-`memory_update` now refuses a commit message that breaks the message
-convention before the mutation writes a byte, and shows that message in the
-checklist payload it hands back with its own numbers: `commit_message` beside
-`message_facts` - subject width, which body lines are nonblank, the body
-limit, whether a trailer block was established and what it parsed to. The
-message is part of what is being assessed, so a review that never saw it could
-not assess it.
+`memory_update` now refuses a commit message that breaks the *mechanical*
+message convention before the mutation writes, when the plan publishes into a
+Git-backed shared root, and shows that message in the checklist payload it
+hands back with its own numbers: `commit_message` beside `message_facts` -
+subject width, which body lines are nonblank and how many, the body limit,
+whether a trailer block was established and what it parsed to. The preview
+exposes the message already bound into the plan digest; checklist validation
+does not establish the quality of the agent's assessment.
 
 The failure this closes is one of ownership. The convention's numeric limit -
 a body of at most ten nonblank lines before the trailer block - lived only in a
 manual script that an agent was told to run before pushing; nothing ran it, and
 a thirteen-line report was published by a publisher whose lint counted columns
-and trailers but not lines. The count now lives in `rm_lint.MessageLint`, which
-already owned the block boundary, so there is one owner and it sits on the
-publishing path. `PushLint` inherits the check by applying the same lint to the
-commits a push would add.
+and trailers but not lines. The automatic publication path now enforces the
+body limit through `rm_lint.MessageLint`, which already owned the block
+boundary, so the count sits where the message is committed. `PushLint`
+inherits the check by applying the same lint to the commits a push would add.
+A message that states no subject is refused there too.
 
 Nothing here judges what a body line says. "Least an expert reader needs" and
 "not the diff's own implementation detail" remain the writer's judgement
@@ -29,10 +31,14 @@ against the written convention, exercised on the message the payload prints;
 the lint owns only what can be counted, and a finding it raises is corrected
 rather than argued with.
 
-Each push attempt also reads the message back out of the commit Git is about
-to publish and lints that one (`publish-message`), because a replay onto a
-moved tip writes a new commit object: the review bound the submitted message,
-and the object that leaves the worktree has to be shown to carry it.
+Before pushing, the publisher reads the message back out of the commit Git is
+about to publish, compares it with the submitted one and lints it again
+(`publish-message`), because a commit object is not the payload that was
+assessed. A rejected push is no longer replayed onto the moved tip: replaying
+would publish under an assessment made against the tip it left, so the commit
+stays local and the update has to be assessed again. The message is measured
+in the repository the plan will commit in, and only when the plan publishes
+into it: an update that leaves Git out of publication runs no executable.
 
 ## 2026-11-13T23:11:46-05:00 - a memory update separates and ranks its conventions
 

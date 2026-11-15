@@ -273,8 +273,10 @@ class MessageLintUnitTests(unittest.TestCase):
         self.assertEqual(self.check(f"subject\n\n{body}\n\n{TRAILER}"), [])
 
     def test_trailer_lines_do_not_count_toward_the_body_limit(self) -> None:
-        trailers = "\n".join(f"Reference: {number}" for number in range(1, 13))
-        self.assertEqual(self.check(f"subject\n\nbody\n\n{TRAILER}\n{trailers}"), [])
+        references = "\n".join(f"Reference: {number}" for number in range(1, 13))
+        self.assertEqual(
+            self.check(f"subject\n\nbody\n\n{references}\n{TRAILER}"), []
+        )
 
     def test_facts_measure_the_same_message_the_lint_judges(self) -> None:
         facts = self.lint.facts(f"subject\n\none\n\ntwo\n\n{TRAILER}")
@@ -385,11 +387,57 @@ class MessageLintUnitTests(unittest.TestCase):
         self.assertEqual(aliased, self.check(message))
         self.assertTrue(any("probe:" in item for item in aliased))
 
-    def test_trailer_validation_is_unavailable_without_git(self) -> None:
+    def test_an_unresolved_trailer_block_is_unavailable_without_git(self) -> None:
         from rm_lint import MessageLint
 
-        findings = MessageLint().violations(f"subject\n\n{TRAILER}")
+        lint = MessageLint()
+        findings = lint.violations(f"subject\n\n{TRAILER}")
         self.assertTrue(any("trailer validation is unavailable" in item for item in findings))
+        self.assertIsNone(lint.facts(f"subject\n\n{TRAILER}")["body_nonblank_lines"])
+
+    def test_a_trailerless_body_is_counted_without_git(self) -> None:
+        from rm_lint import MessageLint
+
+        body = "\n".join(f"body line {number}" for number in range(1, 12))
+        lint = MessageLint()
+        self.assertEqual(lint.facts(f"subject\n\n{body}")["body_nonblank_lines"], 11)
+        self.assertEqual(
+            lint.violations(f"subject\n\n{body}"),
+            [
+                "the body is 11 nonblank lines before the trailer block, "
+                "over 10"
+            ],
+        )
+
+    def test_an_unparsed_block_leaves_the_length_unstated_and_refuses(self) -> None:
+        message = "subject\n\nbody\n\nAssisted-by: LLM"
+        with mock.patch.object(self.lint, "parsed_trailers", return_value=None):
+            facts = self.lint.facts(message)
+            findings = self.check(message)
+        self.assertIsNone(facts["body_nonblank_lines"])
+        self.assertTrue(any("trailer validation is unavailable" in item for item in findings))
+
+    def test_a_trailer_run_git_does_not_accept_is_malformed(self) -> None:
+        from rm_lint import TRAILER_MALFORMED
+
+        # One trailer beside one non-trailer line is not a block to git: the
+        # run parses alone but not as part of the message.
+        message = "subject\n\nbody\nAssisted-by: LLM"
+        self.assertIsNone(self.lint.facts(message)["body_nonblank_lines"])
+        self.assertIn(TRAILER_MALFORMED, self.check(message))
+
+    def test_a_trailerless_body_of_eleven_lines_is_flagged(self) -> None:
+        body = "\n".join(f"body line {number}" for number in range(1, 12))
+        findings = self.check(f"subject\n\n{body}")
+        self.assertTrue(any("over 10" in item for item in findings))
+
+    def test_a_subject_only_message_passes(self) -> None:
+        self.assertEqual(self.check("the subject alone"), [])
+
+    def test_a_message_without_a_subject_is_flagged(self) -> None:
+        findings = self.check("\n\nbody only\n\nAssisted-by: LLM")
+        self.assertIn("the message states no subject line", findings)
+        self.assertIn("the message states no subject line", self.check(""))
 
     def test_a_trailer_line_outside_the_final_block_is_flagged(self) -> None:
         findings = self.check(f"subject\n\n{TRAILER}\n\nmore text")
@@ -501,6 +549,19 @@ class PushGateTests(unittest.TestCase):
         if not result.stdout.strip():
             return {}
         return json.loads(result.stdout)["hookSpecificOutput"]
+
+    def test_an_eleven_line_body_blocks_the_push(self) -> None:
+        from rm_lint import PushLint
+
+        body = "\n".join(f"body line {number}" for number in range(1, 12))
+        sha = commit_message(self.clone, f"subject\n\n{body}")
+        report = PushLint(self.clone).check("origin", ["main"])
+        self.assertTrue(
+            any(
+                sha[:12] in item and "over 10" in item for item in report.blocked
+            ),
+            report.blocked,
+        )
 
     def test_a_bad_commit_blocks_a_plain_push(self) -> None:
         sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
@@ -617,6 +678,45 @@ class MemoryCommitLintTests(unittest.TestCase):
     def text(self, result: subprocess.CompletedProcess[str]) -> str:
         return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
 
+    def test_a_refusal_leaves_every_planned_path_untouched(self) -> None:
+        """The refusal lands before the mutation writes, not after it commits."""
+        self.call(
+            operation="create", path=str(self.shared), name="note", body="first",
+            summary="Note.", commit_message="memory_update create: note\n\nAdds the note.",
+        )
+        before = {
+            path: path.read_bytes()
+            for path in (self.leaf, self.shared / "nodes" / "log" / "note.md",
+                         self.shared / "nodes" / "MEMORY.md")
+            if path.exists()
+        }
+        body = "\n".join(f"finding {number} on its own line" for number in range(1, 12))
+        result = self.call(
+            operation="set", path=str(self.leaf),
+            body="# Note\nrewritten\n",
+            commit_message=f"set: note\n\n{body}",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("message-lint", self.text(result))
+        for path, data in before.items():
+            self.assertEqual(path.read_bytes(), data, f"{path} was written")
+
+    def test_a_message_is_measured_only_where_publication_commits_it(self) -> None:
+        """A plan that publishes nothing runs no executable to measure a message."""
+        body = "\n".join(f"finding {number} on its own line" for number in range(1, 13))
+        tip = git("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+        result = self.call(
+            operation="create",
+            path=str(self.home / "memory" / "local"),
+            name="local-note",
+            body="first",
+            summary="Note.",
+            commit_message=f"create: local-note\n\n{body}",
+        )
+        self.assertEqual(result.returncode, 0, self.text(result))
+        self.assertTrue((self.home / "memory" / "local" / "nodes" / "local-note.md").exists())
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.shared).stdout.strip(), tip)
+
     def test_a_bad_commit_message_is_blocked_without_committing(self) -> None:
         self.call(
             operation="create", path=str(self.shared), name="note", body="first",
@@ -657,6 +757,82 @@ class MemoryCommitLintTests(unittest.TestCase):
         self.assertEqual(preview["message_facts"]["body_nonblank_lines"], 13)
         self.assertEqual(preview["message_facts"]["body_limit"], 10)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.shared).stdout.strip(), head)
+
+
+class MessageReviewTests(unittest.TestCase):
+    """`CommitPublisher` publishes the reviewed message, or nothing."""
+
+    def setUp(self) -> None:
+        from rm_commit import CommitPublisher
+
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-msgreview-", dir=SCRATCH_ROOT))
+        self.clone = make_clone(self.temp)
+        self.publisher = CommitPublisher(self.clone)
+        self.file = self.clone / "f.txt"
+
+    def commit(self, message: str) -> str:
+        self.file.write_text(message, encoding="utf-8")
+        return commit_message(self.clone, message)
+
+    def test_the_reviewed_message_publishes(self) -> None:
+        self.file.write_text("second\n", encoding="utf-8")
+        outcome = self.publisher.publish(
+            [self.file], "reviewed\n\nA body line.\n\nAssisted-by: LLM"
+        )
+        self.assertTrue(outcome.pushed)
+        self.assertIsNone(outcome.conflict)
+
+    def test_a_message_git_would_clean_is_published_as_written(self) -> None:
+        """The commit stores the reviewed bytes, not git's cleanup of them."""
+        self.file.write_text("second\n", encoding="utf-8")
+        message = "reviewed \n\nA body line.\n\n\nAnother line.\n\nAssisted-by: LLM"
+        outcome = self.publisher.publish([self.file], message)
+        self.assertTrue(outcome.pushed, outcome.conflict)
+        stored = git("log", "-1", "--format=%B", cwd=self.clone).stdout
+        self.assertEqual(stored.rstrip("\n"), message)
+
+    def test_a_stored_message_that_differs_is_not_pushed(self) -> None:
+        sha = self.commit("stored\n\nStored body.")
+        moved = self.publisher.message_moved(sha, "reviewed\n\nReviewed body.")
+        self.assertIn("does not carry the reviewed message", moved)
+
+    def test_leading_whitespace_is_a_difference(self) -> None:
+        reviewed = "subject\n\nA body line."
+        sha = self.commit(reviewed)
+        with mock.patch.object(
+            self.publisher, "stored_message", return_value="\n" + reviewed
+        ):
+            moved = self.publisher.message_moved(sha, reviewed)
+        self.assertIn("does not carry the reviewed message", moved)
+
+    def test_a_trailing_newline_is_not_a_difference(self) -> None:
+        reviewed = "subject\n\nA body line."
+        sha = self.commit(reviewed)
+        self.assertEqual(self.publisher.message_moved(sha, reviewed + "\n"), "")
+
+    def test_an_empty_review_is_refused(self) -> None:
+        sha = self.commit("stored\n\nStored body.")
+        self.assertEqual(
+            self.publisher.message_moved(sha, ""), "the reviewed message is missing"
+        )
+        self.assertEqual(
+            self.publisher.message_moved(sha, "   "),
+            "the reviewed message is missing",
+        )
+
+    def test_an_unreadable_stored_message_is_refused(self) -> None:
+        sha = self.commit("stored\n\nStored body.")
+        with mock.patch.object(self.publisher, "stored_message", return_value=None):
+            moved = self.publisher.message_moved(sha, "stored\n\nStored body.")
+        self.assertIn("could not be read back", moved)
+
+    def test_a_stored_message_that_breaks_the_convention_is_refused(self) -> None:
+        body = "\n".join(f"line {number}" for number in range(1, 12))
+        message = f"subject\n\n{body}"
+        sha = commit_message(self.clone, message)
+        moved = self.publisher.message_moved(sha, message)
+        self.assertIn("breaks the mechanical convention", moved)
 
 
 if __name__ == "__main__":
