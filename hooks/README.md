@@ -347,7 +347,13 @@ The bridge maps Pi events onto the hook's event vocabulary:
   creating no commit, when it breaks it; it leaves the paths uncommitted when
   none is given), replays its commit onto a racing shared
   tip, and never force-pushes; without a remote or an upstream it commits
-  locally and says so. Every git invocation goes through `rm_git.GitWorktree`.
+  locally and says so. The message is measured twice: the assessment refuses
+  one that breaks the convention before the mutation writes anything, showing
+  it in the checklist payload with its subject width, its nonblank body lines
+  and its parsed trailer block, and each push attempt reads the message back
+  out of the commit Git is about to publish and lints that one, so a replay
+  cannot carry a message nobody reviewed (`publish-message`). Every git
+  invocation goes through `rm_git.GitWorktree`.
   A `commit` whose target set is already clean is a no-op, not a failure: it
   reports `nothing-to-commit` and succeeds without committing. A commit is
   refused when the shared branch holds commits the published tip does not,
@@ -364,6 +370,7 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,
   `exists`, `would-overwrite`, `retire-required`, `unreadable-target`,
   `message-lint`, `non-ascii`, `bad-request`, `publish-mismatch`,
+  `publish-message`,
   and the `checklist-`, `stale-` refusals above come back as a conflict report
   for the agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not

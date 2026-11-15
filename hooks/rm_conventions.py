@@ -364,12 +364,16 @@ class ConventionChecklist:
         inventory: list[dict[str, Any]],
         conventions: list[dict[str, Any]],
         changes: str,
+        message: dict[str, Any] | None = None,
     ) -> str:
         """The computed change with every convention it must be assessed on.
 
         The payload is the checklist envelope the caller re-calls with: the two
         digests its assessments bind to, and the complete enumeration they must
-        cover one entry at a time.
+        cover one entry at a time. The exact commit message and the numbers it
+        is measured by travel with them, because the message is one of the
+        things being assessed and a review that never saw it could not assess
+        it.
         """
         return (
             "\n\ncomputed memory update: assess and separate every convention "
@@ -379,6 +383,8 @@ class ConventionChecklist:
                     "schema": 1,
                     "plan_digest": plan.audit_digest(),
                     "documents_digest": inventory_digest(inventory),
+                    "commit_message": getattr(plan, "commit_message", ""),
+                    "message_facts": message,
                     "conventions": conventions,
                 },
                 indent=2,

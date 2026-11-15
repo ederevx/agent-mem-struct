@@ -254,6 +254,48 @@ class MessageLintUnitTests(unittest.TestCase):
             self.check("subject\n\nhttps://example.com/" + "a" * 100), []
         )
 
+    def test_a_body_of_ten_lines_passes(self) -> None:
+        body = "\n".join(f"body line {number}" for number in range(1, 11))
+        self.assertEqual(self.check(f"subject\n\n{body}\n\n{TRAILER}"), [])
+
+    def test_a_body_of_eleven_lines_is_flagged(self) -> None:
+        body = "\n".join(f"body line {number}" for number in range(1, 12))
+        self.assertEqual(
+            self.check(f"subject\n\n{body}\n\n{TRAILER}"),
+            [
+                "the body is 11 nonblank lines before the trailer block, "
+                "over 10"
+            ],
+        )
+
+    def test_blank_lines_do_not_count_toward_the_body_limit(self) -> None:
+        body = "\n\n".join(f"body line {number}" for number in range(1, 11))
+        self.assertEqual(self.check(f"subject\n\n{body}\n\n{TRAILER}"), [])
+
+    def test_trailer_lines_do_not_count_toward_the_body_limit(self) -> None:
+        trailers = "\n".join(f"Reference: {number}" for number in range(1, 13))
+        self.assertEqual(self.check(f"subject\n\nbody\n\n{TRAILER}\n{trailers}"), [])
+
+    def test_facts_measure_the_same_message_the_lint_judges(self) -> None:
+        facts = self.lint.facts(f"subject\n\none\n\ntwo\n\n{TRAILER}")
+        self.assertEqual(facts["subject"], "subject")
+        self.assertEqual(facts["subject_columns"], len("subject"))
+        self.assertEqual(facts["subject_limit"], 80)
+        self.assertEqual(facts["body_nonblank_lines"], 2)
+        self.assertEqual(facts["body_line_numbers"], [3, 5])
+        self.assertEqual(facts["body_limit"], 10)
+        self.assertEqual(
+            facts["trailers"], TRAILER.split("\n")
+        )
+        self.assertEqual(facts["trailer_block_unresolved"], [])
+
+    def test_facts_leave_the_length_unstated_without_git(self) -> None:
+        from rm_lint import MessageLint
+
+        facts = MessageLint().facts(f"subject\n\nbody\n\n{TRAILER}")
+        self.assertIsNone(facts["body_nonblank_lines"])
+        self.assertTrue(facts["trailer_block_unresolved"])
+
     def test_a_missing_blank_line_before_the_trailer_block_is_flagged(self) -> None:
         findings = self.check("subject\n\nbody\nSigned-off-by: y")
         self.assertTrue(any("exactly one blank line" in item for item in findings))
@@ -590,6 +632,30 @@ class MemoryCommitLintTests(unittest.TestCase):
         body = self.text(result)
         self.assertIn("message-lint", body)
         self.assertIn("rewrite commit_message and re-call", body)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.shared).stdout.strip(), head)
+
+    def test_an_overlong_body_is_refused_at_assessment_with_its_own_numbers(self) -> None:
+        """The message is measured in the assessment, before anything is written."""
+        self.call(
+            operation="create", path=str(self.shared), name="note", body="first",
+            summary="Note.", commit_message="memory_update create: note\n\nAdds the note.",
+        )
+        body = "\n".join(f"finding {number} on its own line" for number in range(1, 14))
+        message = f"commit: note\n\n{body}\n\nAssisted-by: LLM\nSigned-off-by: x"
+        self.leaf.write_text("edited\n", encoding="utf-8")
+        head = git("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+        result = self.call(
+            operation="commit", path=str(self.leaf), commit_message=message
+        )
+        self.assertEqual(result.returncode, 3)
+        text = self.text(result)
+        self.assertIn("the body is 13 nonblank lines before the trailer block", text)
+        preview = update_preview(result)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(preview["commit_message"], message)
+        self.assertEqual(preview["message_facts"]["body_nonblank_lines"], 13)
+        self.assertEqual(preview["message_facts"]["body_limit"], 10)
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.shared).stdout.strip(), head)
 
 

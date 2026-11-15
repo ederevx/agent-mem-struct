@@ -8,7 +8,9 @@ nothing else, and pushes the shared branch. It never composes, rewrites, or
 annotates that message. When
 another agent pushed first, the local commit is replayed with `git pull
 --rebase --autostash` and the push retried inside a fixed budget; a failed
-replay is aborted and reported rather than forced. A worktree with no remote
+replay is aborted and reported rather than forced. Every attempt reads the
+message back out of the commit Git is about to publish and lints that one, so
+a replay cannot carry a message nobody reviewed. A worktree with no remote
 or no upstream branch is detected and committed locally instead.
 """
 from __future__ import annotations
@@ -139,7 +141,7 @@ class CommitPublisher:
                 sha=sha,
                 note=f"committed {sha[:12]} locally; the shared worktree has no upstream to push to.",
             )
-        return self.push(sha, expected)
+        return self.push(sha, expected, reviewed=message)
 
     def verify_snapshot(
         self, sha: str, expected: dict[str, bytes | None] | None
@@ -337,7 +339,11 @@ class CommitPublisher:
         )
 
     def push(
-        self, sha: str, expected: dict[str, bytes | None] | None = None
+        self,
+        sha: str,
+        expected: dict[str, bytes | None] | None = None,
+        *,
+        reviewed: str = "",
     ) -> CommitOutcome:
         """Push the verified local commit, replaying it onto the shared tip if it raced.
 
@@ -346,12 +352,20 @@ class CommitPublisher:
         push or the replay as a multi-head one. The exact commit is pushed, not
         whatever `HEAD` happens to name, and a replay that changed the
         approved bytes is reported rather than pushed.
+
+        Each attempt is measured again, and the message is read back out of the
+        commit Git is about to publish, not trusted from the call: a replay
+        creates a new commit object, so the message that leaves this worktree
+        is the stored one.
         """
         target = self.worktree.upstream()
         for _ in range(PUSH_ATTEMPTS):
             mismatch = self.verify_snapshot(sha, expected)
             if mismatch:
                 return self.mismatch(sha, mismatch)
+            moved = self.message_moved(sha, reviewed)
+            if moved:
+                return self.message_refused(sha, moved)
             carried = self.carries(sha)
             if carried:
                 return self.carried(sha, carried)
@@ -391,6 +405,52 @@ class CommitPublisher:
                 )
             sha = self.worktree.head() or sha
         return self.unpushed(sha, f"the push was rejected {PUSH_ATTEMPTS} times.")
+
+    def stored_message(self, sha: str) -> str | None:
+        """The message one commit actually carries, or None when Git did not answer."""
+        result = self.worktree.run("log", "-1", "--format=%B", sha)
+        if result.returncode != 0:
+            return None
+        return result.stdout.rstrip("\n")
+
+    def message_moved(self, sha: str, reviewed: str) -> str:
+        """Why this commit's stored message is not the reviewed one, or "" when it is.
+
+        The review bound the message the mutation submitted. A replay writes a
+        new commit object, and nothing guarantees the message inside it is the
+        one that was assessed, so the stored message is compared and linted
+        again before any push can publish it.
+        """
+        if not reviewed.strip():
+            return ""
+        stored = self.stored_message(sha)
+        if stored is None:
+            return (
+                f"the stored message of commit {sha[:12]} could not be read back, "
+                "so whether it is the reviewed one cannot be shown"
+            )
+        if stored.strip() != reviewed.strip():
+            return f"commit {sha[:12]} does not carry the reviewed message"
+        broken = MessageLint(self.worktree).violations(stored)
+        if broken:
+            return (
+                "the stored message breaks the mechanical convention: "
+                + "; ".join(broken)
+            )
+        return ""
+
+    def message_refused(self, sha: str, reason: str) -> CommitOutcome:
+        """A commit whose stored message is not the reviewed one is never pushed."""
+        return CommitOutcome(
+            committed=True,
+            sha=sha,
+            conflict=self.conflict(
+                "publish-message",
+                f"commit {sha[:12]} was not pushed: {reason}.",
+                "rewrite commit_message against the message convention and "
+                "audit the update again before retrying",
+            ),
+        )
 
     def unpushed(self, sha: str, reason: str) -> CommitOutcome:
         return CommitOutcome(

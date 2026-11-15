@@ -1,13 +1,20 @@
 """Mechanical commit-message linting for the root-memory hook.
 
 One owner for the message convention the protocol states: `MessageLint`
-reports the mechanical violations of one commit message - column width, the
-single blank line before the final trailer block, that block's agreement with
-`git interpret-trailers`, a trailer outside that block, a token outside the
-allowed set of `trailer-policy.json`, indented lines in it or the paragraph
-above it, `\\xNN` escapes of printable ASCII, and an `Assisted-by:` value
-that is not exactly the literal `LLM` - and `PushLint` applies it to the
-commits a `git push` would publish. Both are read-only: nothing here stages,
+reports the mechanical violations of one commit message - column width, a
+body longer than `MAX_BODY_LINES` nonblank lines before the final trailer
+block, the single blank line before that block, the block's agreement with
+`git interpret-trailers`, a trailer outside it, a token outside the allowed
+set of `trailer-policy.json`, indented lines in it or the paragraph above it,
+`\\xNN` escapes of printable ASCII, and an `Assisted-by:` value that is not
+exactly the literal `LLM` - and `PushLint` applies it to the commits a
+`git push` would publish.
+
+Only what can be counted belongs here. Whether a body line earns its place,
+and which sentences belong in a message at all, is the writing agent's
+judgment against the written convention, which no pattern can hold; `facts()`
+returns the numbers that judgment is made about, so the review and the lint
+measure the same message. Both classes are read-only: nothing here stages,
 commits, or writes, git stays behind `rm_git.GitWorktree`, and the push scan
 is one `git log` inside a fixed window.
 
@@ -21,11 +28,16 @@ import re
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 from rm_git import GitWorktree
 from rm_trailer_policy import TrailerPolicy
 
 MAX_COLS = 80
+# How much one message may carry before the trailer block: the convention's one
+# numeric limit on the body, so a message that grew into a report is refused
+# before it exists rather than read and regretted afterwards.
+MAX_BODY_LINES = 10
 PUSH_MAX_COMMITS = 200
 PUSH_SECONDS = 3.0
 TRAILER_HEADER_RE = re.compile(r"^(?P<token>[A-Za-z0-9][A-Za-z0-9-]*):(?!/)")
@@ -59,6 +71,7 @@ class MessageLint:
         lines = self.message_lines(message)
         block_start, findings = self.resolve_block(lines, message)
         findings.extend(self._columns(lines, block_start))
+        findings.extend(self._body_length(lines, block_start))
         findings.extend(self._trailer_spacing(lines, block_start))
         findings.extend(self._trailer_outside(lines, block_start))
         findings.extend(self._trailer_formatting(lines, block_start))
@@ -180,6 +193,53 @@ class MessageLint:
                 continue
             findings.append(f"line {number} is {len(line)} cols with no unbreakable token")
         return findings
+
+    def facts(self, message: str) -> dict[str, Any]:
+        """The message and its measured shape, as the review is bound to it.
+
+        The same numbers `violations()` acts on, so the agent assessing the
+        message sees the subject width, which body lines are nonblank and what
+        the trailer block parsed to, instead of guessing at them. A block that
+        could not be established is reported as such and its length left
+        unstated rather than counted to the end of the message.
+        """
+        lines = self.message_lines(message)
+        block_start, unresolved = self.resolve_block(lines, message)
+        body = (
+            []
+            if block_start is None
+            else [
+                number
+                for number, line in enumerate(lines[1:block_start], start=2)
+                if line.strip()
+            ]
+        )
+        return {
+            "subject": lines[0] if lines else "",
+            "subject_columns": len(lines[0]) if lines else 0,
+            "subject_limit": MAX_COLS,
+            "body_nonblank_lines": None if block_start is None else len(body),
+            "body_line_numbers": body,
+            "body_limit": MAX_BODY_LINES,
+            "trailer_block_start": block_start,
+            "trailers": (
+                [] if block_start is None else lines[block_start:]
+            ),
+            "trailer_block_unresolved": unresolved,
+        }
+
+    @staticmethod
+    def _body_length(lines: list[str], block_start: int | None) -> list[str]:
+        """The body is at most `MAX_BODY_LINES` nonblank lines before the block."""
+        if block_start is None:
+            return []
+        body = [line for line in lines[1:block_start] if line.strip()]
+        if len(body) <= MAX_BODY_LINES:
+            return []
+        return [
+            f"the body is {len(body)} nonblank lines before the trailer block, "
+            f"over {MAX_BODY_LINES}"
+        ]
 
     def _trailer_spacing(self, lines: list[str], block_start: int | None) -> list[str]:
         findings: list[str] = []

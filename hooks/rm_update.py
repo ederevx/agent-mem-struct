@@ -54,6 +54,7 @@ from rm_draft import DraftRenderer
 from rm_edit import WorktreeEdits
 from rm_git import GitWorktree
 from rm_control import RootControl, RootState
+from rm_lint import MessageLint
 from rm_sources import GoverningSources, SourceError
 from rm_support import under
 from rm_update_plan import (
@@ -240,8 +241,23 @@ class MemoryUpdater:
             )
 
         preview = self.conventions.preview(
-            prepared, inventory, conventions, self.draft.effects(prepared)
+            prepared,
+            inventory,
+            conventions,
+            self.draft.effects(prepared),
+            message=self.message_review(prepared),
         )
+        broken = self.message_violations(prepared)
+        if broken:
+            return self.conflict(
+                operation,
+                "message-lint",
+                "the commit message breaks the mechanical convention: "
+                + "; ".join(broken)
+                + "; no planned changes applied.",
+                fix="rewrite commit_message and re-call",
+                preview=preview,
+            )
         conflicts = self.conventions.validate(
             submitted,
             plan_digest=prepared.audit_digest(),
@@ -253,6 +269,39 @@ class MemoryUpdater:
                 False, operation, conflicts=conflicts, preview=preview
             )
         return prepared, inventory
+
+    def message_worktree(self) -> GitWorktree | None:
+        """The worktree a message is measured in, or None when it is not Git.
+
+        The trailer block is only ever what `git interpret-trailers` parsed, so
+        a root that is not Git-backed has no worktree to measure a message in
+        and its review carries no numbers rather than invented ones. The one
+        parse is bounded on its own, since it reads no history.
+        """
+        shared = self.state.shared_resolved
+        if shared is None or not self.state.shared_git_backed:
+            return None
+        return GitWorktree(shared, budget=5.0)
+
+    def message_review(self, plan: UpdatePlan) -> dict[str, Any] | None:
+        """The message this plan publishes, with the numbers it is measured by."""
+        message = plan.commit_message
+        if not message.strip():
+            return None
+        return MessageLint(self.message_worktree()).facts(message)
+
+    def message_violations(self, plan: UpdatePlan) -> list[str]:
+        """The mechanical violations of this plan's message, before it exists.
+
+        The publisher refuses these too, but only after the mutation wrote its
+        paths; answering here means the message is corrected while nothing has
+        been published, which is where a message review should end.
+        """
+        message = plan.commit_message
+        worktree = self.message_worktree()
+        if not message.strip() or worktree is None:
+            return []
+        return MessageLint(worktree).violations(message)
 
     def commit(
         self,
