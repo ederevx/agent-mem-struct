@@ -4,6 +4,31 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-17T20:07:00-05:00 - a declared escape reaches through a closed receipt
+
+Two prerequisite gates can close on one session at once: agent-comms owes an
+acknowledgement, root memory owes its conventions, and each gate's way in was
+the other's blocked tool. The convention receipt is now skipped for a call the
+session's registrations declare as an escape, so the tools an acknowledgement
+needs stay reachable while a different prerequisite is unmet.
+
+`pre_memory`'s registration publishes
+`annotations.piGateEscape = { version: 1, admits: ["pre_memory", "read",
+"rm_tree_exec"] }` - the tool that starts the acknowledgement, the `read` each
+source needs, and the bounded `rm_tree_exec` listing the shared structure
+needs. The bridge decodes the union of the live declarations with
+`ToolGateEscapes` (own properties only; an unknown version, a malformed
+declaration and an unreadable registry admit nothing) and sends the verdict as
+the top-level `pi_gate_escape` of its `PreToolUse` body. The model's own tool
+input is never consulted for it.
+
+`EventDispatcher.handle_pretool` trusts that field for the `pi` adapter alone
+and only when it is exactly `true`, and replaces nothing else: the subagent
+restriction, the malformed-control restriction, the acquisition recording and
+the push lint all still run, so an escape skips the convention receipt and
+nothing more. It acknowledges nothing - the session still owes every source
+read - and it opens no path `MutationScanner` did not already classify.
+
 ## 2026-11-14T20:41:49-05:00 - a message is measured in the assessment, not after publication
 
 `memory_update` now refuses a commit message that breaks the *mechanical*

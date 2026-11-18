@@ -256,7 +256,14 @@ The bridge maps Pi events onto the hook's event vocabulary:
   catalog is delivered only by the `pre_memory` tool, so the gate's enforcement
   contract survives on Pi because Pi can block tool calls. Bridge failures fail
   open with a notice injected on the next turn rather than silently disabling
-  memory.
+  memory. A call a registered extension declares as its own prerequisite's
+  escape - `annotations.piGateEscape = { version, admits }`, read from the live
+  registrations, never from the model's input - rides the same body as the
+  top-level `pi_gate_escape`, and the dispatcher skips only the convention
+  receipt for it: the subagent and malformed-control restrictions, the
+  acquisition recording and the push lint still apply, and nothing is
+  acknowledged by it. `pre_memory` declares the three tools its own
+  acknowledgement needs: itself, `read`, and the bounded `rm_tree_exec`.
 - The bridge registers `pre_memory`, which runs the hook's `PreMemory` event:
   it fast-forwards the declared shared worktree, loads the root/shared
   convention union, records a session-scoped receipt, and returns that catalog

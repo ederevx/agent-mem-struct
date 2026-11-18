@@ -209,11 +209,74 @@ export class ListerCommand {
 }
 
 /**
+ * The escape declaration a registration publishes under
+ * `annotations.piGateEscape = { version, admits }`, naming the tools that
+ * stay reachable while its extension's own prerequisite is unmet. A gate
+ * reads the union of the live declarations, so every gate admits the same
+ * set. Only own properties count; an unknown version, a malformed
+ * declaration and an unreadable registry admit nothing.
+ */
+export class ToolGateEscapes {
+	/** The annotation key a registration declares its admissions under. */
+	static readonly KEY = "piGateEscape";
+	/** The declaration version this reader understands. */
+	static readonly VERSION = 1;
+
+	/** Whether a live registration admits this tool while a gate is
+	 *  closed. Any failure reads as "no declaration". */
+	static admits(
+		pi: { getAllTools?: () => unknown } | undefined,
+		name: string,
+	): boolean {
+		if (!name) return false;
+		let tools: unknown;
+		try {
+			const read = pi?.getAllTools;
+			if (typeof read !== "function") return false;
+			tools = read.call(pi);
+		} catch {
+			return false;
+		}
+		if (!Array.isArray(tools)) return false;
+		return tools.some((tool) => ToolGateEscapes.declares(tool, name));
+	}
+
+	/** True when one registration's declaration names this tool. */
+	private static declares(tool: unknown, name: string): boolean {
+		const annotations = (tool as { annotations?: unknown } | undefined)
+			?.annotations as Record<string, unknown> | undefined;
+		if (!annotations || !Object.hasOwn(annotations, ToolGateEscapes.KEY)) {
+			return false;
+		}
+		const declaration = annotations[ToolGateEscapes.KEY];
+		if (!declaration || typeof declaration !== "object"
+			|| Array.isArray(declaration)) return false;
+		const record = declaration as Record<string, unknown>;
+		if (!Object.hasOwn(record, "version")
+			|| record.version !== ToolGateEscapes.VERSION) return false;
+		if (!Object.hasOwn(record, "admits")) return false;
+		const admits = record.admits;
+		if (!Array.isArray(admits)) return false;
+		return admits.some((item) => typeof item === "string" && item === name);
+	}
+}
+
+/**
  * One agent session's Pi bridge. All mutable state is instance state owned by
  * this object; the event handlers are single-responsibility methods and no
  * module-level state is mutated.
  */
 export class RootMemoryBridge {
+	/** The tools acknowledging the conventions needs, which stay reachable
+	 *  while another prerequisite gate is closed: the call that starts the
+	 *  acknowledgement, the source reads it requires, and the bounded
+	 *  structure listing it requires. */
+	private static readonly PREMEMORY_ADMITS = [
+		"pre_memory",
+		"read",
+		"rm_tree_exec",
+	];
+
 	private sessionLabel = "";
 	private firstTurn = true; // emit the full root bundle on the next turn
 	private afterCompaction = false; // restore continuity on the next turn
@@ -256,6 +319,13 @@ export class RootMemoryBridge {
 	/** Registers `pre_memory`, the one call that pulls the shared worktree,
 	 *  loads the conventions, and acknowledges them for this session. */
 	private registerPreMemoryTool(pi: any): void {
+		const annotations = {
+			readOnlyHint: false,
+			[ToolGateEscapes.KEY]: {
+				version: ToolGateEscapes.VERSION,
+				admits: [...RootMemoryBridge.PREMEMORY_ADMITS],
+			},
+		};
 		pi.registerTool({
 			name: "pre_memory",
 			label: "pre_memory",
@@ -266,7 +336,7 @@ export class RootMemoryBridge {
 				"rules. The conventions are not inlined: read the listed sources ENTIRELY " +
 				"with the read tool (the whole file, not a segment) to acknowledge them.",
 			parameters: Type.Object({}),
-			annotations: { readOnlyHint: false },
+			annotations,
 			execute: () => this.loadPreMemory(),
 		});
 	}
@@ -796,6 +866,13 @@ export class RootMemoryBridge {
 				tool_name: event.toolName ?? "",
 				tool_input: (event.input && typeof event.input === "object") ? event.input : {},
 				cwd: ctx?.cwd ?? process.cwd(),
+				// Trusted bridge-side input: whether a live registration declares
+				// this tool as its own prerequisite's escape. The model's input is
+				// never consulted for it.
+				pi_gate_escape: ToolGateEscapes.admits(
+					this.api,
+					String(event.toolName ?? ""),
+				),
 			},
 			DEFAULT_TIMEOUT_MS,
 		));

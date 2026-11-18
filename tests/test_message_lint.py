@@ -535,15 +535,18 @@ class PushGateTests(unittest.TestCase):
         open_gate("pi", self.home, self.shared, environment=self.env)
 
     def push(
-        self, command: str, *, cwd: Path | None = None
+        self, command: str, *, cwd: Path | None = None, escape: bool = False
     ) -> subprocess.CompletedProcess[str]:
-        return invoke("pi", self.home, {
+        event = {
             "hook_event_name": "PreToolUse",
             "session_id": "session-1",
             "cwd": str(cwd or self.clone),
             "tool_name": "Bash",
             "tool_input": {"command": command},
-        }, environment=self.env)
+        }
+        if escape:
+            event["pi_gate_escape"] = True
+        return invoke("pi", self.home, event, environment=self.env)
 
     def decision(self, result: subprocess.CompletedProcess[str]) -> dict:
         if not result.stdout.strip():
@@ -565,13 +568,14 @@ class PushGateTests(unittest.TestCase):
 
     def test_a_bad_commit_blocks_a_plain_push(self) -> None:
         sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        result = self.push("git push origin main")
-        body = self.decision(result)
-        self.assertEqual(body.get("permissionDecision"), "deny")
-        reason = body["permissionDecisionReason"]
-        self.assertIn("message-lint: push blocked:", reason)
-        self.assertIn(sha[:12], reason)
-        self.assertIn("reword with one -F payload", reason)
+        for escape in (False, True):
+            with self.subTest(escape=escape):
+                body = self.decision(self.push("git push origin main", escape=escape))
+                self.assertEqual(body.get("permissionDecision"), "deny")
+                reason = body["permissionDecisionReason"]
+                self.assertIn("message-lint: push blocked:", reason)
+                self.assertIn(sha[:12], reason)
+                self.assertIn("reword with one -F payload", reason)
 
     def test_a_bad_commit_blocks_a_dash_c_push(self) -> None:
         sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")

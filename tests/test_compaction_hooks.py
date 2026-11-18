@@ -1398,6 +1398,19 @@ class CompactionHookTests(unittest.TestCase):
         )
         self.assertEqual(root_output["hookSpecificOutput"]["permissionDecision"], "deny")
 
+        escaped = dict(event, pi_gate_escape=True)
+        escaped["tool_input"] = {"file_path": str(self.temp / "result.txt")}
+        escaped_output = json.loads(
+            invoke("pi", self.home, escaped, canonical_root=canonical).stdout
+        )
+        self.assertEqual(
+            escaped_output["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertIn(
+            "differs from canonical",
+            escaped_output["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+
     def test_requires_read_cannot_escape_memory_roots(self) -> None:
         secret = self.temp / "secret.txt"
         secret.write_text("DO-NOT-INJECT", encoding="utf-8")

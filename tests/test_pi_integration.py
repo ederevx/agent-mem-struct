@@ -235,16 +235,20 @@ def record_tree_pi(
     command: str | None = None,
     tool_name: str = "Bash",
     cwd: Path | None = None,
+    escape: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Read the declared shared structure through a `tree`/fallback shell call."""
-    return invoke_pi(home, {
+    event: dict[str, object] = {
         "hook_event_name": "PreToolUse",
         "session_id": session,
         "turn_id": turn,
         "tool_name": tool_name,
         "tool_input": {"command": command or f"tree {shared}"},
         "cwd": str(cwd if cwd is not None else home),
-    })
+    }
+    if escape:
+        event["pi_gate_escape"] = True
+    return invoke_pi(home, event)
 
 
 def read_conventions(
@@ -427,9 +431,48 @@ class PiHookTests(unittest.TestCase):
         denial = self.output(first)["hookSpecificOutput"]
         self.assertEqual(denial["permissionDecision"], "deny")
         self.assertIn("call pre_memory first", denial["permissionDecisionReason"])
-        # The denial must not inject the bundle; pre_memory is the only delivery.
+        # A denial must not inject the bundle; pre_memory is the only delivery.
         for body_text in ("## Mandatory conventions", "Verify first.", "--- BEGIN"):
             self.assertNotIn(body_text, denial["permissionDecisionReason"])
+
+        # A call a live registration declares as its own prerequisite's escape
+        # stays reachable while the receipt is closed: with two prerequisites
+        # owing at once, each must pass the tools the other needs. Only the
+        # exact top-level true counts, it never acknowledges the session, and
+        # it is the pi bridge's own field rather than anything the model sends.
+        escaped = dict(self.write(target), pi_gate_escape=True)
+        self.assertEqual(invoke_pi(self.home, escaped).stdout.strip(), "")
+        self.assertIn("call pre_memory first", self.decision(target)[1])
+        for forged in (False, None, "true", 1, {}, [], {"version": 1}):
+            with self.subTest(flag=forged):
+                held = self.output(invoke_pi(
+                    self.home, dict(self.write(target), pi_gate_escape=forged),
+                ))["hookSpecificOutput"]
+                self.assertEqual(held["permissionDecision"], "deny")
+                self.assertIn("call pre_memory first", held["permissionDecisionReason"])
+        nested_flag = self.write(target)
+        nested_flag["tool_input"] = dict(
+            nested_flag["tool_input"], pi_gate_escape=True,
+        )
+        nested = self.output(invoke_pi(self.home, nested_flag))["hookSpecificOutput"]
+        self.assertEqual(nested["permissionDecision"], "deny")
+        other_adapter = invoke_pi(
+            self.home, dict(self.write(target), pi_gate_escape=True), agent="claude",
+        )
+        self.assertEqual(
+            self.output(other_adapter)["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
+        # The escape skips only the convention receipt; a subagent stays
+        # read-only on memory/shared content.
+        subagent = dict(
+            self.write(self.shared / "MEMORY.md"), pi_gate_escape=True, agent_id="sub-1",
+        )
+        self.assertIn(
+            "Subagents have read-only access",
+            self.output(invoke_pi(self.home, subagent))["hookSpecificOutput"][
+                "permissionDecisionReason"],
+        )
 
         loaded = invoke_pi(self.home, {
             "hook_event_name": "PreMemory",
@@ -586,11 +629,28 @@ class PiHookTests(unittest.TestCase):
             "session_id": "pi-session",
             "turn_id": "turn-1",
         })
-        read_source_files(self.home, self.shared)
+        # The declared escape carries the acquisition, it does not shortcut it:
+        # the flagged reads and the flagged lister still record the receipt
+        # they are, so the write runs only once each of them has happened.
+        for path in (
+            self.home / "memory" / "MEMORY.md",
+            self.home / "RULES.md",
+            self.home / "memory" / "local" / "MEMORY.md",
+            self.shared / "MEMORY.md",
+        ):
+            invoke_pi(self.home, {
+                "hook_event_name": "PreToolUse",
+                "session_id": "pi-session",
+                "turn_id": "turn-1",
+                "tool_name": "read",
+                "tool_input": {"path": str(path)},
+                "cwd": str(self.home),
+                "pi_gate_escape": True,
+            })
         denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
         self.assertEqual(denied["permissionDecision"], "deny")
         self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
-        record_tree_pi(self.home, self.shared)
+        record_tree_pi(self.home, self.shared, escape=True)
         self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
 
     def test_tree_read_is_never_gated(self) -> None:
@@ -1252,6 +1312,7 @@ class PiStructureListerTests(unittest.TestCase):
                     turn=turn,
                     command=command,
                     tool_name="rm_tree_exec",
+                    escape=True,
                 )
                 self.assertEqual(allowed.returncode, 0, allowed.stderr)
                 self.assertEqual(allowed.stdout, "")
@@ -1582,6 +1643,10 @@ class PiPackageTests(unittest.TestCase):
             "const handlers = {};\n"
             "const tools = [];\n"
             "const defs = {};\n"
+            "// The registrations the host's registry reports, live and mutable so a\n"
+            "// test can add or drop a declaration between calls.\n"
+            "const declared = [];\n"
+            "let registryThrows = false;\n"
             "const sent = [];\n"
             "// The session's branch as Pi persists it: custom entries survive a\n"
             "// compaction, so the bridge rebuilds its state from them.\n"
@@ -1589,7 +1654,11 @@ class PiPackageTests(unittest.TestCase):
             "try { entries = JSON.parse(readFileSync(process.env.SESSION_ENTRIES, 'utf8')); } catch {}\n"
             "const ctx = { sessionManager: { getSessionId: () => 's1', getBranch: () => entries } };\n"
             "const pi = { on: (n, f) => { handlers[n] = f; },\n"
-            "  registerTool: (t) => { tools.push(t.name); defs[t.name] = t; },\n"
+            "  registerTool: (t) => { tools.push(t.name); defs[t.name] = t; declared.push(t); },\n"
+            "  getAllTools: () => {\n"
+            "    if (registryThrows) throw new Error('registry unavailable');\n"
+            "    return declared.slice();\n"
+            "  },\n"
             "  sendMessage: (message, options) => sent.push({ message, options }),\n"
             "  sessionManager: ctx.sessionManager,\n"
             "  appendEntry: (customType, data) => { entries.push({\n"
@@ -1606,7 +1675,30 @@ class PiPackageTests(unittest.TestCase):
             "  if (mode === 'register') {\n"
             "    const out = await handlers['before_agent_start']({ prompt: 'hi' }, ctx);\n"
             "    process.stdout.write(JSON.stringify({\n"
-            "      registered: Object.keys(handlers).sort(), tools: tools.sort(), out }));\n"
+            "      registered: Object.keys(handlers).sort(), tools: tools.sort(),\n"
+            "      annotations: Object.fromEntries(\n"
+            "        Object.keys(defs).map((name) => [name, defs[name].annotations ?? null])),\n"
+            "      out }));\n"
+            "  } else if (mode === 'escape') {\n"
+            "    // One labelled sequence: each phase installs the registrations it\n"
+            "    // names, then dispatches its calls through the same gate handler.\n"
+            "    for (const step of JSON.parse(process.argv[4])) {\n"
+            "      declared.length = 0;\n"
+            "      for (const tool of step.tools || []) declared.push(tool);\n"
+            "      registryThrows = step.registry_throws === true;\n"
+            "      for (const call of step.calls || []) {\n"
+            "        await handlers['tool_call']({\n"
+            "          toolName: call.name, input: call.input || {} }, ctx);\n"
+            "      }\n"
+            "    }\n"
+            "    const log = readFileSync(process.env.STUB_LOG, 'utf8')\n"
+            "      .trim().split('\\n').filter(Boolean).map((line) => JSON.parse(line));\n"
+            "    process.stdout.write(JSON.stringify({\n"
+            "      declarations: Object.fromEntries(\n"
+            "        Object.keys(defs).map((name) => [name, defs[name].annotations ?? null])),\n"
+            "      bodies: log.filter((body) => body.hook_event_name === 'PreToolUse')\n"
+            "        .map((body) => ({ name: body.tool_name,\n"
+            "          flag: body.pi_gate_escape, input: body.tool_input })) }));\n"
             "  } else if (mode === 'compact') {\n"
             "    await handlers['session_compact']({});\n"
             "    process.stdout.write(JSON.stringify({\n"
@@ -1771,6 +1863,81 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("memory_update", result["tools"])
         self.assertIn("rm_tree_exec", result["tools"])
         self.assertIn("PACKAGE-BRIDGE-STUB", result["out"]["message"]["content"])
+        # The registration declares the tools acknowledging the conventions
+        # needs, so a gate closed on another prerequisite still passes them.
+        self.assertEqual(result["annotations"]["pre_memory"]["piGateEscape"], {
+            "version": 1,
+            "admits": ["pre_memory", "read", "rm_tree_exec"],
+        })
+        self.assertIs(result["annotations"]["pre_memory"]["readOnlyHint"], False)
+        for name in ("memory_update", "rm_tree_exec"):
+            self.assertNotIn("piGateEscape", result["annotations"][name] or {})
+
+    def test_tool_call_flag_reads_the_live_declarations(self) -> None:
+        """The gate field is derived from the registrations, never from input.
+
+        One driver run walks labelled phases: an undeclared call, a foreign
+        declaration, a union with an unknown version, the declaration removed
+        again, an unreadable registry, and then the malformed declarations,
+        each of which must admit nothing.
+        """
+        bundle = self.bundle()
+        config_home = self.temp / "pi-home-escape"
+        config_home.mkdir(parents=True)
+
+        def declare(admits: object, version: object = 1) -> dict:
+            return {
+                "name": "pre_memory",
+                "annotations": {"piGateEscape": {"version": version, "admits": admits}},
+            }
+
+        malformed = [
+            None, "v1", [], {},
+            {"admits": ["read"]},
+            {"version": 2, "admits": ["read"]},
+            {"version": "1", "admits": ["read"]},
+            {"version": 1},
+            {"version": 1, "admits": "read"},
+            {"version": 1, "admits": None},
+            {"version": 1, "admits": [{"name": "read"}]},
+        ]
+        steps = [
+            {"tools": [], "calls": [
+                {"name": "comms_ack"}, {"name": "read"}, {"name": "pre_memory"}]},
+            {"tools": [declare(["comms_ack"])], "calls": [
+                {"name": "comms_ack"}, {"name": "read"}, {"name": "memory_update"}]},
+            {"tools": [declare(["comms_ack"]), declare(["read"], version=2)],
+             "calls": [{"name": "comms_ack"}, {"name": "read"}]},
+            {"tools": [declare(["read"])], "calls": [{"name": "read"}]},
+            {"tools": [], "registry_throws": True, "calls": [{"name": "read"}]},
+            {"tools": [declare(["read"])], "calls": [
+                {"name": "read"},
+                {"name": "write", "input": {"path": "x", "pi_gate_escape": True}}]},
+        ] + [
+            {"tools": [{"name": "pre_memory", "annotations": {"piGateEscape": row}}],
+             "calls": [{"name": "read"}]}
+            for row in malformed
+        ]
+        expected = [
+            ("comms_ack", False), ("read", False), ("pre_memory", False),
+            ("comms_ack", True), ("read", False), ("memory_update", False),
+            ("comms_ack", True), ("read", False),
+            ("read", True),
+            ("read", False),
+            ("read", True), ("write", False),
+        ] + [("read", False)] * len(malformed)
+        result = self.run_driver(
+            bundle, "escape", {"config_home": str(config_home)}, [json.dumps(steps)],
+        )
+        self.assertEqual(
+            [(body["name"], body["flag"]) for body in result["bodies"]], expected,
+        )
+        # The model's own input travels through untouched and carries no
+        # authority of its own.
+        write_body = result["bodies"][11]
+        self.assertEqual(write_body["name"], "write")
+        self.assertIs(write_body["flag"], False)
+        self.assertIs(write_body["input"]["pi_gate_escape"], True)
 
     def host_typebox(self) -> Path | None:
         """The typebox entry selected for the optional host contract check."""

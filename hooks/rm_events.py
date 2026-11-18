@@ -350,10 +350,17 @@ class EventDispatcher:
         if state.errors:
             return
 
-        allowed, reason = self.gate.receipt_covers(event, scoped=targets_memory)
-        if not allowed:
-            self.deny_pretool(reason, context=True)
-            return
+        # A call a live registration declares as its own prerequisite's escape
+        # stays reachable: two prerequisites owing at once must not each block
+        # the other's way through. The bridge computes this from registration
+        # metadata, never from the model's tool input, and only for its own
+        # adapter.
+        escape = self.agent == "pi" and event.get("pi_gate_escape") is True
+        if not escape:
+            allowed, reason = self.gate.receipt_covers(event, scoped=targets_memory)
+            if not allowed:
+                self.deny_pretool(reason, context=True)
+                return
 
         denied, push_note = self.lint_push(event, tool_input)
         if denied:
