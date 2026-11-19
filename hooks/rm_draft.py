@@ -56,6 +56,39 @@ class DraftRenderer:
                 blocks.append(f"### {effect.kind}: {effect.path}")
         return "\n\n".join(blocks)
 
+    def preview(
+        self,
+        plan: Any,
+        inventory: list[dict[str, Any]],
+        message: dict[str, Any] | None = None,
+    ) -> str:
+        """What a held update hands back: its message, its documents, its change.
+
+        The exact commit message and the numbers it is measured by travel with
+        every governing document the change is bound to and every effect the
+        plan records, so the caller audits the change it will get. Nothing of
+        that audit comes back to the tool.
+        """
+        return (
+            "\n\ncomputed memory update: audit it against every convention of "
+            "the documents below, then re-call with `conventions_audited: "
+            "true`:\n```json\n"
+            + json.dumps(
+                {
+                    "commit_message": plan.commit_message,
+                    "message_facts": message,
+                    "governing_documents": [
+                        {"label": row["label"], "path": row["path"]}
+                        for row in inventory
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n```\n\n## Every change this operation will make\n\n"
+            + self.effects(plan)
+        )
+
     @classmethod
     def changed(cls, effect: Any) -> str:
         """One write: both snapshots by size and digest, then the change itself."""

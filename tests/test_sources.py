@@ -2,7 +2,6 @@
 """`GoverningSources`: which documents bind a change, and one capture of them."""
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import os
@@ -88,22 +87,20 @@ class Temp(unittest.TestCase):
 
 
 class InventoryTests(Temp):
-    """`inventory`: one read per document, hashed as it was read."""
+    """`inventory`: one capture per document, from the bytes it held."""
 
-    def test_a_crlf_document_is_hashed_as_its_lf_text(self) -> None:
+    def test_a_row_carries_only_its_label_its_path_and_its_bytes(self) -> None:
         sources, plan = self.governed()
         (self.temp / "RULES.md").write_bytes(b"# Rules\r\n\r\nOne.\r\n")
         row = next(
             r for r in sources.inventory(plan) if r["path"].endswith("RULES.md")
         )
-        self.assertEqual(
-            row["digest"], hashlib.sha256(b"# Rules\n\nOne.\n").hexdigest()
-        )
-        self.assertEqual(row["text"], "# Rules\n\nOne.\n")
+        self.assertEqual(set(row), {"path", "label", "data"})
+        self.assertEqual(row["label"], "The owner's document (RULES.md)")
         # The capture keeps the bytes on disk, so the recheck compares the file.
         self.assertEqual(row["data"], b"# Rules\r\n\r\nOne.\r\n")
 
-    def test_an_absent_candidate_has_no_digest_and_no_bytes(self) -> None:
+    def test_an_absent_candidate_is_captured_as_no_bytes(self) -> None:
         sources, plan = self.governed()
         row = next(
             r
@@ -111,9 +108,7 @@ class InventoryTests(Temp):
             if Path(r["path"]).name == "MEMORY.md"
             and Path(r["path"]).parent.name == "nodes"
         )
-        self.assertIsNone(row["digest"])
         self.assertIsNone(row["data"])
-        self.assertEqual(row["text"], "")
 
     def test_a_duplicated_source_is_bound_once(self) -> None:
         sources, plan = self.governed()
@@ -122,13 +117,6 @@ class InventoryTests(Temp):
             os.path.normcase(str(Path(row["path"]).resolve())) for row in inventory
         ]
         self.assertEqual(len(paths), len(set(paths)))
-
-    def test_a_non_utf8_document_refuses_the_inventory(self) -> None:
-        sources, plan = self.governed()
-        (self.temp / "RULES.md").write_bytes(b"# Rules\n\xff\n")
-        with self.assertRaises(sources_module.SourceError) as raised:
-            sources.inventory(plan)
-        self.assertIn("not readable UTF-8 text", str(raised.exception))
 
     def test_a_required_document_that_is_gone_refuses_the_inventory(self) -> None:
         sources, plan = self.governed()
@@ -159,11 +147,9 @@ class SourceDiscoveryTests(Temp):
 
     def test_the_owner_documents_reach_the_inventory(self) -> None:
         sources, plan = self.governed()
-        (self.temp / "RULES.md").write_text("# Rules\n\nVerify first.\n", "utf-8")
-        rows = sources.inventory(plan)
-        texts = " ".join(row["text"] for row in rows)
-        self.assertIn("Verify first.", texts)
-        self.assertIn("Structure-Version: v1", texts)
+        rows = self.rows(sources, plan)
+        self.assertIn(str(self.temp / "RULES.md"), rows)
+        self.assertIn(str(self.temp / "STRUCTURE.md"), rows)
 
     def test_a_governing_group_memory_above_the_target_is_captured(self) -> None:
         memory = self.memory("# Root\n")
@@ -175,20 +161,16 @@ class SourceDiscoveryTests(Temp):
         )
         plan = Plan("create", group / "release.md")
         sources = sources_module.GoverningSources(memory, self.temp)
-        texts = " ".join(row["text"] for row in sources.inventory(plan))
-        self.assertIn("Name the release first.", texts)
+        self.assertIn(str(group / "MEMORY.md"), self.rows(sources, plan))
 
     def test_a_group_memory_beside_the_memory_root_is_left_to_the_context(self) -> None:
         memory = self.memory("# Root\n")
         plan = Plan("create", memory / "x.md")
         sources = sources_module.GoverningSources(memory, self.temp)
         root_rows = [
-            row
-            for row in sources.inventory(plan)
-            if Path(row["path"]) == memory / "MEMORY.md"
+            row for row in self.rows(sources, plan) if Path(row) == memory / "MEMORY.md"
         ]
-        self.assertEqual(len(root_rows), 1)
-        self.assertEqual(root_rows[0]["text"].count("# Root"), 1)
+        self.assertEqual(root_rows, [str(memory / "MEMORY.md")])
 
     def test_a_move_is_captured_by_the_conventions_of_both_ends(self) -> None:
         memory = self.memory("# Root\n")
@@ -203,8 +185,7 @@ class SourceDiscoveryTests(Temp):
         plan = Plan("move", source / "x.md")
         plan.effects[0].destination = target / "x.md"
         sources = sources_module.GoverningSources(memory, self.temp)
-        texts = " ".join(row["text"] for row in sources.inventory(plan))
-        self.assertIn("Cite the target group.", texts)
+        self.assertIn(str(target / "MEMORY.md"), self.rows(sources, plan))
 
     def test_an_attachment_is_captured_with_its_leaf_and_not_its_conventions(
         self,
@@ -220,9 +201,9 @@ class SourceDiscoveryTests(Temp):
         )
         plan = Plan("attach", attachment / "figure.png")
         sources = sources_module.GoverningSources(memory, self.temp)
-        texts = " ".join(row["text"] for row in sources.inventory(plan))
-        self.assertIn("The leaf's own text.", texts)
-        self.assertNotIn("Ignore me.", texts)
+        rows = self.rows(sources, plan)
+        self.assertIn(str(nodes / "x.md"), rows)
+        self.assertNotIn(str(attachment / "MEMORY.md"), rows)
 
     def test_a_nested_attachment_keeps_its_own_tree_out_of_the_requirement(
         self,
@@ -238,9 +219,9 @@ class SourceDiscoveryTests(Temp):
         )
         plan = Plan("attach", nested / "figure.png")
         sources = sources_module.GoverningSources(memory, self.temp)
-        texts = " ".join(row["text"] for row in sources.inventory(plan))
-        self.assertIn("The leaf's own text.", texts)
-        self.assertNotIn("Ignore me.", texts)
+        rows = self.rows(sources, plan)
+        self.assertIn(str(nodes / "x.md"), rows)
+        self.assertNotIn(str(nested / "MEMORY.md"), rows)
 
 
 class CapturedRevisionTests(Temp):
@@ -264,18 +245,10 @@ class CapturedRevisionTests(Temp):
         ]
         self.assertEqual(len(keys), len(set(keys)))
         self.assertEqual(len(calls), len(inventory))
-        for row in inventory:
-            if row["data"] is None:
-                self.assertIsNone(row["digest"])
-                self.assertEqual(row["text"], "")
-                continue
-            text = (
-                row["data"].decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            )
-            self.assertEqual(row["text"], text)
-            self.assertEqual(
-                row["digest"], hashlib.sha256(text.encode("utf-8")).hexdigest()
-            )
+        self.assertEqual(
+            [row["path"] for row in inventory],
+            [str(path) for path in calls],
+        )
 
     def test_an_unchanged_inventory_still_reads_as_it_was_captured(self) -> None:
         sources, plan = self.governed()
@@ -372,6 +345,44 @@ class RemovedJudgePathTests(unittest.TestCase):
             self.assertFalse((REPO / relative).exists(), relative)
 
     def test_no_executable_source_names_the_removed_judge(self) -> None:
+        sources = self.executable_sources()
+        self.assertIn(REPO / "hooks" / "rm_update.py", sources)
+        for path in sources:
+            text = path.read_text(encoding="utf-8")
+            for token in self.FORBIDDEN:
+                self.assertNotIn(
+                    token, text, f"{path.relative_to(REPO)} names {token}"
+                )
+
+class RemovedChecklistTests(unittest.TestCase):
+    """The convention checklist is gone from the packaged, executable sources."""
+
+    FORBIDDEN = (
+        "rm_conventions",
+        "ConventionChecklist",
+        "plan_digest",
+        "documents_digest",
+        "checklist-",
+        "`checklist`",
+    )
+
+    def executable_sources(self) -> list[Path]:
+        found: list[Path] = []
+        for pattern in ("*.py", "*.ts", "*.mjs"):
+            found.extend(REPO.glob(f"hooks/**/{pattern}"))
+            found.extend(REPO.glob(f"extensions/**/{pattern}"))
+            found.extend(REPO.glob(f"scripts/**/{pattern}"))
+        return sorted(
+            path
+            for path in found
+            if "__pycache__" not in path.parts and path.is_file()
+        )
+
+    def test_the_checklist_module_is_absent(self) -> None:
+        self.assertFalse((REPO / "hooks" / "rm_conventions.py").exists())
+        self.assertFalse((REPO / "tests" / "test_conventions.py").exists())
+
+    def test_no_executable_source_names_the_removed_checklist(self) -> None:
         sources = self.executable_sources()
         self.assertIn(REPO / "hooks" / "rm_update.py", sources)
         for path in sources:

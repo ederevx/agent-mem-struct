@@ -8,10 +8,8 @@ import os
 import shutil
 import subprocess
 import sys
-import gc
 import tempfile
 import unittest
-import weakref
 from pathlib import Path
 from unittest import mock
 
@@ -47,7 +45,6 @@ plan_module = load("rm_update_plan")
 update_module = load("rm_update")
 commit_module = load("rm_commit")
 control_module = load("rm_control")
-conventions_module = load("rm_conventions")
 
 
 class Temp(unittest.TestCase):
@@ -302,57 +299,26 @@ class InProcess(Temp):
             "commit_message": "memory: publish the hand edit\n\nPublishes the edit.",
         }
 
-    # -- the checklist protocol ----------------------------------------------
+    # -- the acknowledgement -------------------------------------------------
 
-    def checks(self, conventions: list[dict]) -> list[dict[str, object]]:
-        return [
-            {
-                "source": row["source"],
-                "ordinal": row["ordinal"],
-                "status": "pass",
-                "reasoning": "The change complies with this convention.",
-            }
-            for row in conventions
-        ]
-
-    def event(self, updater, request: dict) -> dict[str, object]:
-        """The request as an assessed call, bound to the plan it computes."""
-        plan = updater.prepare(request)
-        self.assertIsInstance(
-            plan, plan_module.UpdatePlan, getattr(plan, "text", lambda: "")()
-        )
-        inventory = updater.sources.inventory(plan)
-        conventions = conventions_module.ConventionChecklist().enumerate(inventory)
-        event = dict(request)
-        event["checklist"] = {
-            "schema": 1,
-            "plan_digest": plan.audit_digest(),
-            "documents_digest": conventions_module.inventory_digest(inventory),
-            "separation": {
-                "significant": [
-                    {"source": row["source"], "ordinal": row["ordinal"]}
-                    for row in conventions
-                ],
-                "not_applicable": [],
-            },
-            "checks": self.checks(conventions),
-        }
-        return event
+    @staticmethod
+    def event(request: dict) -> dict[str, object]:
+        """The request as an acknowledged call."""
+        return {**request, "conventions_audited": True}
 
     def admit(self, request: dict, mutate=None):
-        """Run one assessed update whose `mutate` lands after the checklist."""
+        """Run one acknowledged update whose `mutate` lands after its assessment."""
         updater = self.updater()
-        event = self.event(updater, request)
         if mutate is not None:
-            validated = updater.conventions.validate
+            assess = updater.assess
 
-            def validated_then_mutate(*args, **kwargs):
-                conflicts = validated(*args, **kwargs)
+            def assessed_then_mutate(*args, **kwargs):
+                assessed = assess(*args, **kwargs)
                 mutate()
-                return conflicts
+                return assessed
 
-            updater.conventions.validate = validated_then_mutate  # type: ignore[method-assign]
-        return updater.run(event)
+            updater.assess = assessed_then_mutate  # type: ignore[method-assign]
+        return updater.run(self.event(request))
 
     @staticmethod
     def code(result) -> str:
@@ -360,7 +326,7 @@ class InProcess(Temp):
 
 
 class PlanFreshnessTests(InProcess):
-    """A second preparation must be the plan the checklist was assessed on."""
+    """A second preparation must be the plan that was assessed."""
 
     def test_an_unchanged_plan_matches_its_second_preparation(self) -> None:
         updater = self.updater()
@@ -369,34 +335,15 @@ class PlanFreshnessTests(InProcess):
         second = updater.prepare(request)
         self.assertEqual(first.matches(second), (True, ""))
 
-    def test_the_submitted_checklist_is_not_bound_to_the_applied_change(self) -> None:
-        updater = self.updater()
-        event = self.event(updater, self.create_request())
-
-        class Envelope(dict):
-            """A submitted checklist that can be watched outlive its evaluation."""
-
-        submitted = Envelope(event["checklist"])
-        event["checklist"] = submitted
-        reference = weakref.ref(submitted)
-        result = updater.run(event)
-        self.assertTrue(result.ok, result.text())
-        # The updater keeps no copy: once the caller's own request is gone and
-        # the written state is read back, nothing of the checklist survives.
-        event.clear()
-        del event, submitted
-        gc.collect()
-        self.assertIsNone(reference(), "the checklist outlived its assessment")
-
     def test_a_changed_target_is_refused_and_never_materialized(self) -> None:
         def mutate() -> None:
-            self.leaf.write_text("# Note\n\nan edit after the checklist\n", encoding="utf-8")
+            self.leaf.write_text("# Note\n\nan edit after the assessment\n", encoding="utf-8")
 
         result = self.admit(self.set_request(), mutate)
         self.assertFalse(result.ok)
         self.assertEqual(self.code(result), "stale-draft")
         self.assertIn(
-            "an edit after the checklist", self.leaf.read_text(encoding="utf-8")
+            "an edit after the assessment", self.leaf.read_text(encoding="utf-8")
         )
 
     def test_a_changed_governing_document_is_refused_and_never_materialized(

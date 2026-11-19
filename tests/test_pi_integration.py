@@ -130,7 +130,7 @@ def raw_invoke(
 
 
 def update_preview(result: subprocess.CompletedProcess[str]) -> dict | None:
-    """The computed plan and digests a refusal carries, or None without one."""
+    """The computed plan a refusal carries, or None without one."""
     try:
         text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -153,14 +153,14 @@ def invoke_pi(
     home: Path, event: dict[str, object], *, canonical_root: Path | None = None,
     config_home: Path | None = None, audited: bool = True, agent: str = "pi",
 ) -> subprocess.CompletedProcess[str]:
-    """Run one hook event, completing the checklist protocol for a memory update.
+    """Run one hook event, completing the acknowledgement for a memory update.
 
-    A memory update is applied only after its caller assessed every enumerated
-    convention of the computed change, so a test that submits one goes through
-    the same two calls an agent must make: the first refusal carries the plan,
-    both digests and the enumeration, and the second call carries the
-    checklist. `audited=False` sends one raw event instead, for the tests that
-    check the protocol itself.
+    A memory update is applied only after its caller acknowledged its own
+    convention audit, so a test that submits one goes through the same two calls
+    an agent must make: the first refusal carries the computed change, the
+    commit message and the governing documents, and the second call carries
+    `conventions_audited: true`. `audited=False` sends one raw event instead, for
+    the tests that check the gate itself.
     """
     name = event.get("hook_event_name")
     if name != "MemoryUpdate" or not audited:
@@ -178,32 +178,11 @@ def invoke_pi(
     preview = update_preview(first)
     if preview is None:
         return first
-    checklist = {
-        "schema": 1,
-        "plan_digest": preview["plan_digest"],
-        "documents_digest": preview["documents_digest"],
-        "separation": {
-            "significant": [
-                {"source": row["source"], "ordinal": row["ordinal"]}
-                for row in preview.get("conventions") or []
-            ],
-            "not_applicable": [],
-        },
-        "checks": [
-            {
-                "source": row["source"],
-                "ordinal": row["ordinal"],
-                "status": "pass",
-                "reasoning": "The computed change complies with this convention.",
-            }
-            for row in preview.get("conventions") or []
-        ],
-    }
-    assessed = dict(event)
-    assessed["checklist"] = checklist
+    acknowledged = dict(event)
+    acknowledged["conventions_audited"] = True
     return raw_invoke(
-        home, assessed, canonical_root=canonical_root, config_home=config_home,
-        agent=agent,
+        home, acknowledged, canonical_root=canonical_root,
+        config_home=config_home, agent=agent,
     )
 
 
@@ -1958,7 +1937,7 @@ class PiPackageTests(unittest.TestCase):
         """
         content = EXTENSION_TEMPLATE.read_text(encoding="utf-8")
         used = sorted(set(re.findall(r"\bType\.([A-Z][A-Za-z]*)", content)))
-        self.assertIn("Integer", used)
+        self.assertIn("Object", used)
         self.assertNotIn("Literal(null)", content)
         host = self.host_typebox()
         if host is None:
@@ -2410,12 +2389,12 @@ class MemoryUpdateTests(unittest.TestCase):
         return json.loads(result.stdout)
 
 
-class MemoryUpdateChecklistTests(unittest.TestCase):
-    """A memory update is admitted only on its own complete checklist."""
+class MemoryUpdateAcknowledgementTests(unittest.TestCase):
+    """A memory update is applied only on the writer's own audit acknowledgement."""
 
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-        self.temp = Path(tempfile.mkdtemp(prefix="ams-checklist-", dir=SCRATCH_ROOT))
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-audit-", dir=SCRATCH_ROOT))
         self.home, self.shared = make_home(self.temp / "home")
         self.local = self.home / "memory" / "local"
 
@@ -2446,206 +2425,67 @@ class MemoryUpdateChecklistTests(unittest.TestCase):
         self.assertIsNotNone(preview, self.text(result))
         return preview
 
-    def checks(self, preview: dict, *, status: str = "pass",
-               fix: str | None = None) -> list[dict[str, object]]:
-        checks = []
-        for row in preview["conventions"]:
-            check: dict[str, object] = {
-                "source": row["source"],
-                "ordinal": row["ordinal"],
-                "status": status,
-                "reasoning": "The change complies with this convention.",
-            }
-            if status == "violation":
-                check["fix"] = fix or "shorten the body first"
-            checks.append(check)
-        return checks
-
-    def checklist(self, preview: dict, **overrides: object) -> dict[str, object]:
-        checklist: dict[str, object] = {
-            "schema": 1,
-            "plan_digest": preview["plan_digest"],
-            "documents_digest": preview["documents_digest"],
-            "separation": {
-                "significant": [
-                    {"source": row["source"], "ordinal": row["ordinal"]}
-                    for row in preview.get("conventions") or []
-                ],
-                "not_applicable": [],
-            },
-            "checks": self.checks(preview),
-        }
-        checklist.update(overrides)
-        return checklist
-
     def admit(self, name: str, **fields: object) -> subprocess.CompletedProcess[str]:
-        """Preview, then submit the change with its own checklist."""
+        """Preview the change, then submit it with its audit acknowledged."""
         values: dict[str, object] = dict(
             operation="create", path=str(self.local), name=name,
             body="body", summary="A test node.",
         )
         values.update(fields)
         preview = self.preview(self.submit(**values))
-        return self.submit(**values, checklist=self.checklist(preview))
+        self.assertTrue(preview["governing_documents"])
+        return self.submit(**values, conventions_audited=True)
 
-    def test_an_unassessed_update_is_refused_with_the_computed_change(self) -> None:
+    def test_an_unacknowledged_update_is_refused_with_the_computed_change(self) -> None:
         result = self.create()
         self.assertEqual(result.returncode, 3, result.stderr)
         text = self.text(result)
-        self.assertIn("checklist-missing", text)
+        self.assertIn("convention-audit-unacknowledged", text)
         preview = self.preview(result)
-        self.assertIn("plan_digest", preview)
-        self.assertIn("documents_digest", preview)
-        # Every convention is enumerated, one entry each, with its own text.
-        self.assertTrue(preview["conventions"])
-        for row in preview["conventions"]:
-            self.assertTrue(row["source"].strip())
-            self.assertIsInstance(row["ordinal"], int)
-            self.assertTrue(row["text"].strip())
+        self.assertEqual(preview["commit_message"], "")
+        self.assertIsNone(preview["message_facts"])
+        # Every document the audit is bound by is named, with its absolute path.
+        documents = preview["governing_documents"]
+        self.assertTrue(documents)
+        for row in documents:
+            self.assertTrue(row["label"].strip())
+            self.assertTrue(Path(row["path"]).is_absolute())
         self.assertIn("## Every change this operation will make", text)
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_every_enumerated_convention_is_required(self) -> None:
-        preview = self.preview(self.create())
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(preview, checks=self.checks(preview)[:-1]),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("checklist-coverage", self.text(result))
-        self.assertIn("conventions unassessed", self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
+    def test_only_the_boolean_true_acknowledges_the_audit(self) -> None:
+        for acknowledgement in (False, "true", 1, 0, None, [], {}):
+            with self.subTest(acknowledgement=acknowledgement):
+                result = self.create(conventions_audited=acknowledgement)
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertIn(
+                    "convention-audit-unacknowledged", self.text(result)
+                )
+                self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_a_convention_assessed_twice_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        checks = self.checks(preview)
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(preview, checks=checks + checks[:1]),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("more than once", self.text(result))
-
-    def test_a_convention_this_update_does_not_have_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        checks = self.checks(preview) + [{
-            "source": preview["conventions"][0]["source"],
-            "ordinal": 99,
-            "status": "pass",
-            "reasoning": "Nothing to comply with.",
-        }]
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(preview, checks=checks),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("conventions this update does not have", self.text(result))
-
-    def test_a_checklist_bound_to_another_change_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(preview, plan_digest="0" * 64),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("checklist-plan-mismatch", self.text(result))
-
-    def test_a_checklist_bound_to_another_inventory_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(preview, documents_digest="0" * 64),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("checklist-documents-stale", self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
-
-    def test_a_convention_changed_after_the_checklist_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        shared = self.shared / "MEMORY.md"
-        shared.write_text(
-            shared.read_text(encoding="utf-8")
-            + "- A convention added mid-update.\n",
-            encoding="utf-8",
-        )
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(preview),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("checklist-documents-stale", self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
-
-    def test_a_checklist_reporting_a_violation_blocks_the_update(self) -> None:
-        preview = self.preview(self.create())
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(
-                preview, checks=self.checks(preview, status="violation")
-            ),
-        )
+    def test_a_remaining_checklist_is_an_unknown_request_field(self) -> None:
+        result = self.create(checklist={"schema": 1})
         self.assertEqual(result.returncode, 3, result.stderr)
         text = self.text(result)
-        self.assertIn("checklist-violations", text)
-        self.assertNotIn("shorten the body first", text)
+        self.assertIn("bad-request", text)
+        self.assertIn("unknown request fields: checklist", text)
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 
-    def test_an_admitted_update_is_applied_and_records_nothing(self) -> None:
+    def test_a_change_free_mutation_needs_no_acknowledgement(self) -> None:
+        result = self.submit(
+            operation="commit",
+            commit_message="memory: publish nothing\n\nNothing is staged.",
+        )
+        self.assertEqual(result.returncode, 0, self.text(result))
+        self.assertIn("nothing-to-commit", self.text(result))
+
+    def test_an_acknowledged_update_is_applied_and_records_nothing(self) -> None:
         result = self.admit("note")
         self.assertEqual(result.returncode, 0, self.text(result))
         self.assertEqual(
             (self.local / "nodes" / "note.md").read_text(encoding="utf-8"), "body\n"
         )
         self.assertFalse((self.home / ".agent-mem-struct" / "memory-audits").exists())
-
-    def test_a_schema_that_is_not_the_number_one_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        for schema in (True, "1", 1.0):
-            with self.subTest(schema=schema):
-                result = self.submit(
-                    operation="create", path=str(self.local), name="note",
-                    body="body", summary="A test node.",
-                    checklist=self.checklist(preview, schema=schema),
-                )
-                self.assertEqual(result.returncode, 3, result.stderr)
-                self.assertIn("`schema` must be 1", self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
-
-    def test_a_check_status_that_is_not_a_word_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        for status in (1, True, None, [], {}, "passed"):
-            with self.subTest(status=status):
-                result = self.submit(
-                    operation="create", path=str(self.local), name="note",
-                    body="body", summary="A test node.",
-                    checklist=self.checklist(
-                        preview, checks=self.checks(preview, status=status)
-                    ),
-                )
-                self.assertEqual(result.returncode, 3, result.stderr)
-                self.assertIn("status must be pass, violation or not-applicable",
-                              self.text(result))
-        self.assertFalse((self.local / "nodes" / "note.md").exists())
-
-    def test_a_check_carrying_an_unknown_key_is_refused(self) -> None:
-        preview = self.preview(self.create())
-        checks = self.checks(preview)
-        checks[0]["evidence"] = "a claim the hook never asked for"
-        result = self.submit(
-            operation="create", path=str(self.local), name="note",
-            body="body", summary="A test node.",
-            checklist=self.checklist(preview, checks=checks),
-        )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn("checklist-invalid", self.text(result))
-        self.assertNotIn("the hook never asked for", self.text(result))
 
     def test_an_obsolete_judge_document_has_no_effect(self) -> None:
         document = self.home / ".agent-mem-struct" / "memory-judge.json"
@@ -2699,7 +2539,7 @@ class MemoryUpdateChecklistTests(unittest.TestCase):
                 if kept is not None:
                     self.assertEqual(document.read_text(encoding="utf-8"), kept)
 
-    def test_every_harness_is_held_to_the_same_checklist(self) -> None:
+    def test_every_harness_is_held_to_the_same_acknowledgement(self) -> None:
         for agent in ("claude", "codex"):
             with self.subTest(agent=agent):
                 refused = self.submit(
@@ -2707,10 +2547,12 @@ class MemoryUpdateChecklistTests(unittest.TestCase):
                     name=f"{agent}-note", body="body", summary="A test node.",
                 )
                 self.assertEqual(refused.returncode, 3, refused.stderr)
-                self.assertIn("checklist-missing", self.text(refused))
+                self.assertIn(
+                    "convention-audit-unacknowledged", self.text(refused)
+                )
                 self.assertFalse((self.local / "nodes" / f"{agent}-note.md").exists())
 
-    def test_every_harness_admits_the_same_assessed_update(self) -> None:
+    def test_every_harness_admits_the_same_acknowledged_update(self) -> None:
         for agent in ("pi", "claude", "codex"):
             with self.subTest(agent=agent):
                 result = invoke_pi(

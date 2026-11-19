@@ -4,6 +4,34 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-18T21:03:08-05:00 - a memory update asks for the audit, not its transcript
+
+`memory_update` no longer takes a `checklist`. A change is applied once the
+request carries `conventions_audited: true`, the writer's acknowledgement that
+it audited the change against every governing convention itself; without it the
+call is refused as `convention-audit-unacknowledged`, writes nothing, and hands
+back the computed change, the commit message with its measured facts, and the
+governing documents.
+
+The checklist enumerated every numbered rule and *Mandatory conventions* bullet
+and required one assessment per entry, bound to a `plan_digest` and a
+`documents_digest`, plus a separation in compliance order. It could prove only
+that every entry was answered and bound, never that the answers were true, so
+the bookkeeping cost the writer a structured transcript without checking the
+judgement it stood for. The acknowledgement says plainly what the gate can
+know: the writer's statement, taken as given, not verified and not recorded.
+
+`rm_conventions` and its enumeration are removed, with every `checklist-*`
+refusal, the plan payload and digest that bound a checklist to a preview, and
+the text, digest and kind the source capture kept only for enumeration. The
+checks within one call stay: the plan is recorded twice and must match, and the
+captured governing documents must be unchanged before anything is written
+(`stale-draft`, `stale-documents`). A call that still sends `checklist` is a
+`bad-request`.
+
+This changes only the hook layer. It does not change the memory tree or
+canonical operational rules, so no `Structure-Version` migration is required.
+
 ## 2026-11-17T20:07:00-05:00 - a declared escape reaches through a closed receipt
 
 Two prerequisite gates can close on one session at once: agent-comms owes an

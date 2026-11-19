@@ -272,45 +272,22 @@ The bridge maps Pi events onto the hook's event vocabulary:
   which runs the hook's `MemoryUpdate` event once the shared worktree has
   fast-forwarded. Every mutation is first recorded as a plan - the bytes each
   path would gain, the bytes it holds now, and every rename, removal, and
-  directory - and written nowhere; the caller must then assess that exact
-  plan. The conventions it is bound by are enumerated, not reread:
-  `rm_sources.GoverningSources` captures each governing document once and
-  `rm_draft.DraftRenderer` renders that plan as the change it makes;
-  `rm_conventions.ConventionChecklist` turns each numbered rule of `RULES.md`
-  and each bullet of a document's *Mandatory conventions* section into one
-  enumerated convention, and checks the caller's own checklist of them against
-  that one capture and the computed plan. Only an admitted checklist lets
-  `rm_update.MemoryUpdater.apply` materialize it. No independent model,
-  provider or judge launcher is invoked; the Git synchronization and
-  publication around it are unchanged.
+  directory - and written nowhere. `rm_sources.GoverningSources` captures each
+  governing document once and `rm_draft.DraftRenderer` renders the plan as the
+  change it makes. A change is held until the request carries
+  `conventions_audited: true`, the caller's acknowledgement that it audited this
+  change against every convention of those documents itself; a call without it
+  is refused as `convention-audit-unacknowledged` with the computed change, the
+  exact `commit_message` and its measured facts, and the governing documents'
+  paths, and writes nothing. The hook takes the acknowledgement as stated:
+  nothing about the audit is submitted, so nothing about it is checked, and
+  nothing is recorded. A mutation that changes nothing needs no acknowledgement.
+  Only an acknowledged plan reaches `rm_update.MemoryUpdater.apply`. No
+  independent model, provider or judge launcher is invoked; the Git
+  synchronization and publication around it are unchanged.
   The freshness snapshot derives from the same captured read of each governing
-  document, so a requirement edited between the assessment and the write is
-  never the text the write is approved against. The checklist is not advisory:
-  a call without `checklist` is refused with the computed change, its
-  `plan_digest`, the `documents_digest` of the governing inventory, and every
-  enumerated convention as a `{source, ordinal, text}` row, so the caller
-  answers one entry per convention instead of rereading the conventions. The
-  verdict is structural: one entry per enumerated convention, `pass` or
-  `not-applicable`, a `fix` only for a declared `violation`. An entry left
-  out, repeated, or naming a convention this update does not have is
-  `checklist-coverage`; an unsupported shape is `checklist-invalid`; a digest
-  bound to another plan or another revision of the conventions is
-  `checklist-plan-mismatch` or `checklist-documents-stale`; and a declared
-  violation is `checklist-violations`, naming the convention by source and
-  ordinal with generic correction guidance rather than repeating the
-  submitted reasoning or fix. Beside those assessments the envelope carries a
-  `separation`: the same enumerated conventions, each listed exactly once
-  under `significant` or `not_applicable`, with `significant` in compliance
-  priority order, first satisfied first. That order is a declaration, not proof
-  of the agent's own sequence of work. A missing separation is
-  `checklist-separation-missing`; a malformed object, list or reference is
-  `checklist-separation-invalid`; a duplicate, overlap, unknown or omitted
-  convention is `checklist-separation-coverage`; and a significant convention
-  whose assessment is `not-applicable`, or a not-applicable one whose
-  assessment is `pass`, is `checklist-separation-mismatch`. Each of them
-  writes nothing, and the admitted checklist is discarded: no checklist,
-  digest, reasoning, classification or priority order is recorded or repeated
-  back.
+  document, so a requirement edited between the preview and the write is
+  refused rather than written against.
   This gate is the hook's, not the bridge's: every harness that reaches the
   `MemoryUpdate` event is held to it. The preview is the change
   the plan makes - both whole states by size and SHA-256, then every
@@ -382,7 +359,8 @@ The bridge maps Pi events onto the hook's event vocabulary:
   `exists`, `would-overwrite`, `retire-required`, `unreadable-target`,
   `message-lint`, `non-ascii`, `bad-request`, `publish-mismatch`,
   `publish-message`,
-  and the `checklist-`, `stale-` refusals above come back as a conflict report
+  `convention-audit-unacknowledged`, `conventions-missing-source`, and the
+  `stale-` refusals above come back as a conflict report
   for the agent to fix and retry. Every
   publish now attests itself in its own report, so an agent need not
   re-inspect the commit by hand. A read-only `rm_verify.PublishAttestation`

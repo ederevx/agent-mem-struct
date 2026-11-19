@@ -367,16 +367,6 @@ export class RootMemoryBridge {
 	 *  it creates or updates a node and its required counterparts, and returns
 	 *  any conflicts for the agent to fix before re-calling. */
 	private registerMemoryUpdateTool(pi: any): void {
-		const conventionReference = Type.Object({
-			source: Type.String({
-				minLength: 1,
-				description: "The absolute path of one enumerated source.",
-			}),
-			ordinal: Type.Integer({
-				minimum: 1,
-				description: "That source's convention number, as enumerated.",
-			}),
-		}, { additionalProperties: false });
 		pi.registerTool({
 			name: "memory_update",
 			label: "memory_update",
@@ -393,19 +383,19 @@ export class RootMemoryBridge {
 				"with the built-in edit tool and captures the displaced current " +
 				"state into the paired log. `path` is absolute or relative to the " +
 				"agent home and must resolve inside this agent's memory tree or the " +
-				"declared shared root. An update is applied only after you assess it " +
-				"yourself: a call without `checklist` is refused with the computed " +
-				"change and every convention the update must satisfy, one numbered " +
-				"entry each, after which you report one assessment per convention, " +
-				"separate them into significant and not-applicable in compliance " +
-				"order, and re-call. That refusal shows the exact `commit_message` " +
-				"and its measured facts - subject columns, which body lines are " +
-				"nonblank, the parsed trailer block - and, where the plan publishes " +
-				"into a Git repository, a message that breaks the mechanical " +
-				"convention is refused before planned memory changes are applied, " +
-				"and checked again out of the commit itself before it is pushed. " +
-				"A `violation` entry blocks the update and states " +
-				"the fix; no model or provider is invoked.",
+				"declared shared root. A change is applied only after you have " +
+				"audited it yourself against every convention of its governing " +
+				"documents: a call without `conventions_audited: true` is refused " +
+				"with the computed change, its exact `commit_message` and measured " +
+				"facts - subject columns, which body lines are nonblank, the parsed " +
+				"trailer block - and the governing documents, and nothing is " +
+				"written. Audit that change, correct the request if it breaks a " +
+				"convention, and re-call with `conventions_audited: true`. The tool " +
+				"takes that acknowledgement as stated and does not check the audit. " +
+				"Where the plan publishes into a Git repository, a message that " +
+				"breaks the mechanical convention is refused before planned memory " +
+				"changes are applied, and checked again out of the commit itself " +
+				"before it is pushed. No model or provider is invoked.",
 			parameters: Type.Object({
 				operation: Type.Union([
 					Type.Literal("create"), Type.Literal("set"),
@@ -466,106 +456,13 @@ export class RootMemoryBridge {
 				overwrite: Type.Optional(Type.Boolean({
 					description: "attach: replace an existing attachment file.",
 				})),
-				checklist: Type.Optional(Type.Object({
-					schema: Type.Literal(1, {
-						description: "The checklist schema version.",
-					}),
-					plan_digest: Type.String({
-						pattern: "^[0-9a-f]{64}$",
-						description: "The `plan_digest` the refusal lists.",
-					}),
-					documents_digest: Type.String({
-						pattern: "^[0-9a-f]{64}$",
-						description: "The `documents_digest` the refusal lists.",
-					}),
-					separation: Type.Object({
-						significant: Type.Array(conventionReference, {
-							description:
-								"The conventions that bear on this update, in " +
-								"compliance priority order, first satisfied first.",
-						}),
-						not_applicable: Type.Array(conventionReference, {
-							description: "Every remaining enumerated convention.",
-						}),
-					}, {
-						additionalProperties: false,
-						description:
-							"Every enumerated convention, separated by whether it " +
-							"bears on this update.",
-					}),
-					checks: Type.Array(Type.Union([
-						Type.Object({
-							source: Type.String({
-								minLength: 1,
-								description:
-									"The absolute path of one enumerated source.",
-							}),
-							ordinal: Type.Integer({
-								minimum: 1,
-								description:
-									"That source's convention number, as enumerated.",
-							}),
-							status: Type.Union([
-								Type.Literal("pass"),
-								Type.Literal("not-applicable"),
-							], {
-								description:
-									"`pass` or `not-applicable`; a `violation` entry " +
-									"states its `fix`.",
-							}),
-							reasoning: Type.String({
-								minLength: 1,
-								description:
-									"Why this update satisfies that one convention, or " +
-									"why it does not apply.",
-							}),
-						}, {
-							additionalProperties: false,
-							description: "One convention the update satisfies.",
-						}),
-						Type.Object({
-							source: Type.String({
-								minLength: 1,
-								description:
-									"The absolute path of one enumerated source.",
-							}),
-							ordinal: Type.Integer({
-								minimum: 1,
-								description:
-									"That source's convention number, as enumerated.",
-							}),
-							status: Type.Literal("violation", {
-								description:
-									"A declared violation, which blocks the update.",
-							}),
-							reasoning: Type.String({
-								minLength: 1,
-								description:
-									"Why this update does not satisfy that convention.",
-							}),
-							fix: Type.String({
-								minLength: 1,
-								description:
-									"The correction the update needs.",
-							}),
-						}, {
-							additionalProperties: false,
-							description: "One convention the update violates.",
-						}),
-					]), {
-						description:
-							"Exactly one entry per enumerated convention, in any order.",
-					}),
-				}, {
-					additionalProperties: false,
+				conventions_audited: Type.Optional(Type.Boolean({
 					description:
-						"Your own assessment of every convention this update is bound " +
-						"by: {schema: 1, plan_digest, documents_digest, checks: " +
-						"[{source, ordinal, status, reasoning, fix}]}. A call without it " +
-						"is refused with the computed change and one entry per " +
-						"enumerated convention; assess each one and re-call. A violation, " +
-						"or a digest that no longer matches the recomputed change or the " +
-						"current conventions, blocks the update.",
+						"Set true only after you have audited this exact change and " +
+						"its commit_message yourself against every convention of the " +
+						"governing documents. Without it the change is refused with " +
+						"the computed change and nothing is written. The tool does " +
+						"not check the audit and records nothing of it.",
 				})),
 			}),
 			annotations: { readOnlyHint: false },

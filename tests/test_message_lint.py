@@ -106,7 +106,7 @@ def invoke(
 
 
 def update_preview(result: subprocess.CompletedProcess[str]) -> dict | None:
-    """The plan a refused, unassessed memory update hands back."""
+    """The plan a refused, unacknowledged memory update hands back."""
     try:
         text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
     except (json.JSONDecodeError, KeyError, TypeError):
@@ -128,41 +128,14 @@ def update_preview(result: subprocess.CompletedProcess[str]) -> dict | None:
 def audited_call(
     agent: str, home: Path, event: dict[str, object]
 ) -> subprocess.CompletedProcess[str]:
-    """Submit a memory update the way an agent must: assess, then call."""
+    """Submit a memory update the way an agent must: audit, then acknowledge."""
     event = dict(event)
     event.setdefault("session_id", "pi-session")
     event.setdefault("turn_id", "turn-1")
     first = invoke(agent, home, event)
-    preview = update_preview(first)
-    if preview is None:
+    if update_preview(first) is None:
         return first
-    checks = [
-        {
-            "source": item["source"],
-            "ordinal": item["ordinal"],
-            "status": "pass",
-            "reasoning": "The computed change complies with this convention.",
-        }
-        for item in preview.get("conventions") or []
-        if isinstance(item, dict)
-    ]
-    return invoke(agent, home, {
-        **event,
-        "checklist": {
-            "schema": 1,
-            "plan_digest": preview["plan_digest"],
-            "documents_digest": preview["documents_digest"],
-            "separation": {
-                "significant": [
-                    {"source": item["source"], "ordinal": item["ordinal"]}
-                    for item in preview.get("conventions") or []
-                    if isinstance(item, dict)
-                ],
-                "not_applicable": [],
-            },
-            "checks": checks,
-        },
-    })
+    return invoke(agent, home, {**event, "conventions_audited": True})
 
 
 def open_gate(
