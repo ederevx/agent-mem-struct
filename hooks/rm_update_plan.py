@@ -9,7 +9,7 @@ operation depended on - file bytes, directory membership, and the Git facts
 
 Nothing here decides an operation, renders a memory body, or writes a file:
 the operation semantics stay in `rm_update.MemoryUpdater`. The recorder only
-records - and, once the audit is admitted, re-records so a plan whose inputs
+records - and, once the update is admitted, re-records so a plan whose inputs
 moved is refused rather than applied.
 """
 from __future__ import annotations
@@ -400,6 +400,7 @@ class UpdatePlan:
                 if path is not None and path not in seen:
                     seen.append(path)
         return seen
+
 
 def describe(effects: Iterable[FileEffect]) -> str:
     return ", ".join(effect.display() for effect in effects)

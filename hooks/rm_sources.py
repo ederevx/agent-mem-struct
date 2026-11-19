@@ -217,10 +217,10 @@ class GoverningSources:
 
         A requirement edited, removed or introduced after the capture makes the
         audit meaningless, because the acknowledged audit describes documents
-        that are no longer there. A path that has become unreadable or is no longer a
-        regular file counts as changed, never as an absent document. The
-        comparison is always against the one captured inventory, never against
-        a replacement capture.
+        that are no longer there. A path that has become unreadable or is no
+        longer a regular file counts as changed, never as an absent document.
+        The comparison is always against the one captured inventory, never
+        against a replacement capture.
         """
         for row in inventory:
             path = Path(row["path"])

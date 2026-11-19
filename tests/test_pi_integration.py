@@ -2450,6 +2450,8 @@ class MemoryUpdateAcknowledgementTests(unittest.TestCase):
         for row in documents:
             self.assertTrue(row["label"].strip())
             self.assertTrue(Path(row["path"]).is_absolute())
+            self.assertIsInstance(row["present"], bool)
+        self.assertTrue(any(row["present"] for row in documents))
         self.assertIn("## Every change this operation will make", text)
         self.assertFalse((self.local / "nodes" / "note.md").exists())
 

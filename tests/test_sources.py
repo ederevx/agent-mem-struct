@@ -303,6 +303,20 @@ class CapturedRevisionTests(Temp):
         self.assertEqual(inventory, captured)
 
 
+def executable_sources() -> list[Path]:
+    """Every packaged executable source: hooks, extensions and scripts."""
+    found: list[Path] = []
+    for pattern in ("*.py", "*.ts", "*.mjs"):
+        found.extend(REPO.glob(f"hooks/**/{pattern}"))
+        found.extend(REPO.glob(f"extensions/**/{pattern}"))
+        found.extend(REPO.glob(f"scripts/**/{pattern}"))
+    return sorted(
+        path
+        for path in found
+        if "__pycache__" not in path.parts and path.is_file()
+    )
+
+
 class RemovedJudgePathTests(unittest.TestCase):
     """The model judge is gone from the packaged, executable source set."""
 
@@ -324,18 +338,6 @@ class RemovedJudgePathTests(unittest.TestCase):
         "judge-",
     )
 
-    def executable_sources(self) -> list[Path]:
-        found: list[Path] = []
-        for pattern in ("*.py", "*.ts", "*.mjs"):
-            found.extend(REPO.glob(f"hooks/**/{pattern}"))
-            found.extend(REPO.glob(f"extensions/**/{pattern}"))
-            found.extend(REPO.glob(f"scripts/**/{pattern}"))
-        return sorted(
-            path
-            for path in found
-            if "__pycache__" not in path.parts and path.is_file()
-        )
-
     def test_the_obsolete_modules_and_policy_are_absent(self) -> None:
         manifest = json.loads(
             (REPO / "package.json").read_text(encoding="utf-8")
@@ -345,7 +347,7 @@ class RemovedJudgePathTests(unittest.TestCase):
             self.assertFalse((REPO / relative).exists(), relative)
 
     def test_no_executable_source_names_the_removed_judge(self) -> None:
-        sources = self.executable_sources()
+        sources = executable_sources()
         self.assertIn(REPO / "hooks" / "rm_update.py", sources)
         for path in sources:
             text = path.read_text(encoding="utf-8")
@@ -353,6 +355,7 @@ class RemovedJudgePathTests(unittest.TestCase):
                 self.assertNotIn(
                     token, text, f"{path.relative_to(REPO)} names {token}"
                 )
+
 
 class RemovedChecklistTests(unittest.TestCase):
     """The convention checklist is gone from the packaged, executable sources."""
@@ -366,24 +369,12 @@ class RemovedChecklistTests(unittest.TestCase):
         "`checklist`",
     )
 
-    def executable_sources(self) -> list[Path]:
-        found: list[Path] = []
-        for pattern in ("*.py", "*.ts", "*.mjs"):
-            found.extend(REPO.glob(f"hooks/**/{pattern}"))
-            found.extend(REPO.glob(f"extensions/**/{pattern}"))
-            found.extend(REPO.glob(f"scripts/**/{pattern}"))
-        return sorted(
-            path
-            for path in found
-            if "__pycache__" not in path.parts and path.is_file()
-        )
-
     def test_the_checklist_module_is_absent(self) -> None:
         self.assertFalse((REPO / "hooks" / "rm_conventions.py").exists())
         self.assertFalse((REPO / "tests" / "test_conventions.py").exists())
 
     def test_no_executable_source_names_the_removed_checklist(self) -> None:
-        sources = self.executable_sources()
+        sources = executable_sources()
         self.assertIn(REPO / "hooks" / "rm_update.py", sources)
         for path in sources:
             text = path.read_text(encoding="utf-8")

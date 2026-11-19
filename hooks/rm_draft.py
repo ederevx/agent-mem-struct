@@ -65,9 +65,10 @@ class DraftRenderer:
         """What a held update hands back: its message, its documents, its change.
 
         The exact commit message and the numbers it is measured by travel with
-        every governing document the change is bound to and every effect the
-        plan records, so the caller audits the change it will get. Nothing of
-        that audit comes back to the tool.
+        every governing document the change is bound to, marked present or not
+        so an absent optional document is told apart from one that exists, and
+        every effect the plan records, so the caller audits the change it will
+        get. Nothing of that audit comes back to the tool.
         """
         return (
             "\n\ncomputed memory update: audit it against every convention of "
@@ -78,7 +79,11 @@ class DraftRenderer:
                     "commit_message": plan.commit_message,
                     "message_facts": message,
                     "governing_documents": [
-                        {"label": row["label"], "path": row["path"]}
+                        {
+                            "label": row["label"],
+                            "path": row["path"],
+                            "present": row["data"] is not None,
+                        }
                         for row in inventory
                     ],
                 },

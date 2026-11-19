@@ -15,8 +15,8 @@ The tool takes that acknowledgement as stated and verifies nothing about the
 audit. An acknowledged change reaches `apply`, which re-records the plan first
 so a mutation whose inputs moved after capture is refused, rechecks the
 captured documents, then materializes exactly the recorded bytes. A mutation
-that lands under the
-declared shared root is then committed and pushed by `rm_commit.CommitPublisher`
+that lands under the declared shared root is then committed and pushed by
+`rm_commit.CommitPublisher`
 under the `commit_message` the agent wrote, which the tool never composes or
 edits but checks against the mechanical convention before committing; a
 mutation in the agent's own tree is only written. A publish then attests the

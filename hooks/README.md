@@ -286,8 +286,9 @@ The bridge maps Pi events onto the hook's event vocabulary:
   independent model, provider or judge launcher is invoked; the Git
   synchronization and publication around it are unchanged.
   The freshness snapshot derives from the same captured read of each governing
-  document, so a requirement edited between the preview and the write is
-  refused rather than written against.
+  document, so a requirement edited between that capture and the write, within
+  the one acknowledged call, is refused rather than written against. Nothing
+  binds an earlier preview to a later call.
   This gate is the hook's, not the bridge's: every harness that reaches the
   `MemoryUpdate` event is held to it. The preview is the change
   the plan makes - both whole states by size and SHA-256, then every
