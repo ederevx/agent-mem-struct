@@ -26,12 +26,13 @@ python3 hooks/pi/manage.py install       # Pi
 ```
 
 The Pi bridge may instead be installed as a pi package,
-`pi install git:github.com/ederevx/agent-mem-struct@v1.81`; the package entry
-stands down while the installer-managed bridge is present. When it is the sole
-registrant it also deploys the protected root documents itself, running the
-installer's `sync-documents` action under a package-owned marker and the same
-refresh and conflict protection, so a package-only host keeps `RULES.md` and
-`STRUCTURE.md` current without the installer.
+`pi install git:github.com/ederevx/agent-mem-struct`, which follows the
+default branch on `pi update`; append `@<tag>` to pin a release tag. The
+package entry stands down while the installer-managed bridge is present. When
+it is the sole registrant it also deploys the protected root documents itself,
+running the installer's `sync-documents` action under a package-owned marker
+and the same refresh and conflict protection, so a package-only host keeps
+`RULES.md` and `STRUCTURE.md` current without the installer.
 
 The bridge registers the `memory_update` tool, whose `commit` operation
 publishes edits made with the built-in `edit` tool and captures the displaced
