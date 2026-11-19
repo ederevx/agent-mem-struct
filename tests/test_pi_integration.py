@@ -285,10 +285,10 @@ class PiHookTests(unittest.TestCase):
         self.assertNotIn("Before settling", context)
         self.assertNotIn("Pi keeps no native memory store", context)
 
-    def write(self, target: Path) -> dict[str, object]:
+    def write(self, target: Path, session: str = "pi-session") -> dict[str, object]:
         return {
             "hook_event_name": "PreToolUse",
-            "session_id": "pi-session",
+            "session_id": session,
             "turn_id": "turn-1",
             "tool_name": "write",
             "cwd": str(self.temp),
@@ -632,217 +632,189 @@ class PiHookTests(unittest.TestCase):
         record_tree_pi(self.home, self.shared, escape=True)
         self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
 
-    def test_tree_read_is_never_gated(self) -> None:
-        result = record_tree_pi(self.home, self.shared)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "")
-
-    def test_tree_of_another_directory_records_nothing(self) -> None:
-        other = self.temp / "elsewhere"
-        other.mkdir()
-        invoke_pi(self.home, {
-            "hook_event_name": "PreMemory",
-            "session_id": "pi-session",
-            "turn_id": "turn-1",
-        })
-        read_source_files(self.home, self.shared)
-        # A tree of a different directory is not gated, but records nothing.
-        result = record_tree_pi(self.home, self.shared, command=f"tree {other}")
-        self.assertEqual(result.stdout.strip(), "")
-        target = self.home / "memory" / "local" / "note.md"
-        denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
-        self.assertEqual(denied["permissionDecision"], "deny")
-        self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
-
-    def test_incomplete_tree_records_nothing(self) -> None:
-        target = self.home / "memory" / "local" / "note.md"
-        invoke_pi(self.home, {
-            "hook_event_name": "PreMemory",
-            "session_id": "pi-session",
-            "turn_id": "turn-1",
-        })
-        read_source_files(self.home, self.shared)
-        for command in (f'tree -L 2 {self.shared}', f'tree {self.shared} | head'):
-            with self.subTest(command=command):
-                record_tree_pi(self.home, self.shared, command=command)
-                denied = self.output(invoke_pi(self.home, self.write(target)))["hookSpecificOutput"]
-                self.assertEqual(denied["permissionDecision"], "deny")
-                self.assertIn(f"tree {self.shared}", denied["permissionDecisionReason"])
-
-    def test_cd_into_shared_then_tree_records_the_read(self) -> None:
-        target = self.home / "memory" / "local" / "note.md"
-        invoke_pi(self.home, {
-            "hook_event_name": "PreMemory",
-            "session_id": "pi-session",
-            "turn_id": "turn-1",
-        })
-        read_source_files(self.home, self.shared)
-        record_tree_pi(self.home, self.shared, command=f'cd "{self.shared}" && tree')
-        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
-
     # -- tree fallbacks ------------------------------------------------------
 
-    def structure_fallback_write_output(self, command: str, *, tool_name: str = "Bash") -> str:
-        """Acknowledge sources, run one structure command, then attempt a write."""
+    def structure_fallback_write_output(
+        self, command: str | None = None, *, tool_name: str = "Bash",
+        cwd: Path | None = None, session: str = "pi-session",
+    ) -> str:
+        """Acknowledge sources, run one structure command, then attempt a write.
+
+        Each listing form needs its own session: a receipt an earlier form left
+        behind would unlock the write without it.
+        """
         target = self.home / "memory" / "local" / "note.md"
         invoke_pi(self.home, {
             "hook_event_name": "PreMemory",
-            "session_id": "pi-session",
+            "session_id": session,
             "turn_id": "turn-1",
         })
-        read_source_files(self.home, self.shared)
+        read_source_files(self.home, self.shared, session=session)
         recorded = record_tree_pi(
-            self.home, self.shared, command=command, tool_name=tool_name
+            self.home, self.shared, command=command, tool_name=tool_name, cwd=cwd,
+            session=session,
         )
         self.assertEqual(recorded.returncode, 0, recorded.stderr)
         self.assertEqual(recorded.stdout.strip(), "")
-        return invoke_pi(self.home, self.write(target)).stdout.strip()
+        return invoke_pi(self.home, self.write(target, session)).stdout.strip()
 
     def denied_structure_reason(self, output: str) -> str:
         denied = json.loads(output)["hookSpecificOutput"]
         self.assertEqual(denied["permissionDecision"], "deny")
         return denied["permissionDecisionReason"]
 
-    def test_find_print_fallback_records_and_unlocks_write(self) -> None:
-        target = self.home / "memory" / "local" / "note.md"
-        invoke_pi(self.home, {
-            "hook_event_name": "PreMemory",
-            "session_id": "pi-session",
-            "turn_id": "turn-1",
-        })
-        read_conventions(
-            self.home, self.shared, command=f'find "{self.shared}" -print'
+    def test_known_listing_forms_record_the_tree_read(self) -> None:
+        """An accepted acquisition is never gated, records the tree and unlocks."""
+        # The canonical tree is ungated before anything is acknowledged.
+        unacknowledged = record_tree_pi(
+            self.home, self.shared, session="pi-unacknowledged"
         )
-        self.assertEqual(invoke_pi(self.home, self.write(target)).stdout.strip(), "")
-
-    def test_find_without_print_fallback_records(self) -> None:
+        self.assertEqual(unacknowledged.returncode, 0, unacknowledged.stderr)
         self.assertEqual(
-            self.structure_fallback_write_output(f'find "{self.shared}"'), ""
+            unacknowledged.stdout.strip(), "", "the canonical tree is never gated"
         )
-
-    def test_find_with_extra_operand_records_nothing(self) -> None:
-        reason = self.denied_structure_reason(
-            self.structure_fallback_write_output(f"find {self.shared} extra")
-        )
-        self.assertIn(f"tree {self.shared}", reason)
-
-    def test_ls_recursive_hidden_fallback_records(self) -> None:
-        self.assertEqual(
-            self.structure_fallback_write_output(f'ls -laR "{self.shared}"'), ""
-        )
-
-    def test_ls_recursive_without_hidden_records_nothing(self) -> None:
-        reason = self.denied_structure_reason(
-            self.structure_fallback_write_output(f'ls -R "{self.shared}"')
-        )
-        self.assertIn(f"tree {self.shared}", reason)
-        self.assertIn(f"find {self.shared} -print", reason)
-
-    def test_windows_tree_requires_full_flag(self) -> None:
-        reason = self.denied_structure_reason(
-            self.structure_fallback_write_output(f"tree.com {self.shared}")
-        )
-        self.assertIn(f"tree {self.shared}", reason)
-
-    def test_windows_tree_full_flag_records(self) -> None:
-        self.assertEqual(
-            self.structure_fallback_write_output(f'tree.com /F "{self.shared}"'), ""
-        )
-
-    def test_tree_trailing_allowed_flag_records(self) -> None:
-        self.assertEqual(
-            self.structure_fallback_write_output(f'tree "{self.shared}" -F'), ""
-        )
-
-    def test_tree_trailing_rejected_flag_records_nothing(self) -> None:
-        reason = self.denied_structure_reason(
-            self.structure_fallback_write_output(f'tree "{self.shared}" -L 2')
-        )
-        self.assertIn(f"tree {self.shared}", reason)
-
-    def test_posix_tree_slash_flag_is_a_path_not_a_switch(self) -> None:
-        # On a POSIX shell `/a` and `/f` are absolute paths, not Windows flags.
-        for command in ("tree /a", "tree /f"):
-            with self.subTest(command=command):
-                invoke_pi(self.home, {
-                    "hook_event_name": "PreMemory",
-                    "session_id": "pi-session",
-                    "turn_id": "turn-1",
-                })
-                read_source_files(self.home, self.shared)
-                record_tree_pi(
-                    self.home, self.shared, command=command, cwd=self.shared
-                )
-                reason = self.denied_structure_reason(
-                    invoke_pi(
-                        self.home, self.write(self.home / "memory" / "local" / "note.md")
-                    ).stdout.strip()
-                )
-                self.assertIn(f"tree {self.shared}", reason)
-
-    def test_powershell_listing_requires_force(self) -> None:
-        reason = self.denied_structure_reason(
-            self.structure_fallback_write_output(
-                f'Get-ChildItem -Recurse "{self.shared}"', tool_name="PowerShell"
-            )
-        )
-        self.assertIn(f"tree {self.shared}", reason)
-
-    def test_powershell_literalpath_force_records(self) -> None:
-        self.assertEqual(
-            self.structure_fallback_write_output(
+        for index, (label, command, tool_name) in enumerate((
+            ("the canonical `tree`", None, "Bash"),
+            ("`find` with `-print`", f'find "{self.shared}" -print', "Bash"),
+            ("`find` without `-print`", f'find "{self.shared}"', "Bash"),
+            ("`ls -laR`", f'ls -laR "{self.shared}"', "Bash"),
+            ("a Windows `tree.com /F`", f'tree.com /F "{self.shared}"', "Bash"),
+            ("`tree` with a trailing allowed flag", f'tree "{self.shared}" -F', "Bash"),
+            (
+                "`Get-ChildItem -LiteralPath` with `-Force`",
                 f'Get-ChildItem -LiteralPath "{self.shared}" -Recurse -Force',
-                tool_name="PowerShell",
+                "PowerShell",
             ),
-            "",
-        )
-
-    def test_powershell_aliases_record(self) -> None:
-        for alias in ("gci", "dir", "ls"):
-            with self.subTest(alias=alias):
+            (
+                "the `gci` alias",
+                f'gci -LiteralPath "{self.shared}" -Recurse -Force',
+                "PowerShell",
+            ),
+            (
+                "the `dir` alias",
+                f'dir -LiteralPath "{self.shared}" -Recurse -Force',
+                "PowerShell",
+            ),
+            (
+                "the `ls` alias",
+                f'ls -LiteralPath "{self.shared}" -Recurse -Force',
+                "PowerShell",
+            ),
+        )):
+            with self.subTest(label):
                 self.assertEqual(
                     self.structure_fallback_write_output(
-                        f'{alias} -LiteralPath "{self.shared}" -Recurse -Force',
-                        tool_name="PowerShell",
+                        command,
+                        tool_name=tool_name,
+                        session=f"pi-listing-{index}",
                     ),
                     "",
+                    label,
                 )
 
-    def test_find_delete_is_gated_as_a_mutation_not_a_read(self) -> None:
-        event = {
-            "hook_event_name": "PreToolUse",
-            "session_id": "pi-session",
-            "turn_id": "turn-1",
-            "tool_name": "Bash",
-            "tool_input": {"command": f'find "{self.shared}" -delete'},
-            "cwd": str(self.home),
-        }
-        output = invoke_pi(self.home, event).stdout.strip()
-        self.assertNotEqual(output, "", "a destructive `find ... -delete` must be gated")
-        denied = json.loads(output)["hookSpecificOutput"]
-        self.assertEqual(denied["permissionDecision"], "deny")
+    def test_listing_forms_off_the_declared_tree_record_nothing(self) -> None:
+        """An unaccepted form is ungated but records no tree, so the write is denied."""
+        elsewhere = self.temp / "elsewhere"
+        elsewhere.mkdir()
+        # On a POSIX shell `/a` and `/f` are absolute paths, not Windows flags.
+        for index, (label, command, tool_name, cwd, required) in enumerate((
+            (
+                "a tree of another directory",
+                f"tree {elsewhere}", "Bash", None, (f"tree {self.shared}",),
+            ),
+            (
+                "a depth-limited tree",
+                f"tree -L 2 {self.shared}", "Bash", None, (f"tree {self.shared}",),
+            ),
+            (
+                "a `find` with an extra operand",
+                f"find {self.shared} extra", "Bash", None, (f"tree {self.shared}",),
+            ),
+            (
+                "an `ls` without hidden files",
+                f'ls -R "{self.shared}"', "Bash", None,
+                (f"tree {self.shared}", f"find {self.shared} -print"),
+            ),
+            (
+                "a Windows tree without `/F`",
+                f"tree.com {self.shared}", "Bash", None, (f"tree {self.shared}",),
+            ),
+            (
+                "a tree with a rejected trailing flag",
+                f'tree "{self.shared}" -L 2', "Bash", None, (f"tree {self.shared}",),
+            ),
+            (
+                "a POSIX `tree /a`",
+                "tree /a", "Bash", self.shared, (f"tree {self.shared}",),
+            ),
+            (
+                "a POSIX `tree /f`",
+                "tree /f", "Bash", self.shared, (f"tree {self.shared}",),
+            ),
+            (
+                "a `Get-ChildItem` without `-Force`",
+                f'Get-ChildItem -Recurse "{self.shared}"', "PowerShell", None,
+                (f"tree {self.shared}",),
+            ),
+        )):
+            with self.subTest(label):
+                reason = self.denied_structure_reason(
+                    self.structure_fallback_write_output(
+                        command,
+                        tool_name=tool_name,
+                        cwd=cwd,
+                        session=f"pi-listing-{index}",
+                    )
+                )
+                for fragment in required:
+                    self.assertIn(fragment, reason, label)
+        # A tree whose output is piped records nothing, even after acknowledgment.
+        with self.subTest("a piped `tree` after acknowledgment"):
+            session = "pi-piped-tree"
+            invoke_pi(self.home, {
+                "hook_event_name": "PreMemory",
+                "session_id": session,
+                "turn_id": "turn-1",
+            })
+            read_source_files(self.home, self.shared, session=session)
+            record_tree_pi(
+                self.home, self.shared,
+                command=f'tree "{self.shared}" | head', session=session,
+            )
+            target = self.home / "memory" / "local" / "note.md"
+            reason = self.denied_structure_reason(
+                invoke_pi(self.home, self.write(target, session)).stdout.strip()
+            )
+            self.assertIn(f"tree {self.shared}", reason)
 
-    def test_mutation_before_find_fallback_is_gated(self) -> None:
-        event = {
-            "hook_event_name": "PreToolUse",
-            "session_id": "pi-session",
-            "turn_id": "turn-1",
-            "tool_name": "Bash",
-            "tool_input": {"command": f'rm -rf X; find "{self.shared}"'},
-            "cwd": str(self.home),
-        }
-        denied = json.loads(invoke_pi(self.home, event).stdout)["hookSpecificOutput"]
-        self.assertEqual(denied["permissionDecision"], "deny")
+    def test_cd_into_the_shared_tree_records_the_read(self) -> None:
+        for index, (label, command) in enumerate((
+            ("`tree` from the shared root", f'cd "{self.shared}" && tree'),
+            ("`find .` from the shared root", f'cd "{self.shared}" && find .'),
+        )):
+            with self.subTest(label):
+                self.assertEqual(
+                    self.structure_fallback_write_output(
+                        command, session=f"pi-cd-{index}"
+                    ),
+                    "",
+                    label,
+                )
 
-    def test_piped_or_redirected_listing_is_gated(self) -> None:
+    def test_mutating_listings_are_gated_as_mutations_not_reads(self) -> None:
+        """A listing that can mutate is denyable, whatever form it takes."""
         capture = self.temp / "capture.txt"
-        for command in (
-            f'find "{self.shared}" | head',
-            f'find "{self.shared}" | xargs rm -rf',
-            f'tree "{self.shared}" > {capture}',
-            f'find "{self.shared}" | tee {capture}',
+        for label, command in (
+            ("`find -delete`", f'find "{self.shared}" -delete'),
+            ("a quoted `find` mutator", f"find \"{self.shared}\" -de'lete'"),
+            ("a mutation before the find fallback", f'rm -rf X; find "{self.shared}"'),
+            ("a piped `tree`", f'tree "{self.shared}" | head'),
+            ("a piped `find`", f'find "{self.shared}" | head'),
+            ("a `find` piped into a mutator", f'find "{self.shared}" | xargs rm -rf'),
+            ("a redirected `tree`", f'tree "{self.shared}" > {capture}'),
+            ("a `find` piped into `tee`", f'find "{self.shared}" | tee {capture}'),
         ):
-            with self.subTest(command=command):
+            with self.subTest(label):
                 event = {
                     "hook_event_name": "PreToolUse",
                     "session_id": "pi-session",
@@ -851,27 +823,10 @@ class PiHookTests(unittest.TestCase):
                     "tool_input": {"command": command},
                     "cwd": str(self.home),
                 }
-                denied = json.loads(invoke_pi(self.home, event).stdout)["hookSpecificOutput"]
-                self.assertEqual(denied["permissionDecision"], "deny")
-
-    def test_quoted_find_mutator_is_gated(self) -> None:
-        event = {
-            "hook_event_name": "PreToolUse",
-            "session_id": "pi-session",
-            "turn_id": "turn-1",
-            "tool_name": "Bash",
-            "tool_input": {"command": f"find \"{self.shared}\" -de'lete'"},
-            "cwd": str(self.home),
-        }
-        output = invoke_pi(self.home, event).stdout.strip()
-        self.assertNotEqual(output, "", "a quoted `find` mutator must be gated")
-        denied = json.loads(output)["hookSpecificOutput"]
-        self.assertEqual(denied["permissionDecision"], "deny")
-
-    def test_cd_into_shared_then_find_records(self) -> None:
-        self.assertEqual(
-            self.structure_fallback_write_output(f'cd "{self.shared}" && find .'), ""
-        )
+                output = invoke_pi(self.home, event).stdout.strip()
+                self.assertNotEqual(output, "", f"{label} must be gated")
+                denied = json.loads(output)["hookSpecificOutput"]
+                self.assertEqual(denied["permissionDecision"], "deny", label)
 
     def test_pre_memory_catalog_names_the_find_fallback(self) -> None:
         catalog = self.output(invoke_pi(self.home, {
@@ -1409,21 +1364,24 @@ class PiInstallerTests(unittest.TestCase):
             (self.memory_home / "RULES.md").read_bytes(), (REPO / "RULES.md").read_bytes()
         )
 
-    def test_sync_documents_refuses_a_user_edited_copy(self) -> None:
-        self.assertEqual(self.run_sync(self.pi_home, self.memory_home).returncode, 0)
+    def test_sync_documents_refuses_a_copy_it_does_not_own(self) -> None:
+        """A copy the marker does not vouch for is refused and left untouched."""
         rules = self.memory_home / "RULES.md"
-        rules.write_text("# Memory rules\n\nuser edit\n", encoding="utf-8")
-        refused = self.run_sync(self.pi_home, self.memory_home)
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertEqual(rules.read_text(encoding="utf-8"), "# Memory rules\n\nuser edit\n")
-
-    def test_sync_documents_refuses_a_foreign_copy(self) -> None:
-        rules = self.memory_home / "RULES.md"
-        rules.unlink()
-        rules.write_text("not ours\n", encoding="utf-8")
-        refused = self.run_sync(self.pi_home, self.memory_home)
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertEqual(rules.read_text(encoding="utf-8"), "not ours\n")
+        for label, install, edited in (
+            ("a tracked copy the user edited", True, "# Memory rules\n\nuser edit\n"),
+            ("a foreign copy the installer never wrote", False, "not ours\n"),
+        ):
+            with self.subTest(label):
+                if install:
+                    self.assertEqual(
+                        self.run_sync(self.pi_home, self.memory_home).returncode, 0
+                    )
+                else:
+                    rules.unlink()
+                rules.write_text(edited, encoding="utf-8")
+                refused = self.run_sync(self.pi_home, self.memory_home)
+                self.assertNotEqual(refused.returncode, 0, label)
+                self.assertEqual(rules.read_text(encoding="utf-8"), edited, label)
 
     def test_install_deploys_baked_bridge_and_marker(self) -> None:
         result = self.run_manager("install", self.pi_home, self.memory_home)
@@ -2027,23 +1985,23 @@ class PiPackageTests(unittest.TestCase):
     def test_lister_tool_runs_the_canonical_invocation(self) -> None:
         bundle = self.bundle()
         shared = make_shared(self.temp / "shared dir")
-        accepted = [
-            self.lister_command("--list", str(shared)),
-            self.lister_command("--list", "--", str(shared)),
-        ]
-        results = self.run_lister(bundle, accepted, cwd=self.temp)
-        for command, result in zip(accepted, results):
-            with self.subTest(command=command):
+        accepted = (
+            ("`--list`", self.lister_command("--list", str(shared))),
+            ("`--list` after `--`", self.lister_command("--list", "--", str(shared))),
+        )
+        results = self.run_lister(
+            bundle, [command for _, command in accepted], cwd=self.temp
+        )
+        for (label, _), result in zip(accepted, results):
+            with self.subTest(label):
                 self.assertNotEqual(result.get("isError"), True, result)
                 self.assertIn("MEMORY.md", result["content"][0]["text"])
-
-    def test_lister_tool_resolves_a_relative_lister_against_cwd(self) -> None:
-        bundle = self.bundle()
-        shared = make_shared(self.temp / "shared")
-        command = f'"{sys.executable}" "hooks/rm_tree.py" --list "{shared}"'
-        result = self.run_lister(bundle, [command], cwd=REPO)[0]
-        self.assertNotEqual(result.get("isError"), True, result)
-        self.assertIn("MEMORY.md", result["content"][0]["text"])
+        # A lister path is resolved against the call's own cwd.
+        relative = f'"{sys.executable}" "hooks/rm_tree.py" --list "{shared}"'
+        result = self.run_lister(bundle, [relative], cwd=REPO)[0]
+        with self.subTest("a lister path relative to the call's cwd"):
+            self.assertNotEqual(result.get("isError"), True, result)
+            self.assertIn("MEMORY.md", result["content"][0]["text"])
 
     def test_lister_tool_refuses_anything_else(self) -> None:
         bundle = self.bundle()
