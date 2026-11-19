@@ -281,18 +281,19 @@ class CapturedRevisionTests(Temp):
         candidate.mkdir(parents=True, exist_ok=True)
         self.assertFalse(sources.unchanged(inventory))
 
-    def test_an_absent_candidate_that_becomes_a_symlink_is_a_change(self) -> None:
+    def test_an_absent_candidate_that_reports_as_a_link_is_a_change(self) -> None:
         sources, plan = self.governed()
         inventory = sources.inventory(plan)
         candidate = sources.memory_root / "local" / "nodes" / "MEMORY.md"
         candidate.parent.mkdir(parents=True, exist_ok=True)
-        target = self.temp / "elsewhere.md"
-        target.write_text("elsewhere", encoding="utf-8")
-        try:
-            candidate.symlink_to(target)
-        except (OSError, NotImplementedError):
-            self.skipTest("this host does not allow creating a symlink")
-        self.assertFalse(sources.unchanged(inventory))
+        original_is_symlink = Path.is_symlink
+        # An entry that reports itself as an alias is not the document the
+        # capture described, whatever it points at.
+        with mock.patch.object(
+                Path, "is_symlink", autospec=True,
+                side_effect=lambda path: path == candidate
+                or original_is_symlink(path)):
+            self.assertFalse(sources.unchanged(inventory))
 
     def test_the_freshness_check_never_replaces_the_captured_rows(self) -> None:
         sources, plan = self.governed()

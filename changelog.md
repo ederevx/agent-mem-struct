@@ -4,6 +4,20 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-19T15:39:45-05:00 - no test creates a link
+
+The suite's alias fixtures built symlinks on the host, so a host that refuses
+the privilege skipped them and the two properties - a lister that records an
+alias without descending through it, and a capture that treats an entry
+reporting itself as an alias as a change - went unproven exactly where the
+memory tree runs. Both cases now hand in the answer they need: the lister is
+driven with `Path.is_symlink` and `os.readlink` answering for one entry, and
+the capture with an entry that reports itself as an alias, while the install
+case keeps its simulated links on every platform instead of branching on
+`os.name`. `tests/link_guard.py` reads the tests as a syntax tree and fails
+the suite if any test source creates a symlink, junction, or other reparse
+point, so a fixture needing that privilege cannot come back.
+
 ## 2026-11-18T21:42:00-05:00 - a commit without a path reaches the hook on Pi
 
 `memory_update`'s Pi schema declared `path` required while its description

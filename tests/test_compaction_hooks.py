@@ -1664,10 +1664,6 @@ class StructureListerTests(unittest.TestCase):
         (self.cli_root / "b_file.txt").write_text("leaf\n", encoding="utf-8")
         (self.cli_root / ".git").mkdir()
         (self.cli_root / ".git" / "config").write_text("gitdir\n", encoding="utf-8")
-        try:
-            os.symlink("a_dir", self.cli_root / "link")
-        except (OSError, NotImplementedError):  # pragma: no cover - host dependent
-            self.skipTest("symlinks are unavailable on this host")
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp)
@@ -1692,10 +1688,39 @@ class StructureListerTests(unittest.TestCase):
         listing = result.stdout.splitlines()[1:]
         self.assertEqual(
             listing,
-            ["a_dir/", "  inner.txt", "b_file.txt", "link -> a_dir"],
+            ["a_dir/", "  inner.txt", "b_file.txt"],
         )
         for line in listing:
             self.assertNotIn(str(self.temp), line)
+
+    def test_an_internal_link_is_one_leaf_and_is_not_followed(self) -> None:
+        # The entry is an alias, so the walk records its target and never
+        # descends through it: whatever sits behind the name stays out of
+        # the listing.
+        spec = importlib.util.spec_from_file_location(
+            "test_rm_tree_lister", LISTER_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        placeholder = self.cli_root / "link"
+        placeholder.mkdir()
+        (placeholder / "inside.txt").write_text("inner\n", encoding="utf-8")
+        original_is_symlink = Path.is_symlink
+        original_readlink = os.readlink
+        with (
+            mock.patch.object(
+                Path, "is_symlink", autospec=True,
+                side_effect=lambda path: path == placeholder
+                or original_is_symlink(path)),
+            mock.patch.object(
+                module.os, "readlink",
+                side_effect=lambda path: "a_dir"
+                if path == placeholder else original_readlink(path)),
+        ):
+            entries = module.SharedTree(self.cli_root).entries()
+        self.assertIn(("link", False, "a_dir"), entries)
+        self.assertNotIn("link/inside.txt",
+                         [relative for relative, _, _ in entries])
 
     def test_root_operand_is_required_and_a_missing_directory_fails(self) -> None:
         no_root = run_lister()
@@ -1720,13 +1745,6 @@ class StructureListerTests(unittest.TestCase):
         self.assertEqual(
             run_lister("--list", "--", str(self.cli_root)).stdout, plain.stdout
         )
-
-    def test_symlink_is_listed_but_not_followed(self) -> None:
-        result = run_lister(str(self.cli_root))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("link -> a_dir", result.stdout)
-        self.assertNotIn("link/inner.txt", result.stdout)
-        self.assertEqual(result.stdout.count("inner.txt"), 1)
 
     # -- hook recognition ----------------------------------------------------
 
@@ -2377,14 +2395,9 @@ class ManagedRootDocumentTests(unittest.TestCase):
                     home / name: self.canonical / name
                     for name in ("RULES.md", "STRUCTURE.md")
                 }
-                if os.name == "nt":
-                    for target in destinations:
-                        target.write_bytes(b"legacy link placeholder")
-                    with self.simulated_links(destinations):
-                        self.install(agent)
-                else:
-                    for target, source in destinations.items():
-                        target.symlink_to(source)
+                for target in destinations:
+                    target.write_bytes(b"legacy link placeholder")
+                with self.simulated_links(destinations):
                     self.install(agent)
                 for target, source in destinations.items():
                     self.assertFalse(target.is_symlink())
