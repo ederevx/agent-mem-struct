@@ -1554,7 +1554,8 @@ class PiPackageTests(unittest.TestCase):
         (typebox / "index.mjs").write_text(
             "const schema = (type, extra = {}) => ({ type, ...extra });\n"
             "export const Type = {\n"
-            "  Object: (properties = {}) => ({ type: 'object', properties }),\n"
+            "  Object: (properties = {}) => ({ type: 'object', properties,\n"
+            "    required: Object.keys(properties).filter((key) => properties[key].optional !== true) }),\n"
             "  String: (extra = {}) => schema('string', extra),\n"
             "  Number: () => schema('number'),\n"
             "  Integer: () => schema('integer'),\n"
@@ -1657,6 +1658,7 @@ class PiPackageTests(unittest.TestCase):
             "      registered: Object.keys(handlers).sort(), tools: tools.sort(),\n"
             "      annotations: Object.fromEntries(\n"
             "        Object.keys(defs).map((name) => [name, defs[name].annotations ?? null])),\n"
+            "      parameters: defs.memory_update ? defs.memory_update.parameters : null,\n"
             "      out }));\n"
             "  } else if (mode === 'escape') {\n"
             "    // One labelled sequence: each phase installs the registrations it\n"
@@ -1770,6 +1772,24 @@ class PiPackageTests(unittest.TestCase):
         self.assertEqual(len(updates), 1)
         self.assertEqual(updates[0]["budget_ms"], 180000)
         self.assertEqual(updates[0]["path"], "nodes/note.md")
+
+    def test_memory_update_registers_path_as_optional(self) -> None:
+        """Pi validates arguments against the registered schema before the tool
+        runs, so a required `path` refused the pathless commit its own
+        description offers."""
+        config_home = self.temp / "pi-home-schema"
+        config_home.mkdir(parents=True)
+        result = self.run_driver(self.bundle(), "register", {"config_home": str(config_home)})
+        schema = result["parameters"]
+        self.assertNotIn("path", schema["required"])
+        self.assertIn("operation", schema["required"])
+        described = schema["properties"]["path"]["description"]
+        self.assertTrue(described.startswith("Required except for commit."), described)
+        self.assertIn(
+            "commit: optional, the edited active .md leaf; omitted publishes every "
+            "dirty path inside the agent's memory tree and the declared shared root.",
+            described,
+        )
 
     def test_manifest_declares_a_pi_package_and_its_entry(self) -> None:
         manifest = json.loads(PACKAGE_MANIFEST.read_text(encoding="utf-8"))
@@ -2351,6 +2371,28 @@ class MemoryUpdateTests(unittest.TestCase):
                                  requires=["absent-prerequisite.md"])
         self.assertEqual(bad_requires.returncode, 3)
         self.assertIn("missing-prerequisite", self.text(bad_requires))
+
+    def test_a_pathless_operation_other_than_commit_is_a_bad_request(self) -> None:
+        self.create("note", body="body")
+        leaf = self.local / "nodes" / "note.md"
+        before = leaf.read_bytes()
+        for fields in (
+            {"operation": "create", "name": "nope"},
+            {"operation": "create", "path": "", "name": "nope"},
+            {"operation": "set", "body": "new"},
+            {"operation": "log", "text": "history"},
+        ):
+            with self.subTest(fields=fields):
+                result = self.call(**fields)
+                self.assertEqual(result.returncode, 3)
+                text = self.text(result)
+                self.assertTrue(
+                    text.startswith(f"memory_update {fields['operation']}: CONFLICTS"), text
+                )
+                self.assertIn("- bad-request: `path` is required; only `commit` may omit it.", text)
+                self.assertNotIn("outside-memory", text)
+        self.assertFalse((self.home / "nodes").exists())
+        self.assertEqual(leaf.read_bytes(), before)
 
     def test_subagent_never_writes(self) -> None:
         result = self.call(agent_id="sub-1", operation="create", path=str(self.local),
@@ -3088,6 +3130,24 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         self.assertEqual(git_run("show", "HEAD:nodes/beta.md", cwd=self.origin).stdout, "beta\n")
         self.assertIn("nodes/beta.md",
                       git_run("status", "--porcelain", cwd=self.shared).stdout)
+
+    def test_an_omitted_path_publishes_every_dirty_leaf(self) -> None:
+        self.create_note()
+        self.call(operation="create", path=str(self.shared), name="beta", body="beta",
+                  summary="Beta.", commit_message="create beta")
+        beta = self.shared / "nodes" / "beta.md"
+        self.leaf.write_text("note edited\n", encoding="utf-8")
+        beta.write_text("beta edited\n", encoding="utf-8")
+        result = self.call(
+            operation="commit",
+            commit_message="commit: every leaf\n\nPublishes every dirty leaf.",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(git_run("show", "HEAD:nodes/note.md", cwd=self.origin).stdout,
+                         "note edited\n")
+        self.assertEqual(git_run("show", "HEAD:nodes/beta.md", cwd=self.origin).stdout,
+                         "beta edited\n")
+        self.assertEqual(git_run("status", "--porcelain", cwd=self.shared).stdout, "")
 
     def test_a_no_remote_worktree_commits_locally_and_reports_it(self) -> None:
         self.create_note()

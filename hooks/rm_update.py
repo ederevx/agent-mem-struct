@@ -1229,6 +1229,10 @@ class MemoryUpdater:
     # -- resolution and conflicts -------------------------------------------
 
     def resolve(self, raw: str) -> tuple[Path, UpdateResult | None]:
+        if not raw:
+            return Path(), self.conflict(
+                "", "bad-request", "`path` is required; only `commit` may omit it."
+            )
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
             candidate = self.state.home / candidate

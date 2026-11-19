@@ -320,10 +320,11 @@ The bridge maps Pi events onto the hook's event vocabulary:
   to memory files and requires `commit_message` (a missing one gives
   `bad-request`). Its `path` is optional and names the edited active `.md`
   leaf; when omitted, every dirty path inside the agent's memory tree and the
-  declared shared root is published. It stages only that target set, never the
-  whole index, and derives the displaced state from Git: for a dirty active
-  leaf whose paired log is not itself dirty, the lines the edit dropped are
-  appended to the paired log before the commit. A write that lands in the
+  declared shared root is published. Every other operation requires `path`;
+  one sent without it is a `bad-request`. It stages only that target set,
+  never the whole index, and derives the displaced state from Git: for a dirty
+  active leaf whose paired log is not itself dirty, the lines the edit dropped
+  are appended to the paired log before the commit. A write that lands in the
   declared shared root is then committed and pushed by
   `rm_commit.CommitPublisher`, which stages only the
   paths the mutation wrote, commits the supplied `commit_message` exactly as

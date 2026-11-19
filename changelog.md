@@ -4,6 +4,19 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-18T21:42:00-05:00 - a commit without a path reaches the hook on Pi
+
+`memory_update`'s Pi schema declared `path` required while its description
+offered it as optional for `commit`, so the harness refused a pathless commit
+(`path: missing`) before the hook ran, and publishing every dirty path took a
+`path: ""` the tool never documented. The schema now marks `path` optional and
+says it is required for every other operation, and the hook owns that rule
+once: an operation that resolves a `path` and receives none is a `bad-request`
+naming the operation, where it used to resolve to the agent home and come back
+as `outside-memory`, a refusal about a path the writer never named. `commit`
+still publishes every dirty path when `path` is omitted, and no operation
+accepts an input it did not accept before.
+
 ## 2026-11-18T21:03:08-05:00 - a memory update asks for the audit, not its transcript
 
 `memory_update` no longer takes a `checklist`. A change is applied once the

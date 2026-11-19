@@ -404,15 +404,15 @@ export class RootMemoryBridge {
 					Type.Literal("attach"), Type.Literal("detach"),
 					Type.Literal("commit"),
 				], { description: "The mutation to perform." }),
-				path: Type.String({
+				path: Type.Optional(Type.String({
 					description:
-						"create: the group directory (node) or parent of the new " +
-						"group (kind=group). All others: the active .md leaf; " +
-						"log/commit also take the paired log of a retired leaf. " +
-						"commit: optional, the edited active .md leaf; omitted " +
-						"publishes every dirty path inside the agent's memory tree " +
-						"and the declared shared root.",
-				}),
+						"Required except for commit. create: the group directory " +
+						"(node) or parent of the new group (kind=group). All others: " +
+						"the active .md leaf; log/commit also take the paired log of a " +
+						"retired leaf. commit: optional, the edited active .md leaf; " +
+						"omitted publishes every dirty path inside the agent's memory " +
+						"tree and the declared shared root.",
+				})),
 				name: Type.Optional(Type.String({
 					description: "create/rename: the kebab-case leaf or group stem.",
 				})),
