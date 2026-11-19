@@ -215,8 +215,8 @@ The same bridge can be installed as a pi package instead:
 pi install git:github.com/ederevx/agent-mem-struct
 ```
 
-Unpinned, it follows the default branch on `pi update`; append `@<tag>` to pin
-a release tag.
+Unpinned, it follows the default branch on `pi update --extensions`; append
+`@<tag>` to pin a release tag, and install another tag to move the pin.
 
 `package.json` declares `pi.extensions` -> `./extensions/agent-mem-struct.ts`,
 which resolves the hook path, interpreter, memory home, config home, and
