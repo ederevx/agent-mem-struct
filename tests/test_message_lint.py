@@ -218,38 +218,49 @@ class MessageLintUnitTests(unittest.TestCase):
             self.check(f"subject line\n\nA body paragraph.\n\n{TRAILER}"), []
         )
 
-    def test_a_long_breakable_line_is_flagged(self) -> None:
-        findings = self.check(f"subject\n\n{BAD_LINE}")
-        self.assertTrue(any("cols with no unbreakable token" in item for item in findings))
+    def test_the_column_limit_needs_a_breakable_token_to_flag(self) -> None:
+        for label, line, flagged in (
+            ("a breakable line over the limit", BAD_LINE, True),
+            (
+                "an unbreakable URL over the limit",
+                "https://example.com/" + "a" * 100,
+                False,
+            ),
+        ):
+            with self.subTest(label):
+                findings = self.check(f"subject\n\n{line}")
+                self.assertEqual(
+                    any("cols with no unbreakable token" in item for item in findings),
+                    flagged,
+                    label,
+                )
 
-    def test_a_long_unbreakable_url_line_passes(self) -> None:
-        self.assertEqual(
-            self.check("subject\n\nhttps://example.com/" + "a" * 100), []
-        )
-
-    def test_a_body_of_ten_lines_passes(self) -> None:
-        body = "\n".join(f"body line {number}" for number in range(1, 11))
-        self.assertEqual(self.check(f"subject\n\n{body}\n\n{TRAILER}"), [])
-
-    def test_a_body_of_eleven_lines_is_flagged(self) -> None:
-        body = "\n".join(f"body line {number}" for number in range(1, 12))
-        self.assertEqual(
-            self.check(f"subject\n\n{body}\n\n{TRAILER}"),
-            [
-                "the body is 11 nonblank lines before the trailer block, "
-                "over 10"
-            ],
-        )
-
-    def test_blank_lines_do_not_count_toward_the_body_limit(self) -> None:
-        body = "\n\n".join(f"body line {number}" for number in range(1, 11))
-        self.assertEqual(self.check(f"subject\n\n{body}\n\n{TRAILER}"), [])
-
-    def test_trailer_lines_do_not_count_toward_the_body_limit(self) -> None:
+    def test_the_body_limit_counts_nonblank_body_lines_only(self) -> None:
+        over = [
+            "the body is 11 nonblank lines before the trailer block, "
+            "over 10"
+        ]
+        ten = "\n".join(f"body line {number}" for number in range(1, 11))
+        eleven = "\n".join(f"body line {number}" for number in range(1, 12))
+        spaced = "\n\n".join(f"body line {number}" for number in range(1, 11))
         references = "\n".join(f"Reference: {number}" for number in range(1, 13))
-        self.assertEqual(
-            self.check(f"subject\n\nbody\n\n{references}\n{TRAILER}"), []
-        )
+        for label, message, expected in (
+            ("ten body lines", f"subject\n\n{ten}\n\n{TRAILER}", []),
+            ("eleven body lines", f"subject\n\n{eleven}\n\n{TRAILER}", over),
+            (
+                "ten body lines separated by blank lines",
+                f"subject\n\n{spaced}\n\n{TRAILER}",
+                [],
+            ),
+            (
+                "twelve reference trailers after one body line",
+                f"subject\n\nbody\n\n{references}\n{TRAILER}",
+                [],
+            ),
+            ("eleven body lines and no trailer block", f"subject\n\n{eleven}", over),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self.check(message), expected, label)
 
     def test_facts_measure_the_same_message_the_lint_judges(self) -> None:
         facts = self.lint.facts(f"subject\n\none\n\ntwo\n\n{TRAILER}")
@@ -271,17 +282,29 @@ class MessageLintUnitTests(unittest.TestCase):
         self.assertIsNone(facts["body_nonblank_lines"])
         self.assertTrue(facts["trailer_block_unresolved"])
 
-    def test_a_missing_blank_line_before_the_trailer_block_is_flagged(self) -> None:
-        findings = self.check("subject\n\nbody\nSigned-off-by: y")
-        self.assertTrue(any("exactly one blank line" in item for item in findings))
-
-    def test_two_blank_lines_before_the_trailer_block_are_flagged(self) -> None:
-        findings = self.check("subject\n\nbody\n\n\nSigned-off-by: y")
-        self.assertTrue(any("exactly one blank line" in item for item in findings))
-
-    def test_a_blank_line_between_trailer_lines_is_flagged(self) -> None:
-        findings = self.check("subject\n\nSigned-off-by: y\n\n" + TRAILER)
-        self.assertTrue(any("sits between two trailer-like lines" in item for item in findings))
+    def test_the_trailer_block_needs_exactly_one_blank_line_before_it(self) -> None:
+        for label, message, fragment in (
+            (
+                "no blank line before it",
+                "subject\n\nbody\nSigned-off-by: y",
+                "exactly one blank line",
+            ),
+            (
+                "two blank lines before it",
+                "subject\n\nbody\n\n\nSigned-off-by: y",
+                "exactly one blank line",
+            ),
+            (
+                "a blank line between trailer lines",
+                "subject\n\nSigned-off-by: y\n\n" + TRAILER,
+                "sits between two trailer-like lines",
+            ),
+        ):
+            with self.subTest(label):
+                findings = self.check(message)
+                self.assertTrue(
+                    any(fragment in item for item in findings), label
+                )
 
     def test_trailers_must_match_interpret_trailers(self) -> None:
         findings = self.check("subject\n\nAssisted-by:pi:m\nSigned-off-by: y")
@@ -360,13 +383,30 @@ class MessageLintUnitTests(unittest.TestCase):
         self.assertEqual(aliased, self.check(message))
         self.assertTrue(any("probe:" in item for item in aliased))
 
-    def test_an_unresolved_trailer_block_is_unavailable_without_git(self) -> None:
+    def test_an_unresolved_trailer_block_leaves_the_length_unstated_and_refuses(
+        self,
+    ) -> None:
         from rm_lint import MessageLint
 
-        lint = MessageLint()
-        findings = lint.violations(f"subject\n\n{TRAILER}")
-        self.assertTrue(any("trailer validation is unavailable" in item for item in findings))
-        self.assertIsNone(lint.facts(f"subject\n\n{TRAILER}")["body_nonblank_lines"])
+        message = f"subject\n\n{TRAILER}"
+        with self.subTest("no git to parse the block"):
+            without_git = MessageLint()
+            self.assertIsNone(without_git.facts(message)["body_nonblank_lines"])
+            self.assertTrue(
+                any(
+                    "trailer validation is unavailable" in item
+                    for item in without_git.violations(message)
+                )
+            )
+        unparsed = "subject\n\nbody\n\nAssisted-by: LLM"
+        with self.subTest("a block git does not parse"):
+            with mock.patch.object(self.lint, "parsed_trailers", return_value=None):
+                facts = self.lint.facts(unparsed)
+                findings = self.check(unparsed)
+            self.assertIsNone(facts["body_nonblank_lines"])
+            self.assertTrue(
+                any("trailer validation is unavailable" in item for item in findings)
+            )
 
     def test_a_trailerless_body_is_counted_without_git(self) -> None:
         from rm_lint import MessageLint
@@ -382,14 +422,6 @@ class MessageLintUnitTests(unittest.TestCase):
             ],
         )
 
-    def test_an_unparsed_block_leaves_the_length_unstated_and_refuses(self) -> None:
-        message = "subject\n\nbody\n\nAssisted-by: LLM"
-        with mock.patch.object(self.lint, "parsed_trailers", return_value=None):
-            facts = self.lint.facts(message)
-            findings = self.check(message)
-        self.assertIsNone(facts["body_nonblank_lines"])
-        self.assertTrue(any("trailer validation is unavailable" in item for item in findings))
-
     def test_a_trailer_run_git_does_not_accept_is_malformed(self) -> None:
         from rm_lint import TRAILER_MALFORMED
 
@@ -398,11 +430,6 @@ class MessageLintUnitTests(unittest.TestCase):
         message = "subject\n\nbody\nAssisted-by: LLM"
         self.assertIsNone(self.lint.facts(message)["body_nonblank_lines"])
         self.assertIn(TRAILER_MALFORMED, self.check(message))
-
-    def test_a_trailerless_body_of_eleven_lines_is_flagged(self) -> None:
-        body = "\n".join(f"body line {number}" for number in range(1, 12))
-        findings = self.check(f"subject\n\n{body}")
-        self.assertTrue(any("over 10" in item for item in findings))
 
     def test_a_subject_only_message_passes(self) -> None:
         self.assertEqual(self.check("the subject alone"), [])
@@ -413,8 +440,26 @@ class MessageLintUnitTests(unittest.TestCase):
         self.assertIn("the message states no subject line", self.check(""))
 
     def test_a_trailer_line_outside_the_final_block_is_flagged(self) -> None:
-        findings = self.check(f"subject\n\n{TRAILER}\n\nmore text")
-        self.assertTrue(any("outside the final trailer block" in item for item in findings))
+        for label, message, outside in (
+            (
+                "the attribution block above more text",
+                f"subject\n\n{TRAILER}\n\nmore text",
+                True,
+            ),
+            (
+                "a reference trailer above the block",
+                "subject\n\nReference: https://github.com/example/project/tree/abc123"
+                "\n\n" + TRAILER,
+                True,
+            ),
+        ):
+            with self.subTest(label):
+                findings = self.check(message)
+                self.assertEqual(
+                    any("outside the final trailer block" in item for item in findings),
+                    outside,
+                    label,
+                )
 
     def test_source_and_reference_trailers_in_the_final_block_pass(self) -> None:
         message = (
@@ -426,13 +471,6 @@ class MessageLintUnitTests(unittest.TestCase):
         )
         self.assertEqual(self.check(message), [])
 
-    def test_a_reference_trailer_outside_the_final_block_is_flagged(self) -> None:
-        findings = self.check(
-            "subject\n\nReference: https://github.com/example/project/tree/abc123\n\n"
-            + TRAILER
-        )
-        self.assertTrue(any("outside the final trailer block" in item for item in findings))
-
     def test_an_indented_line_above_the_trailer_block_is_flagged(self) -> None:
         findings = self.check("subject\n\n  indented body\n\nSigned-off-by: y")
         self.assertTrue(any("starts with whitespace" in item for item in findings))
@@ -443,18 +481,23 @@ class MessageLintUnitTests(unittest.TestCase):
         )
         self.assertEqual(self.check(r"subject \xff"), [])
 
-    def test_the_literal_llm_attribution_passes(self) -> None:
-        self.assertEqual(self.check("subject\n\nAssisted-by: LLM"), [])
-
-    def test_an_attribution_naming_a_model_is_flagged(self) -> None:
+    def test_only_the_literal_llm_attribution_passes(self) -> None:
         # A session may be served by a virtual routing model or by any tier of a
         # failover chain, so a model id states something no trailer can verify.
-        for value in ("pi:glm-5.3-flash", "codex:gpt-5.4", "LLM:extra", "llm"):
-            findings = self.check(f"subject\n\nAssisted-by: {value}")
-            self.assertTrue(
-                any("expected 'LLM'" in item for item in findings),
-                f"{value!r} must be flagged",
-            )
+        for label, value, flagged in (
+            ("the literal `LLM`", "LLM", False),
+            ("a virtual routing model", "pi:glm-5.3-flash", True),
+            ("a codex model", "codex:gpt-5.4", True),
+            ("a tier suffix", "LLM:extra", True),
+            ("lower case", "llm", True),
+        ):
+            with self.subTest(label):
+                findings = self.check(f"subject\n\nAssisted-by: {value}")
+                self.assertEqual(
+                    any("expected 'LLM'" in item for item in findings),
+                    flagged,
+                    label,
+                )
 
 class PushLintUnitTests(unittest.TestCase):
     """`rm_lint.PushLint`: the bounded read-only scan."""
@@ -539,43 +582,34 @@ class PushGateTests(unittest.TestCase):
             report.blocked,
         )
 
-    def test_a_bad_commit_blocks_a_plain_push(self) -> None:
+    def test_a_bad_commit_blocks_every_push_form(self) -> None:
         sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        for escape in (False, True):
-            with self.subTest(escape=escape):
+        with self.subTest("a plain push, with and without the gate escape"):
+            for escape in (False, True):
                 body = self.decision(self.push("git push origin main", escape=escape))
-                self.assertEqual(body.get("permissionDecision"), "deny")
+                self.assertEqual(
+                    body.get("permissionDecision"), "deny", f"escape={escape}"
+                )
                 reason = body["permissionDecisionReason"]
                 self.assertIn("message-lint: push blocked:", reason)
                 self.assertIn(sha[:12], reason)
                 self.assertIn("reword with one -F payload", reason)
-
-    def test_a_bad_commit_blocks_a_dash_c_push(self) -> None:
-        sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        result = self.push(f"git -C {self.clone} push origin main", cwd=self.home)
-        reason = self.decision(result)["permissionDecisionReason"]
-        self.assertIn("message-lint: push blocked:", reason)
-        self.assertIn(sha[:12], reason)
-
-    def test_a_bad_commit_blocks_a_bare_push(self) -> None:
-        sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        reason = self.decision(self.push("git push"))["permissionDecisionReason"]
-        self.assertIn("message-lint: push blocked:", reason)
-        self.assertIn(sha[:12], reason)
-
-    def test_a_bad_commit_blocks_a_bare_dash_c_push(self) -> None:
-        sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        result = self.push(f"git -C {self.clone} push", cwd=self.home)
-        reason = self.decision(result)["permissionDecisionReason"]
-        self.assertIn("message-lint: push blocked:", reason)
-        self.assertIn(sha[:12], reason)
-
-    def test_a_chained_push_is_still_linted(self) -> None:
-        sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        result = self.push("git push origin main && git status")
-        reason = self.decision(result)["permissionDecisionReason"]
-        self.assertIn("message-lint: push blocked:", reason)
-        self.assertIn(sha[:12], reason)
+        for label, command, cwd in (
+            ("a `-C` push", f"git -C {self.clone} push origin main", self.home),
+            ("a bare push", "git push", None),
+            ("a bare `-C` push", f"git -C {self.clone} push", self.home),
+            ("a chained push", "git push origin main && git status", None),
+            (
+                "a `cd` then a push",
+                f"cd {self.clone} && git push origin HEAD:main",
+                self.home,
+            ),
+        ):
+            with self.subTest(label):
+                result = self.push(command, cwd=cwd)
+                reason = self.decision(result)["permissionDecisionReason"]
+                self.assertIn("message-lint: push blocked:", reason, label)
+                self.assertIn(sha[:12], reason, label)
 
     def test_a_push_in_the_call_that_creates_its_commits_is_denied(self) -> None:
         commit_message(self.clone, "subject\n\nA clean body.")
@@ -586,36 +620,24 @@ class PushGateTests(unittest.TestCase):
         self.assertEqual(body.get("permissionDecision"), "deny")
         self.assertIn("creates its commits", body["permissionDecisionReason"])
 
-    def test_a_push_of_commits_made_earlier_is_judged_on_them(self) -> None:
-        sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        reason = self.decision(self.push("git push origin main"))[
-            "permissionDecisionReason"
-        ]
-        self.assertIn("message-lint: push blocked:", reason)
-        self.assertIn(sha[:12], reason)
-
-    def test_a_bad_commit_blocks_a_cd_then_push(self) -> None:
-        sha = commit_message(self.clone, f"subject\n\n{BAD_LINE}")
-        result = self.push(
-            f"cd {self.clone} && git push origin HEAD:main", cwd=self.home
-        )
-        reason = self.decision(result)["permissionDecisionReason"]
-        self.assertIn("message-lint: push blocked:", reason)
-        self.assertIn(sha[:12], reason)
-
-    def test_a_foreign_author_bad_commit_is_allowed(self) -> None:
-        commit_message(self.clone, f"subject\n\n{BAD_LINE}", email="other@example.com")
-        result = self.push("git push origin main")
-        self.assertEqual(result.stdout.strip(), "")
-
-    def test_a_clean_commit_is_allowed(self) -> None:
-        commit_message(self.clone, "subject\n\nA conforming body.")
-        result = self.push("git push origin main")
-        self.assertEqual(result.stdout.strip(), "")
-
-    def test_nothing_ahead_is_allowed(self) -> None:
-        result = self.push("git push origin main")
-        self.assertEqual(result.stdout.strip(), "")
+    def test_a_push_that_publishes_no_nonconforming_commit_is_allowed(self) -> None:
+        # The rows run in order on one clone: each push publishes only the
+        # commit that row makes, so "nothing ahead" holds only when it is first.
+        for label, message, email in (
+            ("nothing ahead of the remote", None, None),
+            ("one clean commit", "subject\n\nA conforming body.", None),
+            (
+                "a foreign author's nonconforming commit",
+                f"subject\n\n{BAD_LINE}",
+                "other@example.com",
+            ),
+        ):
+            with self.subTest(label):
+                if message is not None:
+                    commit_message(self.clone, message, email=email)
+                self.assertEqual(
+                    self.push("git push origin main").stdout.strip(), "", label
+                )
 
     def test_an_unresolvable_push_is_annotated(self) -> None:
         bare = self.temp / "bare-no-remote"
@@ -770,23 +792,29 @@ class MessageReviewTests(unittest.TestCase):
         self.assertEqual(stored.rstrip("\n"), message)
 
     def test_a_stored_message_that_differs_is_not_pushed(self) -> None:
-        sha = self.commit("stored\n\nStored body.")
-        moved = self.publisher.message_moved(sha, "reviewed\n\nReviewed body.")
-        self.assertIn("does not carry the reviewed message", moved)
-
-    def test_leading_whitespace_is_a_difference(self) -> None:
         reviewed = "subject\n\nA body line."
         sha = self.commit(reviewed)
-        with mock.patch.object(
-            self.publisher, "stored_message", return_value="\n" + reviewed
+        for label, stored, candidate, refused in (
+            (
+                "a message rewritten at review",
+                None,
+                "reviewed\n\nReviewed body.",
+                True,
+            ),
+            ("leading whitespace", "\n" + reviewed, reviewed, True),
+            ("a trailing newline", None, reviewed + "\n", False),
         ):
-            moved = self.publisher.message_moved(sha, reviewed)
-        self.assertIn("does not carry the reviewed message", moved)
-
-    def test_a_trailing_newline_is_not_a_difference(self) -> None:
-        reviewed = "subject\n\nA body line."
-        sha = self.commit(reviewed)
-        self.assertEqual(self.publisher.message_moved(sha, reviewed + "\n"), "")
+            with self.subTest(label):
+                if stored is None:
+                    moved = self.publisher.message_moved(sha, candidate)
+                else:
+                    with mock.patch.object(
+                        self.publisher, "stored_message", return_value=stored
+                    ):
+                        moved = self.publisher.message_moved(sha, candidate)
+                self.assertEqual(
+                    "does not carry the reviewed message" in moved, refused, label
+                )
 
     def test_an_empty_review_is_refused(self) -> None:
         sha = self.commit("stored\n\nStored body.")
