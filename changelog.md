@@ -4,6 +4,16 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-21T20:16:43-05:00 - a target holding the planned bytes is not replaced
+
+The commit operation materialized every dirty path by writing a temporary
+file beside it and replacing the target, so publishing bytes that were
+already on disk failed wherever the host refuses that replacement for the
+target name - Windows refuses it for some shell scripts while still letting
+their owner write them in place. The applied write now reads the target and
+leaves it alone when it holds exactly the planned bytes; a target whose bytes
+differ still takes the same atomic replace, so no other path's write changes.
+
 ## 2026-11-19T15:39:45-05:00 - no test creates a link
 
 The suite's alias fixtures built symlinks on the host, so a host that refuses

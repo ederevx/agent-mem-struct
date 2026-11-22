@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan freshness, working-tree staleness, line endings, and publication guards."""
+"""Plan freshness, staleness, line endings, applied writes, and publication guards."""
 from __future__ import annotations
 
 import importlib
@@ -52,12 +52,13 @@ class Temp(unittest.TestCase):
         self.temp = Path(tempfile.mkdtemp(prefix="ams-plan-", dir=SCRATCH))
         self.addCleanup(shutil.rmtree, self.temp, True)
 
+    def plan(self, effects: list[object]) -> object:
+        """A recorded plan, which an apply reads for its effects alone."""
+        return type("Plan", (), {"effects": effects})()
+
 
 class StaleEffectTests(Temp):
     """A plan applies only while the files on disk are still the captured ones."""
-
-    def plan(self, effects: list[object]) -> object:
-        return type("Plan", (), {"effects": effects})()
 
     def effect(self, path: Path, before: bytes, after: bytes):
         return plan_module.FileEffect("write", path, before, after)
@@ -417,6 +418,39 @@ class PlanFreshnessTests(InProcess):
         self.assertFalse(result.ok)
         self.assertEqual(self.code(result), "stale-draft")
         self.assertIn("repository facts", result.conflicts[0]["message"])
+
+
+class AppliedWriteTests(InProcess):
+    """An applied write replaces a target only when its bytes differ."""
+
+    def test_a_target_holding_the_planned_bytes_is_not_replaced(self) -> None:
+        target = self.temp / "ledger-collect.sh"
+        working = b"#!/bin/sh\nexit 0\n"
+        target.write_bytes(working)
+        # Git still holds other bytes for this name; the working file, which is
+        # the plan's observed state, already holds the bytes the plan writes.
+        write = plan_module.FileEffect(
+            plan_module.WRITE, target, b"committed\n", working, observed=working
+        )
+        with mock.patch.object(
+            update_module.os, "replace", side_effect=PermissionError(13, "denied")
+        ) as replace:
+            self.updater().materialize(self.plan([write]))
+        replace.assert_not_called()
+        self.assertEqual(target.read_bytes(), working)
+
+    def test_a_target_holding_other_bytes_is_replaced(self) -> None:
+        target = self.temp / "note.md"
+        target.write_bytes(b"committed\n")
+        write = plan_module.FileEffect(
+            plan_module.WRITE, target, b"committed\n", b"edited\n"
+        )
+        with mock.patch.object(
+            update_module.os, "replace", wraps=os.replace
+        ) as replace:
+            self.updater().materialize(self.plan([write]))
+        replace.assert_called_once()
+        self.assertEqual(target.read_bytes(), b"edited\n")
 
 
 class PrivateMemoryWithoutSubprocessTests(InProcess):

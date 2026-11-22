@@ -1488,8 +1488,19 @@ class MemoryUpdater:
         return str(path)
 
     def write_file(self, path: Path, data: bytes) -> None:
-        """Replace one file with exactly these bytes, as the applied plan requires."""
+        """Replace one file with exactly these bytes, as the applied plan requires.
+
+        A target already holding those bytes is left in place: a replacement
+        would write nothing new, and a host may refuse the atomic replace of a
+        file it still lets its owner write in place.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            unchanged = path.read_bytes() == data
+        except OSError:
+            unchanged = False
+        if unchanged:
+            return
         temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
         try:
             temporary.write_bytes(data)
