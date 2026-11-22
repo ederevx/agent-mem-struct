@@ -4,6 +4,20 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-22T09:14:00-05:00 - a leaf's attachment material is not its own leaf
+
+The commit operation counted every Markdown file outside `log/` as a leaf, so
+editing a node's recorded script documentation was refused with
+`missing-counterpart` for a log the structure never asks for: `STRUCTURE.md`
+gives the attachment directory no memory identity and routes its history to the
+leaf that owns it. A path with an ancestor directory whose sibling carries a
+leaf's stem is now that leaf's material at whatever depth it sits, and the
+ownership is read from what HEAD holds as well, so a leaf retired by the same
+commit still identifies its directory. A hand deletion of a leaf that would
+leave that material behind is refused as `retire-required`, because `retire`
+removes the two together, and an ownership question Git will not answer is an
+`unreadable-target` refusal instead of a guess.
+
 ## 2026-11-21T20:16:43-05:00 - a target holding the planned bytes is not replaced
 
 The commit operation materialized every dirty path by writing a temporary

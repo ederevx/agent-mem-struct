@@ -146,6 +146,22 @@ class GitWorktree:
             return False, None
         return True, result.stdout
 
+    def tree_paths(self, sha: str, relative: str) -> tuple[bool, list[str]]:
+        """Every file at or under `relative` in `sha`, with the query kept apart.
+
+        `git ls-tree` lists one directory level unless recursion is asked for, and
+        a caller holding a whole directory to a rule needs every file it holds, so
+        the subtree is read here. The first value says whether Git answered at
+        all, so an unanswered query is never read as an empty directory.
+        """
+        result = self.run(
+            "ls-tree", "-r", "-z", "--name-only", sha, "--", relative,
+            budget=self.limit(default=QUERY_BUDGET),
+        )
+        if result.returncode != 0:
+            return False, []
+        return True, [name for name in result.stdout.split("\0") if name]
+
     def blob_id(self, sha: str, relative: str) -> str | None:
         """The blob Git stored for `relative` at `sha`, or None when it is not one."""
         found, entry = self.tree_entry(sha, relative)

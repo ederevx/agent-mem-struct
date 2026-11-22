@@ -3048,6 +3048,93 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn("missing-counterpart", self.text(result))
 
+    def test_a_dirty_file_in_an_attachment_directory_needs_no_log(self) -> None:
+        self.create_note()
+        usage = self.leaf.parent / self.leaf.stem / "usage.md"
+        usage.parent.mkdir(parents=True)
+        usage.write_text("# Usage\nrun it\n", encoding="utf-8")
+        result = self.call(operation="commit", commit_message="commit: usage")
+        self.assertEqual(result.returncode, 0, self.text(result))
+        self.assertFalse((usage.parent / "log").exists())
+        published = git_run(
+            "show", "--name-only", "--format=", "HEAD", cwd=self.shared
+        ).stdout
+        self.assertIn(f"{self.leaf.stem}/usage.md", published)
+
+    def test_a_nested_file_in_an_attachment_directory_needs_no_log(self) -> None:
+        self.create_note()
+        usage = self.leaf.parent / self.leaf.stem / "docs" / "usage.md"
+        usage.parent.mkdir(parents=True)
+        usage.write_text("# Usage\nrun it\n", encoding="utf-8")
+        result = self.call(operation="commit", commit_message="commit: usage")
+        self.assertEqual(result.returncode, 0, self.text(result))
+        self.assertFalse((usage.parent / "log").exists())
+
+    def test_a_hand_retirement_publishes_its_attachment_material(self) -> None:
+        self.create_note()
+        usage = self.leaf.parent / self.leaf.stem / "usage.md"
+        usage.parent.mkdir(parents=True)
+        usage.write_text("# Usage\nrun it\n", encoding="utf-8")
+        self.call(operation="commit", commit_message="commit: usage")
+        self.leaf.unlink()
+        usage.unlink()
+        with self.log.open("a", encoding="utf-8") as log:
+            log.write("2026-11-22: retired with its usage note.\n")
+        result = self.call(operation="commit", commit_message="commit: retire note")
+        self.assertEqual(result.returncode, 0, self.text(result))
+        self.assertEqual(
+            [child for child in (self.leaf.parent / self.leaf.stem).rglob("*") if child.is_file()],
+            [],
+            "the attachment material is gone from the worktree",
+        )
+        held = git_run(
+            "ls-tree", "-r", "--name-only", "HEAD", "--", "nodes/note",
+            cwd=self.shared,
+        ).stdout.strip()
+        self.assertEqual(held, "", "and from the publication")
+        for path in (self.leaf, usage):
+            kept = git_run(
+                "cat-file", "-e", f"HEAD:{path.relative_to(self.shared).as_posix()}",
+                cwd=self.shared,
+            )
+            self.assertNotEqual(kept.returncode, 0, f"{path} is still published")
+
+    def test_a_hand_retirement_leaving_attachment_material_is_refused(self) -> None:
+        self.create_note()
+        usage = self.leaf.parent / self.leaf.stem / "usage.md"
+        usage.parent.mkdir(parents=True)
+        usage.write_text("# Usage\nrun it\n", encoding="utf-8")
+        self.call(operation="commit", commit_message="commit: usage")
+        self.leaf.unlink()
+        with self.log.open("a", encoding="utf-8") as log:
+            log.write("2026-11-22: retired.\n")
+        result = self.call(operation="commit", commit_message="commit: retire note")
+        self.assertEqual(result.returncode, 3, self.text(result))
+        self.assertIn("retire-required", self.text(result))
+        self.assertIn("attachment material", self.text(result))
+        kept = git_run(
+            "cat-file", "-e", "HEAD:nodes/note.md", cwd=self.shared
+        )
+        self.assertEqual(kept.returncode, 0, "the refusal published nothing")
+
+    def test_a_named_retirement_cannot_leave_the_deletion_unpublished(self) -> None:
+        self.create_note()
+        usage = self.leaf.parent / self.leaf.stem / "usage.md"
+        usage.parent.mkdir(parents=True)
+        usage.write_text("# Usage\nrun it\n", encoding="utf-8")
+        self.call(operation="commit", commit_message="commit: usage")
+        self.leaf.unlink()
+        usage.unlink()
+        with self.log.open("a", encoding="utf-8") as log:
+            log.write("2026-11-22: retired.\n")
+        result = self.call(
+            operation="commit", path=str(self.leaf),
+            commit_message="commit: retire note",
+        )
+        self.assertEqual(result.returncode, 3, self.text(result))
+        self.assertIn("retire-required", self.text(result))
+        self.assertIn("usage.md", self.text(result))
+
     def test_a_non_git_memory_tree_is_reported_as_not_git(self) -> None:
         orphan = self.home / "memory" / "local" / "nodes" / "orphan.md"
         orphan.parent.mkdir(parents=True, exist_ok=True)

@@ -356,8 +356,13 @@ The bridge maps Pi events onto the hook's event vocabulary:
   commit. It is also refused when a tracked leaf was deleted by hand while its
   paired log is not part of the same publication: that removal is
   `retire-required`, because only `retire` keeps the leaf's final state. A
-  target Git will not report on is `unreadable-target` rather than a
-  deletion. The tool never
+  hand deletion that would leave the leaf's attachment material behind is the
+  same refusal, since `retire` removes the material and the leaf together, and
+  a Markdown file inside an attachment directory is that material rather than a
+  leaf of its own at any depth, owned by the leaf HEAD holds even when the same
+  commit removes it. A target Git will not report on is `unreadable-target`
+  rather than a deletion, and an ownership question Git will not answer is
+  `unreadable-target` rather than a guess. The tool never
   resolves a conflict itself: `control-invalid`, `stale-protocol`,
   `shared-diverged`, `shared-unpushed`, `git-conflict`, `git-failed`,
   `outside-memory`, `missing-counterpart`, `not-git`, `missing-prerequisite`,

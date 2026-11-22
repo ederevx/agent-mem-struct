@@ -733,7 +733,17 @@ class MemoryUpdater:
         removed = self.retire_required(dirty_targets, dirty, edits)
         if removed is not None:
             return removed
-        active = [path for path in dirty_targets if self.is_active_leaf(path)]
+        active: list[Path] = []
+        for path in dirty_targets:
+            leaf = self.is_active_leaf(path, edits)
+            if leaf is None:
+                return self.unreadable_target(
+                    "commit", path,
+                    "lies in a directory whose owning leaf Git would not report on, "
+                    "so whether it is memory or attachment material is undecided.",
+                )
+            if leaf:
+                active.append(path)
         for leaf in active:
             if not self.tree.exists(leaf.parent / "log" / leaf.name):
                 return self.log_conflict("commit", leaf)
@@ -799,7 +809,14 @@ class MemoryUpdater:
         commit points at `retire` instead of committing the deletion.
         """
         for path in targets:
-            if not self.is_active_leaf(path) or self.tree.state(path) != ABSENT:
+            leaf = self.is_active_leaf(path, edits)
+            if leaf is None:
+                return self.unreadable_target(
+                    "commit", path,
+                    "lies in a directory whose owning leaf Git would not report on, "
+                    "so whether its removal is a retirement is undecided.",
+                )
+            if not leaf or self.tree.state(path) != ABSENT:
                 continue
             held = self.tracked(path, edits)
             if held is None:
@@ -811,18 +828,78 @@ class MemoryUpdater:
             if not held:
                 continue
             log = path.parent / "log" / path.name
-            if self.dirty(log, dirty):
-                continue
-            return self.conflict(
-                "commit",
-                "retire-required",
-                f"{path} was deleted by hand and its paired log is not part of "
-                "this publication, so the leaf's final state would be lost.",
-                fix="restore the leaf, then call memory_update with operation "
-                "`retire` so the final state reaches the paired log before the "
-                "removal is published",
-            )
+            if not self.dirty(log, dirty):
+                return self.conflict(
+                    "commit",
+                    "retire-required",
+                    f"{path} was deleted by hand and its paired log is not part of "
+                    "this publication, so the leaf's final state would be lost.",
+                    fix="restore the leaf, then call memory_update with operation "
+                    "`retire` so the final state reaches the paired log before the "
+                    "removal is published",
+                )
+            answered, left = self.left_attachments(path, edits, targets)
+            if not answered:
+                return self.unreadable_target(
+                    "commit", path.parent / path.stem,
+                    "is the attachment directory of a leaf deleted by hand, and Git "
+                    "would not report what HEAD holds under it, so no removal can be "
+                    "audited.",
+                )
+            if left:
+                extra = "" if len(left) == 1 else f" and {len(left) - 1} more"
+                return self.conflict(
+                    "commit",
+                    "retire-required",
+                    f"{path} was deleted by hand, but {left[0]}{extra} of its "
+                    "attachment material would stay behind, in a directory no leaf "
+                    "owns once that removal is published.",
+                    fix="delete that material in the same publication, or call "
+                    "memory_update with operation `retire`, which removes the leaf "
+                    "and its attachment material together",
+                )
         return None
+
+    def left_attachments(
+        self, leaf: Path, edits: WorktreeEdits, published: list[Path]
+    ) -> tuple[bool, list[Path]]:
+        """The attachment material a hand retirement would leave, and whether Git said.
+
+        `retire` removes the leaf's attachment directory with the leaf, so a
+        publication that removes the leaf while any of that material stays - on
+        disk, or committed and never deleted here - leaves a directory the
+        structure lets no leaf own. The first value is False when Git would not
+        report what HEAD holds under it.
+        """
+        directory = leaf.parent / leaf.stem
+        if self.tree.state(directory) != ABSENT:
+            leftovers = self.material_under(directory)
+            if leftovers:
+                return True, leftovers
+        target = self.git_target(directory, edits)
+        if target is None:
+            return True, []
+        worktree, relative = target
+        answered, held = worktree.tree_paths("HEAD", relative)
+        if not answered:
+            return False, []
+        kept = {self.tree.key(path) for path in published}
+        left = [
+            held_path
+            for held_path in (worktree.root / name for name in held)
+            if self.tree.key(held_path) not in kept
+        ]
+        return True, sorted(left)
+
+    def material_under(self, directory: Path) -> list[Path]:
+        """Every file this plan sees under `directory`, at whatever depth."""
+        found: list[Path] = []
+        for child in self.tree.entries(directory):
+            if self.tree.is_dir(child):
+                found.extend(self.material_under(child))
+            else:
+                found.append(child)
+        return found
 
     def record_target(self, path: Path, edits: WorktreeEdits) -> UpdateResult | None:
         """Record one dirty target as the equality write or deletion to publish.
@@ -1005,13 +1082,48 @@ class MemoryUpdater:
             appended=result.appended,
         )
 
-    @staticmethod
-    def is_active_leaf(path: Path) -> bool:
-        return (
-            path.suffix == ".md"
-            and path.parent.name != "log"
-            and path.name != "MEMORY.md"
-        )
+    def is_active_leaf(self, path: Path, edits: WorktreeEdits) -> bool | None:
+        """A memory leaf, never attachment material; None when Git would not say."""
+        if (
+            path.suffix != ".md"
+            or path.parent.name == "log"
+            or path.name == "MEMORY.md"
+        ):
+            return False
+        material = self.attachment_material(path, edits)
+        return None if material is None else not material
+
+    def attachment_material(self, path: Path, edits: WorktreeEdits) -> bool | None:
+        """Whether an ancestor directory is the attachment directory of a leaf.
+
+        STRUCTURE names that directory for the leaf's stem and gives it no memory
+        identity of its own, at any depth, and the leaf it belongs to may be
+        retired by the same commit, so a leaf HEAD still holds counts too. None
+        when Git would not report whether that leaf is there: an undecided
+        question is never answered as "not its material".
+        """
+        roots = [
+            root
+            for root in (self.state.memory_root, self.state.shared_resolved)
+            if root is not None
+        ]
+        parent = path.parent
+        while any(
+            under(parent, root)
+            and parent.resolve(strict=False) != root.resolve(strict=False)
+            for root in roots
+        ):
+            owner = parent.parent / f"{parent.name}.md"
+            if owner.name != "MEMORY.md" and owner.parent.name != "log":
+                if self.tree.exists(owner):
+                    return True
+                held = self.tracked(owner, edits)
+                if held is None:
+                    return None
+                if held:
+                    return True
+            parent = parent.parent
+        return False
 
     @staticmethod
     def unique(paths: list[Path]) -> list[Path]:
