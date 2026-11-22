@@ -745,7 +745,10 @@ class MemoryUpdater:
             if leaf:
                 active.append(path)
         for leaf in active:
-            if not self.tree.exists(leaf.parent / "log" / leaf.name):
+            log = leaf.parent / "log" / leaf.name
+            if self.tree.state(leaf) == ABSENT and log in dirty_targets:
+                continue
+            if not self.tree.exists(log):
                 return self.log_conflict("commit", leaf)
         written: list[Path] = []
         appended: list[tuple[str, str]] = []

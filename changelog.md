@@ -4,6 +4,13 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-22T16:04:23-05:00 - publish removed memory pairs from absent directories
+
+Deleted memory paths resolve their enclosing repository even when their
+parent directories are absent. Commit publication accepts a deleted leaf
+with its paired log included, while surviving leaves still require their
+counterparts.
+
 ## 2026-11-22T09:14:00-05:00 - a leaf's attachment material is not its own leaf
 
 The commit operation counted every Markdown file outside `log/` as a leaf, so

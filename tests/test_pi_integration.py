@@ -3276,6 +3276,119 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
         self.assertEqual(stored.rstrip("\n"), message)
 
 
+class DeletedParentDiscoveryTests(unittest.TestCase):
+    """A removal whose directories are gone still resolves its own worktree."""
+
+    def setUp(self) -> None:
+        SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+        self.temp = Path(tempfile.mkdtemp(prefix="ams-deleted-parent-", dir=SCRATCH_ROOT))
+        self.addCleanup(shutil.rmtree, self.temp)
+        enclosing = self.temp / "enclosing"
+        enclosing.mkdir()
+        git_run("init", "-b", "main", cwd=enclosing)
+        (enclosing / "README.md").write_text("# Enclosing\n", encoding="utf-8")
+        git_run("add", "README.md", cwd=enclosing)
+        git_run(
+            "-c", "user.email=t@t", "-c", "user.name=t", "commit",
+            "-m", "enclosing: seed", cwd=enclosing,
+        )
+        self.origin = self.temp / "origin.git"
+        self.shared = make_git_shared(self.origin, enclosing / "shared")
+        self.home, _ = make_home(self.temp / "home", self.shared)
+        self.index = self.shared / "nodes" / "MEMORY.md"
+
+    def call(self, **fields: object) -> subprocess.CompletedProcess[str]:
+        event: dict[str, object] = {
+            "hook_event_name": "MemoryUpdate",
+            "session_id": "pi-session",
+            "turn_id": "turn-1",
+        }
+        event.update(fields)
+        return invoke_pi(self.home, event)
+
+    def text(self, result: subprocess.CompletedProcess[str]) -> str:
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def seed_group(self) -> tuple[list[str], dict[str, bytes]]:
+        """Commit a node, its log and their indexes one directory too deep."""
+        seeded = {
+            "nodes/MEMORY.md": "# Nodes\n- [[note]] - Note.\n",
+            "nodes/note.md": "# Note\nfirst\n",
+            "nodes/log/note.md": "# Log: note\n\nNone.\n",
+            "nodes/nodes/MEMORY.md": "# Nodes\n- [[note]] - Note.\n",
+            "nodes/nodes/note.md": "# Note\nfirst\n",
+            "nodes/nodes/log/MEMORY.md": "# Log: MEMORY\n",
+            "nodes/nodes/log/note.md": "# Log: note\n\nNone.\n",
+        }
+        for relative, body in seeded.items():
+            path = self.shared / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+        git_run("add", "-A", cwd=self.shared)
+        git_run(
+            "-c", "user.email=t@t", "-c", "user.name=t", "commit",
+            "-m", "nested: seed", cwd=self.shared,
+        )
+        git_run("push", "origin", "HEAD:main", cwd=self.shared)
+        retained = {
+            relative: (self.shared / relative).read_bytes()
+            for relative in ("nodes/note.md", "nodes/log/note.md")
+        }
+        nested = [relative for relative in seeded if relative.startswith("nodes/nodes/")]
+        return nested, retained
+
+    def test_a_removal_from_absent_directories_resolves_its_own_worktree(self) -> None:
+        removed, retained = self.seed_group()
+        shutil.rmtree(self.shared / "nodes" / "nodes")
+        self.assertFalse((self.shared / "nodes" / "nodes").exists())
+        self.index.write_text(
+            "# Nodes\n- [[note]] - Note, in its own group.\n", encoding="utf-8"
+        )
+        result = self.call(
+            operation="commit",
+            commit_message="commit: keep the note once\n\nDrops the duplicate copy.",
+        )
+        self.assertEqual(result.returncode, 0, self.text(result))
+        published = git_run(
+            "show", "--name-status", "--format=", "HEAD", cwd=self.origin
+        ).stdout
+        self.assertIn("M\tnodes/MEMORY.md", published)
+        for relative in removed:
+            self.assertIn(f"D\t{relative}", published)
+        remaining = git_run("ls-tree", "-r", "--name-only", "HEAD", cwd=self.origin)
+        self.assertNotIn("nodes/nodes/", remaining.stdout)
+        for relative, body in retained.items():
+            kept = git_run("show", f"HEAD:{relative}", cwd=self.origin).stdout
+            self.assertEqual(kept.replace("\r\n", "\n"),
+                             body.decode("utf-8").replace("\r\n", "\n"))
+
+    def test_a_surviving_leaf_still_needs_its_deleted_log(self) -> None:
+        self.seed_group()
+        (self.shared / "nodes" / "log" / "note.md").unlink()
+        (self.shared / "nodes" / "note.md").write_text(
+            "# Note\nfirst\nsecond\n", encoding="utf-8"
+        )
+        self.index.write_text(
+            "# Nodes\n- [[note]] - Note, edited.\n", encoding="utf-8"
+        )
+        result = self.call(
+            operation="commit",
+            commit_message="commit: edit the note\n\nDrops its log, which stays required.",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("missing-counterpart", self.text(result))
+
+    def test_a_deleted_leaf_without_its_log_is_still_refused(self) -> None:
+        self.seed_group()
+        (self.shared / "nodes" / "nodes" / "note.md").unlink()
+        result = self.call(
+            operation="commit",
+            commit_message="commit: drop the leaf\n\nKeeps its log in place.",
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("retire-required", self.text(result))
+
+
 class MemoryUpdateAttestationTests(unittest.TestCase):
     """`memory_update`: a publish reports its own double-check."""
 

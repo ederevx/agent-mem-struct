@@ -36,6 +36,11 @@ class WorktreeEdits:
     def repo_root(self, path: Path) -> Path | None:
         """The Git worktree that encloses `path`, or None when it has none."""
         probe = path if path.is_dir() else path.parent
+        while not probe.is_dir():
+            parent = probe.parent
+            if parent == probe:
+                return None
+            probe = parent
         return GitWorktree(probe).toplevel()
 
     def is_repo(self, path: Path) -> bool:
