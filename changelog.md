@@ -4,6 +4,15 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-23T17:30:14-05:00 - a fixture's read-only Git objects no longer fail cleanup
+
+The deleted-parent integration fixtures registered a bare `shutil.rmtree`
+cleanup, and Git writes its loose objects read-only, so on Windows the three
+errored in cleanup after their bodies had passed: `WinError 5` on a
+`.git/objects` file, and the fixture directory stayed behind. The fixture now
+hands its directory to `tempfile.TemporaryDirectory`, whose removal clears the
+read-only bit and still raises on a genuine failure; no test body changed.
+
 ## 2026-11-22T16:04:23-05:00 - publish removed memory pairs from absent directories
 
 Deleted memory paths resolve their enclosing repository even when their

@@ -3281,8 +3281,9 @@ class DeletedParentDiscoveryTests(unittest.TestCase):
 
     def setUp(self) -> None:
         SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-        self.temp = Path(tempfile.mkdtemp(prefix="ams-deleted-parent-", dir=SCRATCH_ROOT))
-        self.addCleanup(shutil.rmtree, self.temp)
+        temp = tempfile.TemporaryDirectory(prefix="ams-deleted-parent-", dir=SCRATCH_ROOT)
+        self.addCleanup(temp.cleanup)
+        self.temp = Path(temp.name)
         enclosing = self.temp / "enclosing"
         enclosing.mkdir()
         git_run("init", "-b", "main", cwd=enclosing)
