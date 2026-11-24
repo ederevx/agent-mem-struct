@@ -73,9 +73,21 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_event() -> dict:
+    """The hook's request, decoded as UTF-8 whatever the host locale says.
+
+    A redirected stdin decodes with the console code page on Windows, which
+    turns a multi-byte character in a memory body into mojibake before the
+    request is read at all.
+    """
     try:
-        value = json.load(sys.stdin)
-    except Exception:
+        raw = sys.stdin.buffer.read()
+    except (AttributeError, OSError, ValueError):
+        raw = b""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
 
