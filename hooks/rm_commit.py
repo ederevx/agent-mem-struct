@@ -83,6 +83,8 @@ class CommitPublisher:
         )
         can_push = self.worktree.has_sync_target()
         staged = self.stageable(paths)
+        if isinstance(staged, CommitOutcome):
+            return staged
         if not staged:
             return CommitOutcome(note="no shared path of this mutation is tracked by Git.")
         if not message.strip():
@@ -330,17 +332,86 @@ class CommitPublisher:
         )
 
     def stage(self, staged: list[str]) -> list[str] | CommitOutcome:
-        """Stage exactly these paths, or report why staging failed."""
-        added = self.worktree.run("add", "--", *staged)
-        if added.returncode == 0:
-            return staged
-        return CommitOutcome(
-            conflict=self.conflict(
-                "git-failed",
-                f"staging {', '.join(staged)} failed: {self.worktree.detail(added)}",
-                "resolve the shared worktree state, then re-call",
+        """Stage exactly these paths, or report why staging failed.
+
+        A removal reaches the index two ways: a path still in the index is
+        staged by `git add -A`, while a path already dropped from it can only
+        be checked, since Git refuses a pathspec it cannot match.
+        """
+        root = self.root.resolve(strict=False)
+        present = [name for name in staged if (root / name).exists()]
+        absent = [name for name in staged if not (root / name).exists()]
+        if present:
+            added = self.worktree.run("add", "-A", "--", *present)
+            if added.returncode != 0:
+                return CommitOutcome(
+                    conflict=self.conflict(
+                        "git-failed",
+                        f"staging {', '.join(present)} failed: "
+                        f"{self.worktree.detail(added)}",
+                        "resolve the shared worktree state, then re-call",
+                    )
+                )
+        indexed = self.worktree.run("ls-files", "-z", "--", *absent) if absent else None
+        if indexed is not None and indexed.returncode != 0:
+            return CommitOutcome(
+                conflict=self.conflict(
+                    "git-failed",
+                    "listing indexed shared paths failed: "
+                    + self.worktree.detail(indexed),
+                    "resolve the shared worktree state, then re-call",
+                )
             )
-        )
+        held = [entry for entry in (indexed.stdout if indexed else "").split("\0") if entry]
+        to_remove = [
+            name
+            for name in absent
+            if any(entry == name or entry.startswith(name + "/") for entry in held)
+        ]
+        if to_remove:
+            removed_now = self.worktree.run("add", "-A", "--", *to_remove)
+            if removed_now.returncode != 0:
+                return CommitOutcome(
+                    conflict=self.conflict(
+                        "git-failed",
+                        f"staging the removal of {', '.join(to_remove)} failed: "
+                        f"{self.worktree.detail(removed_now)}",
+                        "resolve the shared worktree state, then re-call",
+                    )
+                )
+        already = [name for name in absent if name not in to_remove]
+        if already:
+            recorded = self.worktree.run(
+                "diff", "--cached", "--name-only", "--diff-filter=D", "-z",
+                "--", *already,
+            )
+            if recorded.returncode != 0:
+                return CommitOutcome(
+                    conflict=self.conflict(
+                        "git-failed",
+                        "listing staged removals failed: "
+                        + self.worktree.detail(recorded),
+                        "resolve the shared worktree state, then re-call",
+                    )
+                )
+            gone = [entry for entry in recorded.stdout.split("\0") if entry]
+            unstaged = [
+                name
+                for name in already
+                if not any(
+                    entry == name or entry.startswith(name + "/")
+                    for entry in gone
+                )
+            ]
+            if unstaged:
+                return CommitOutcome(
+                    conflict=self.conflict(
+                        "git-failed",
+                        f"{', '.join(unstaged)} is absent and not staged for removal",
+                        "stage the removal, then re-call",
+                    )
+                )
+        return staged
 
     def push(
         self,
@@ -457,8 +528,12 @@ class CommitPublisher:
             ),
         )
 
-    def stageable(self, paths: list[Path]) -> list[str]:
-        """The mutation's paths inside this worktree, as repo-relative names."""
+    def stageable(self, paths: list[Path]) -> list[str] | CommitOutcome:
+        """The mutation's paths inside this worktree, as repo-relative names.
+
+        A staged deletion has left the index, so the committed tree is what
+        records that the path was tracked and its removal is publishable.
+        """
         root = self.root.resolve(strict=False)
         relative: list[str] = []
         for path in paths:
@@ -469,11 +544,41 @@ class CommitPublisher:
                 relative.append(name)
         if not relative:
             return []
-        tracked = [
-            entry
-            for entry in self.worktree.run("ls-files", "-z", "--", *relative).stdout.split("\0")
-            if entry
-        ]
+        indexed = self.worktree.run("ls-files", "-z", "--", *relative)
+        if indexed.returncode != 0:
+            return CommitOutcome(
+                conflict=self.conflict(
+                    "git-failed",
+                    "listing indexed shared paths failed: "
+                    + self.worktree.detail(indexed),
+                    "resolve the shared worktree state, then re-call",
+                )
+            )
+        answered, head = self.revision("HEAD")
+        if not answered:
+            return CommitOutcome(
+                conflict=self.conflict(
+                    "git-failed",
+                    "Git would not report the shared worktree's HEAD",
+                    "resolve the shared worktree state, then re-call",
+                )
+            )
+        committed: list[str] = []
+        if head is not None:
+            listing = self.worktree.run(
+                "ls-tree", "-r", "-z", "--name-only", head, "--", *relative
+            )
+            if listing.returncode != 0:
+                return CommitOutcome(
+                    conflict=self.conflict(
+                        "git-failed",
+                        "listing committed shared paths failed: "
+                        + self.worktree.detail(listing),
+                        "resolve the shared worktree state, then re-call",
+                    )
+                )
+            committed = [entry for entry in listing.stdout.split("\0") if entry]
+        tracked = [entry for entry in indexed.stdout.split("\0") if entry] + committed
         return [
             name
             for name in relative
