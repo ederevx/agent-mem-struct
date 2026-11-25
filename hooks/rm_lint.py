@@ -241,12 +241,7 @@ class MessageLint:
         }
 
     def _presence(self, lines: list[str]) -> list[str]:
-        """A message states one subject line; whether it says anything is judgement.
-
-        Git takes everything before the first blank line as the subject, so a
-        paragraph of prose is published as one long subject that `git log
-        --oneline` shows whole.
-        """
+        """A message states a subject; whether it says anything is judgement."""
         paragraph = self._subject_paragraph(lines)
         if not paragraph:
             return ["the message states no subject line"]
@@ -259,7 +254,6 @@ class MessageLint:
 
     @staticmethod
     def _subject_paragraph(lines: list[str]) -> list[str]:
-        """The lines before the message's first blank line."""
         for index, line in enumerate(lines):
             if not line.strip():
                 return lines[:index]
