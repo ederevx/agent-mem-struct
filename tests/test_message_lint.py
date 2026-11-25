@@ -27,6 +27,20 @@ TRAILER = (
     "Signed-off-by: Edrick Sinsuan <evcsinsuan@gmail.com>"
 )
 BAD_LINE = "word " * 30
+MULTILINE_SUBJECT_MESSAGE = (
+    "The 16 fixed sections are a quarter to two fifths of the host chain once the\n"
+    "band shaper is in it, so a core-length kernel removes 16-26% of the per-sample\n"
+    "cost although it is 2.4-2.7x cheaper than the sections. The DAR entry also\n"
+    "carries a per-rate parallel bank beside the FIR, which neither a kernel nor\n"
+    "the shipped sections model.\n"
+    "\n"
+    "Assisted-by: LLM\n"
+    "Signed-off-by: Edrick Sinsuan <evcsinsuan@gmail.com>"
+)
+MULTILINE_SUBJECT_FINDING = (
+    "the subject paragraph has 5 lines; expected one subject line followed by "
+    "a blank line"
+)
 
 
 def git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -434,6 +448,46 @@ class MessageLintUnitTests(unittest.TestCase):
     def test_a_subject_only_message_passes(self) -> None:
         self.assertEqual(self.check("the subject alone"), [])
 
+    def test_a_multiline_subject_paragraph_is_flagged_and_measured(self) -> None:
+        self.assertIn(
+            MULTILINE_SUBJECT_FINDING, self.check(MULTILINE_SUBJECT_MESSAGE)
+        )
+        facts = self.lint.facts(MULTILINE_SUBJECT_MESSAGE)
+        self.assertEqual(facts["subject_columns"], 334)
+        self.assertEqual(facts["subject_lines"], 5)
+        self.assertFalse(facts["subject_single_line"])
+
+    def test_a_short_multiline_subject_is_also_refused(self) -> None:
+        self.assertIn(
+            "the subject paragraph has 2 lines; "
+            "expected one subject line followed by a blank line",
+            self.check("short\ncontinuation"),
+        )
+
+    def test_subject_shape_preserves_accepted_messages(self) -> None:
+        for message in (
+            "the subject alone",
+            "the subject alone\n",
+            f"subject\n\nA body paragraph.\n\n{TRAILER}",
+            f"subject\n\n{TRAILER}",
+            "subject\n \t\nA body paragraph.",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(self.check(message), [])
+                facts = self.lint.facts(message)
+                self.assertEqual(facts["subject_lines"], 1)
+                self.assertTrue(facts["subject_single_line"])
+
+    def test_an_absent_subject_has_no_paragraph(self) -> None:
+        for message in ("", "\nbody", " \t\nbody"):
+            with self.subTest(message=message):
+                self.assertIn("the message states no subject line", self.check(message))
+                facts = self.lint.facts(message)
+                self.assertEqual(facts["subject"], "")
+                self.assertEqual(facts["subject_columns"], 0)
+                self.assertEqual(facts["subject_lines"], 0)
+                self.assertFalse(facts["subject_single_line"])
+
     def test_a_message_without_a_subject_is_flagged(self) -> None:
         findings = self.check("\n\nbody only\n\nAssisted-by: LLM")
         self.assertIn("the message states no subject line", findings)
@@ -700,6 +754,50 @@ class MemoryCommitLintTests(unittest.TestCase):
         for path, data in before.items():
             self.assertEqual(path.read_bytes(), data, f"{path} was written")
 
+    def test_a_multiline_subject_paragraph_is_refused_before_write(self) -> None:
+        created = self.call(
+            operation="create",
+            path=str(self.shared),
+            name="note",
+            body="first",
+            summary="Note.",
+            commit_message=f"Add a note\n\nRecord the current state.\n\n{TRAILER}",
+        )
+        self.assertEqual(created.returncode, 0, self.text(created))
+        nodes = self.shared / "nodes"
+        before = {
+            path.relative_to(nodes): path.read_bytes()
+            for path in nodes.rglob("*")
+            if path.is_file()
+        }
+        head = git("rev-parse", "HEAD", cwd=self.shared).stdout.strip()
+        result = self.call(
+            operation="set",
+            path=str(self.leaf),
+            body="# Note\nrewritten\n",
+            commit_message=MULTILINE_SUBJECT_MESSAGE,
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("message-lint", self.text(result))
+        self.assertIn(MULTILINE_SUBJECT_FINDING, self.text(result))
+        preview = update_preview(result)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(preview["commit_message"], MULTILINE_SUBJECT_MESSAGE)
+        facts = preview["message_facts"]
+        self.assertEqual(facts["subject_columns"], 334)
+        self.assertEqual(facts["subject_lines"], 5)
+        self.assertFalse(facts["subject_single_line"])
+        self.assertEqual(
+            {
+                path.relative_to(nodes): path.read_bytes()
+                for path in nodes.rglob("*")
+                if path.is_file()
+            },
+            before,
+        )
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.shared).stdout.strip(), head)
+
     def test_a_message_is_measured_only_where_publication_commits_it(self) -> None:
         """A plan that publishes nothing runs no executable to measure a message."""
         body = "\n".join(f"finding {number} on its own line" for number in range(1, 13))
@@ -879,6 +977,24 @@ class MessageReviewTests(unittest.TestCase):
         ):
             moved = self.publisher.message_moved(sha, reviewed)
         self.assertIn("does not carry the reviewed message", moved)
+
+    def test_a_multiline_subject_paragraph_is_not_committed(self) -> None:
+        self.file.write_text("second\n", encoding="utf-8")
+        head = git("rev-parse", "HEAD", cwd=self.clone).stdout.strip()
+        outcome = self.publisher.publish([self.file], MULTILINE_SUBJECT_MESSAGE)
+        self.assertFalse(outcome.committed)
+        self.assertFalse(outcome.pushed)
+        self.assertIsNotNone(outcome.conflict)
+        assert outcome.conflict is not None
+        self.assertEqual(outcome.conflict["code"], "message-lint")
+        self.assertIn(MULTILINE_SUBJECT_FINDING, outcome.conflict["message"])
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.clone).stdout.strip(), head)
+
+    def test_a_stored_multiline_subject_paragraph_is_refused(self) -> None:
+        sha = commit_message(self.clone, MULTILINE_SUBJECT_MESSAGE)
+        moved = self.publisher.message_moved(sha, MULTILINE_SUBJECT_MESSAGE)
+        self.assertIn("the stored message breaks the mechanical convention", moved)
+        self.assertIn(MULTILINE_SUBJECT_FINDING, moved)
 
     def test_only_a_commit_object_carries_a_stored_message(self) -> None:
         tree = git("rev-parse", "HEAD^{tree}", cwd=self.clone).stdout.strip()

@@ -1,8 +1,9 @@
 """Mechanical commit-message linting for the root-memory hook.
 
 One owner for the message convention the protocol states: `MessageLint`
-reports the mechanical violations of one commit message - column width, a
-body longer than `MAX_BODY_LINES` nonblank lines before the final trailer
+reports the mechanical violations of one commit message - a first paragraph
+that is not one subject line, column width, a body longer than
+`MAX_BODY_LINES` nonblank lines before the final trailer
 block, the single blank line before that block, the block's agreement with
 `git interpret-trailers`, a trailer outside it, a token outside the allowed
 set of `trailer-policy.json`, indented lines in it or the paragraph above it,
@@ -223,9 +224,13 @@ class MessageLint:
     ) -> dict[str, Any]:
         """One already-resolved message as the numbers a review reads."""
         body = self._body_line_numbers(lines, block_start)
+        paragraph = self._subject_paragraph(lines)
+        subject = " ".join(paragraph)
         return {
-            "subject": lines[0] if lines else "",
-            "subject_columns": len(lines[0]) if lines else 0,
+            "subject": subject,
+            "subject_columns": len(subject),
+            "subject_lines": len(paragraph),
+            "subject_single_line": len(paragraph) == 1,
             "subject_limit": MAX_COLS,
             "body_nonblank_lines": None if body is None else len(body),
             "body_line_numbers": body or [],
@@ -235,12 +240,30 @@ class MessageLint:
             "trailer_block_unresolved": unresolved,
         }
 
+    def _presence(self, lines: list[str]) -> list[str]:
+        """A message states one subject line; whether it says anything is judgement.
+
+        Git takes everything before the first blank line as the subject, so a
+        paragraph of prose is published as one long subject that `git log
+        --oneline` shows whole.
+        """
+        paragraph = self._subject_paragraph(lines)
+        if not paragraph:
+            return ["the message states no subject line"]
+        if len(paragraph) > 1:
+            return [
+                f"the subject paragraph has {len(paragraph)} lines; "
+                "expected one subject line followed by a blank line"
+            ]
+        return []
+
     @staticmethod
-    def _presence(lines: list[str]) -> list[str]:
-        """A message states a subject; whether it says anything is judgement."""
-        if lines and lines[0].strip():
-            return []
-        return ["the message states no subject line"]
+    def _subject_paragraph(lines: list[str]) -> list[str]:
+        """The lines before the message's first blank line."""
+        for index, line in enumerate(lines):
+            if not line.strip():
+                return lines[:index]
+        return lines
 
     @staticmethod
     def _body_line_numbers(
