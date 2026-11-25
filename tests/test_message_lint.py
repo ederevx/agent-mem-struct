@@ -801,7 +801,7 @@ class MessageReviewTests(unittest.TestCase):
                 "reviewed\n\nReviewed body.",
                 True,
             ),
-            ("leading whitespace", "\n" + reviewed, reviewed, True),
+            ("leading whitespace", b"\n" + reviewed.encode("utf-8") + b"\n", reviewed, True),
             ("a trailing newline", None, reviewed + "\n", False),
         ):
             with self.subTest(label):
@@ -838,6 +838,52 @@ class MessageReviewTests(unittest.TestCase):
         sha = commit_message(self.clone, message)
         moved = self.publisher.message_moved(sha, message)
         self.assertIn("breaks the mechanical convention", moved)
+
+    def raw_message(self) -> bytes:
+        """The message bytes in the commit object itself, without any conversion."""
+        object_id = git("rev-parse", "HEAD", cwd=self.clone).stdout.strip()
+        raw = subprocess.run(
+            ["git", "-C", str(self.clone), "cat-file", "commit", object_id],
+            capture_output=True,
+            check=False,
+        ).stdout
+        return raw.partition(b"\n\n")[2]
+
+    def test_the_stored_message_keeps_lf_bytes_on_every_host(self) -> None:
+        """A message written here is stored with the bytes that were reviewed."""
+        self.file.write_text("second\n", encoding="utf-8")
+        message = f"reviewed subject\n\nA body line.\n\n{TRAILER}"
+        outcome = self.publisher.publish([self.file], message)
+        self.assertTrue(outcome.pushed, outcome.conflict)
+        stored = self.raw_message()
+        self.assertEqual(stored, message.encode("utf-8") + b"\n")
+        self.assertNotIn(b"\r", stored)
+
+    def test_a_crlf_stored_message_is_not_pushed(self) -> None:
+        """A message stored with CRLF is not the reviewed one, byte for byte."""
+        reviewed = "subject\n\nA body line."
+        sha = self.commit(reviewed)
+        with mock.patch.object(
+            self.publisher,
+            "stored_message",
+            return_value=reviewed.encode("utf-8").replace(b"\n", b"\r\n") + b"\r\n",
+        ):
+            moved = self.publisher.message_moved(sha, reviewed)
+        self.assertIn("does not carry the reviewed message", moved)
+
+    def test_a_stored_message_without_its_final_newline_is_refused(self) -> None:
+        reviewed = "subject\n\nA body line."
+        sha = self.commit(reviewed)
+        with mock.patch.object(
+            self.publisher, "stored_message", return_value=reviewed.encode("utf-8")
+        ):
+            moved = self.publisher.message_moved(sha, reviewed)
+        self.assertIn("does not carry the reviewed message", moved)
+
+    def test_only_a_commit_object_carries_a_stored_message(self) -> None:
+        tree = git("rev-parse", "HEAD^{tree}", cwd=self.clone).stdout.strip()
+        self.assertIsNone(self.publisher.stored_message(tree))
+        self.assertIsNone(self.publisher.stored_message("0" * 40))
 
 
 if __name__ == "__main__":

@@ -235,10 +235,19 @@ class GitWorktree:
             return None
         return [entry for entry in result.stdout.split("\0") if entry]
 
-    def detail(self, completed: subprocess.CompletedProcess[str]) -> str:
-        """The one line of a failed git result worth reporting."""
-        text = (completed.stderr or completed.stdout or "").strip()
-        lines = [line for line in text.splitlines() if line.strip()]
+    def detail(
+        self,
+        completed: subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes],
+    ) -> str:
+        """The one line of a failed git result worth reporting.
+
+        A byte-valued result is decoded here, so a caller that keeps exact
+        bytes elsewhere still reports the same line for the same failure.
+        """
+        output = completed.stderr or completed.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        lines = [line for line in output.strip().splitlines() if line.strip()]
         return lines[-1] if lines else f"git exited {completed.returncode}"
 
     def head(self) -> str:

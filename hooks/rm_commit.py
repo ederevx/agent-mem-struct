@@ -37,6 +37,17 @@ def converted(committed: bytes, approved: bytes) -> bool:
     )
 
 
+def payload_bytes(message: str) -> bytes:
+    """The exact bytes one reviewed message is stored as: its text, one final LF.
+
+    A commit's message reaches Git through a pipe, and a text-mode pipe rewrites
+    the line ends on its way in, so the bytes Git stores are built here and
+    handed over unchanged. The same bytes are what the readback is compared
+    against, which is why the final-newline contract has one owner.
+    """
+    return message.rstrip("\n").encode("utf-8") + b"\n"
+
+
 class CommitOutcome:
     """What became of one mutation's paths: a commit, a push, or a conflict."""
 
@@ -118,17 +129,17 @@ class CommitPublisher:
         staged = self.stage(staged)
         if isinstance(staged, CommitOutcome):
             return staged
-        commit = self.worktree.run(
+        commit = self.worktree.run_bytes(
             "commit",
             "--cleanup=verbatim",
             "-F",
             "-",
             "--",
             *staged,
-            input_text=message.rstrip("\n") + "\n",
+            input_bytes=payload_bytes(message),
         )
         if commit.returncode != 0:
-            if "nothing to commit" in commit.stdout + commit.stderr:
+            if b"nothing to commit" in commit.stdout + commit.stderr:
                 return CommitOutcome(note="the shared worktree already held this state.")
             return CommitOutcome(
                 conflict=self.conflict(
@@ -470,12 +481,20 @@ class CommitPublisher:
             ),
         )
 
-    def stored_message(self, sha: str) -> str | None:
-        """The message one commit actually carries, or None when Git did not answer."""
-        result = self.worktree.run("log", "-1", "--format=%B", sha)
+    def stored_message(self, sha: str) -> bytes | None:
+        """The exact message bytes one commit carries, or None when Git did not answer.
+
+        Read from the commit object itself: a text-mode `git log` converts the
+        line ends on the way out and so hides a message stored with different
+        ones than the reviewed payload.
+        """
+        result = self.worktree.run_bytes("cat-file", "commit", sha)
         if result.returncode != 0:
             return None
-        return result.stdout.rstrip("\n")
+        _, separator, message = result.stdout.partition(b"\n\n")
+        if not separator:
+            return None
+        return message
 
     def message_moved(self, sha: str, reviewed: str) -> str:
         """Why this commit's stored message is not the reviewed one, or "" when it is.
@@ -493,9 +512,11 @@ class CommitPublisher:
                 f"the stored message of commit {sha[:12]} could not be read back, "
                 "so whether it is the reviewed one cannot be shown"
             )
-        if stored != reviewed.rstrip("\n"):
+        if stored != payload_bytes(reviewed):
             return f"commit {sha[:12]} does not carry the reviewed message"
-        broken = MessageLint(self.worktree).violations(stored)
+        broken = MessageLint(self.worktree).violations(
+            stored.decode("utf-8", "surrogateescape").rstrip("\n")
+        )
         if broken:
             return (
                 "the stored message breaks the mechanical convention: "
