@@ -1,4 +1,4 @@
-Structure-Version: 2026-11-08T20:22:00-05:00
+Structure-Version: 2026-11-27T01:13:06-05:00
 
 # Memory structure
 
@@ -48,14 +48,13 @@ authorizes editing that agent's private tree.
 
 ## Structural documents
 
-- **`RULES.md`** — compact mandatory operational rules for every memory task.
+- **`RULES.md`** — mandatory operational rules for every memory task.
 - **`STRUCTURE.md`** — current structural model.
 - **`MIGRATION.md`** — ordered transformations between structure versions.
 - **`changelog.md`** — historical context and rationale.
 
-Keep these roles distinct. `RULES.md` must remain intentionally compact; move
-explanation, examples, and historical rationale to the appropriate non-mandatory
-document instead of expanding the routine checklist.
+Keep these roles distinct. Put explanation, examples, and historical rationale
+in the appropriate non-mandatory document.
 
 ## Version control
 

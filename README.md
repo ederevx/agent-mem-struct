@@ -7,7 +7,7 @@ files or scripts, and a structure-first leaf model.
 
 The protocol documents have distinct roles:
 
-- `RULES.md` — compact mandatory operational rules for every memory task.
+- `RULES.md` — mandatory operational rules for every memory task.
 - `STRUCTURE.md` — the current canonical tree/model.
 - `MIGRATION.md` — ordered procedures for upgrading older memory trees.
 - `changelog.md` — historical context and rationale for protocol changes.
@@ -84,9 +84,8 @@ They never create it, fall back to another directory, or expand `~` or
 environment variables. If the version is stale, follow `MIGRATION.md` first,
 then read root `RULES.md` before scoped memory work.
 
-`RULES.md` is intentionally compact mandatory context. New rules should be
-consolidated where possible; rationale and examples belong outside the routine
-checklist.
+`RULES.md` contains mandatory operational rules. Consolidate new rules where
+possible; rationale and examples belong outside the routine checklist.
 
 ### The convention audit acknowledgement
 

@@ -4,6 +4,32 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-27T01:13:06-05:00 - remove mandatory-context compactness requirements
+
+The owner requested removal of conventions restricting context usage.
+`RULES.md` no longer requires itself or mandatory conventions to be concise,
+and `STRUCTURE.md` no longer requires the operational checklist to remain
+compact. Operational completeness, non-duplication, and the separation of
+rules from rationale and history remain binding.
+
+The displaced `RULES.md` mandate was:
+
+> **Compactness is mandatory.** Keep this file short. New or changed rules must
+> be concise, action-oriented, non-duplicative, and operationally complete.
+> Consolidate existing rules when possible; put rationale, examples, and history
+> in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
+
+Rule 6 formerly required standing behavior to belong in "concise,
+operationally complete **Mandatory conventions**". `STRUCTURE.md` described
+`RULES.md` as "compact mandatory operational rules for every memory task" and
+required:
+
+> Keep these roles distinct. `RULES.md` must remain intentionally compact; move
+> explanation, examples, and historical rationale to the appropriate non-mandatory
+> document instead of expanding the routine checklist.
+
+These requirements are superseded, not relocated into another active rule.
+
 ## 2026-11-23T17:30:14-05:00 - a fixture's read-only Git objects no longer fail cleanup
 
 The deleted-parent integration fixtures registered a bare `shutil.rmtree`

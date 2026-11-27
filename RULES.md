@@ -3,10 +3,10 @@
 Mandatory operational checklist for every memory task. Read the agent root
 control header first, then the root `RULES.md` before scoped memory work.
 
-**Compactness is mandatory.** Keep this file short. New or changed rules must
-be concise, action-oriented, non-duplicative, and operationally complete.
-Consolidate existing rules when possible; put rationale, examples, and history
-in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
+New or changed rules must be action-oriented, non-duplicative, and
+operationally complete. Consolidate existing rules when possible; put
+rationale, examples, and history in `STRUCTURE.md`, `changelog.md`, or
+on-demand memory instead.
 
 1. **Check protocol control.** Read root `memory/MEMORY.md`, resolve
    `Structure: ../STRUCTURE.md`, and compare `Structure-Version` with canonical
@@ -49,7 +49,7 @@ in `STRUCTURE.md`, `changelog.md`, or on-demand memory instead.
 
 6. **Classify by structure.** Choose private `memory/local/` versus the
    declared shared root, then the narrowest applicable group. Standing behavior
-   belongs in concise, operationally complete **Mandatory conventions**;
+   belongs in operationally complete **Mandatory conventions**;
    facts, decisions, rationale, and project records belong in on-demand nodes.
    Required behavior must never be hidden in a rationale node.
 

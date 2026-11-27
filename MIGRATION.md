@@ -27,6 +27,19 @@ or the marker cannot be resolved in repository history, review the relevant
 `STRUCTURE.md` Git history and `changelog.md` first, bring the tree to the
 starting point covered here, then continue with these entries.
 
+## 2026-11-27T01:13:06-05:00 — remove mandatory-context compactness requirements
+
+This revision removes the compactness requirements from `RULES.md` and
+`STRUCTURE.md`. It does not change memory layout or migrate node content.
+
+1. Read the current canonical `RULES.md` and `STRUCTURE.md`. Requirements for
+   operational completeness, non-duplication, and document roles remain.
+2. Reinstall the applicable integration from the release carrying this
+   revision, then confirm the managed root `RULES.md` and `STRUCTURE.md`
+   match canonical. Do not hand-edit the managed copies.
+3. After these checks, advance only this agent's root `Structure-Version:`
+   marker to `2026-11-27T01:13:06-05:00`.
+
 ## 2026-11-08T20:22:00-05:00 — land changes without a pull request
 
 No memory-tree content migration is required: this entry changes only
