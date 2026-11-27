@@ -17,22 +17,21 @@ private memory while sharing one common-memory subtree.
 
 ## Install
 
-Clone the repository, then install the hook for each agent you run:
-
-```bash
-python3 hooks/codex/manage.py install    # Codex
-python3 hooks/claude/manage.py install   # Claude Code
-python3 hooks/pi/manage.py install       # Pi
-```
-
-The Pi bridge may instead be installed as a pi package:
-
 ```bash
 pi install git:github.com/ederevx/agent-mem-struct
 ```
 
 Unpinned, it follows the default branch on `pi update --extensions`; append
 `@<tag>` to pin a release tag, and install another tag to move the pin.
+
+Clone the repository and install the hook instead for Codex or Claude Code, or
+for a Pi host that keeps the installer-managed bridge:
+
+```bash
+python3 hooks/codex/manage.py install    # Codex
+python3 hooks/claude/manage.py install   # Claude Code
+python3 hooks/pi/manage.py install       # Pi
+```
 
 The package entry stands down while the installer-managed bridge is present.
 When it is the sole registrant it also deploys the protected root documents
