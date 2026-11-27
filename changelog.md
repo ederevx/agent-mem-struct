@@ -4,6 +4,23 @@ Delta history for the memory protocol. Each entry documents what changed and
 why, while `STRUCTURE.md` and `RULES.md` describe only the current model and
 current mandatory behavior.
 
+## 2026-11-27T09:53:15-05:00 - record only the text an edit removed
+
+The paired log recorded every line that the line alignment left unmatched, so
+any change of line breaks filed surviving text as displaced state: an insertion
+in the middle of a line filed that line, and a rewrapped paragraph filed the
+whole paragraph. A line is now displaced only when the line alignment leaves it
+unmatched, one of its words was deleted or replaced - or text was inserted
+inside it at a point that does not end a sentence - and its words no longer
+appear contiguously in the new body.
+
+Three consequences are deliberate. An insertion after a sentence end, or at a
+line boundary, is not recorded, because it adds a statement rather than
+altering one. A line whose text survives inside another line is not recorded,
+which extends the earlier rule from an identical line to the same text. And
+whole sentences added after an existing sentence are not recorded even when
+they contradict it. In each case the old text is still in the body.
+
 ## 2026-11-27T01:13:06-05:00 - remove mandatory-context compactness requirements
 
 The owner requested removal of conventions restricting context usage.

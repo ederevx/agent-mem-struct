@@ -72,6 +72,10 @@ from rm_verify import PublishAttestation
 LEAF_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 REQUIRES_LINE_RE = re.compile(r"(?m)^\s*-\s*(.+?)\s*$")
+# A word that closes a sentence, allowing trailing closing quotes, brackets, or
+# Markdown emphasis. Text inserted after such a word adds a statement rather
+# than altering one.
+SENTENCE_END = re.compile(r"[.!?][\"')\]*_`]*$")
 EMPTY_LOG_LINE = "No semantic history yet."
 LOG_BODY = "# Log: {name}\n\n" + EMPTY_LOG_LINE + "\n"
 MAX_LINK_FILES = 5000
@@ -1525,23 +1529,57 @@ class MemoryUpdater:
                 changed.append(str(path))
         return changed
 
+    @staticmethod
+    def text_present(line: str, padded: str) -> bool:
+        """Whether the words of `line` appear contiguously in `padded`, the new
+        body with whitespace runs collapsed to single spaces and one space
+        added at each end, so a match never starts or ends inside a word."""
+        return f" {' '.join(line.split())} " in padded
+
     def superseded_text(self, previous: str, body: str) -> str:
         """The lines of `previous` that `body` drops, grouped by section.
 
-        Only a line that is gone counts as displaced: the alignment leaves a
-        line unmatched when the same text reappears elsewhere in `body`.
+        A line is displaced only when all three hold:
+        - the line alignment leaves it unmatched;
+        - at word level, one of its words was deleted or replaced, or text was
+          inserted between two of its words at a point that does not end a
+          sentence;
+        - its words no longer appear contiguously anywhere in `body`.
+        A reflowed, moved, or split line is therefore not displaced, nor is a
+        line that only gained whole sentences or new lines around it, nor one
+        whose text survives inside another line.
         """
         old, new = previous.split("\n"), body.split("\n")
-        matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
-        displaced = set(range(len(old)))
-        for block in matcher.get_matching_blocks():
-            displaced.difference_update(range(block.a, block.a + block.size))
+        padded = f" {' '.join(body.split())} "
+        unaligned = set(range(len(old)))
+        for block in difflib.SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks():
+            unaligned.difference_update(range(block.a, block.a + block.size))
+        tokens = [word for line in old for word in line.split()]
+        owner = [index for index, line in enumerate(old) for _ in line.split()]
+        altered: set[int] = set()
+        for tag, first, last, _, _ in difflib.SequenceMatcher(
+            None, tokens, body.split(), autojunk=False
+        ).get_opcodes():
+            if tag in ("replace", "delete"):
+                altered.update(owner[first:last])
+            elif (
+                tag == "insert"
+                and 0 < first < len(tokens)
+                and owner[first - 1] == owner[first]
+                and not SENTENCE_END.search(tokens[first - 1])
+            ):
+                altered.add(owner[first])
         sections: dict[str, list[str]] = {}
         heading = ""
         for index, line in enumerate(old):
             if line.startswith("## "):
                 heading = line[3:].strip()
-            elif index in displaced and line.strip() and line not in new:
+            elif (
+                index in unaligned
+                and index in altered
+                and line.strip()
+                and not self.text_present(line, padded)
+            ):
                 sections.setdefault(heading, []).append(line)
         parts: list[str] = []
         for heading, lines in sections.items():

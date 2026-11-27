@@ -2096,6 +2096,80 @@ class MemoryUpdateTests(unittest.TestCase):
         self.call(operation="set", path=str(leaf), body="second (typo fix)", mechanical=True)
         self.assertEqual(log.read_text(encoding="utf-8"), history)
 
+    def test_a_reflowed_paragraph_is_not_displaced(self) -> None:
+        self.create("note", body="# Note\n\n## Alpha\n\nalpha beta\ngamma delta")
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        history = log.read_text(encoding="utf-8")
+        result = self.call(operation="set", path=str(leaf),
+                           body="# Note\n\n## Alpha\n\nalpha\nbeta gamma delta")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no displaced state.", self.text(result))
+        self.assertEqual(log.read_text(encoding="utf-8"), history)
+
+    def test_an_insertion_that_splits_a_line_is_not_displaced(self) -> None:
+        body = ("# Note\n\n## Coverage\n\nremoved names. The section sets come from an\n"
+                "out-of-tree fitter whose parameters were not recorded, so the\n"
+                "repository reproduces the fold, not the fit. Rates above\n"
+                "48 kHz are served but unverified.\n")
+        edited = ("# Note\n\n## Coverage\n\nremoved names. The section sets come from an\n"
+                  "out-of-tree fitter whose parameters were not recorded, so the\n"
+                  "repository reproduces the fold, not the fit. Neither file is\n"
+                  "retained, so the hash is only a fingerprint. Rates above\n"
+                  "48 kHz are served but unverified.\n")
+        self.create("note", body=body)
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        history = log.read_text(encoding="utf-8")
+        result = self.call(operation="set", path=str(leaf), body=edited)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no displaced state.", self.text(result))
+        self.assertEqual(log.read_text(encoding="utf-8"), history)
+
+    def test_words_inserted_inside_a_sentence_displace_the_line(self) -> None:
+        self.create("note", body="# Note\n\nwe will ship it on Monday")
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        result = self.call(operation="set", path=str(leaf),
+                           body="# Note\n\nwe will not ship it on Monday")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = log.read_text(encoding="utf-8")
+        self.assertIn("superseded current state", history)
+        self.assertIn("we will ship it on Monday", history)
+
+    def test_text_inserted_after_a_colon_displaces_the_line(self) -> None:
+        self.create("note", body="# Note\n\n- status: open")
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        result = self.call(operation="set", path=str(leaf),
+                           body="# Note\n\n- status: closed, open questions remain")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = log.read_text(encoding="utf-8")
+        self.assertIn("superseded current state", history)
+        self.assertIn("- status: open", history)
+
+    def test_a_replaced_word_displaces_the_line(self) -> None:
+        self.create("note", body="# Note\n\nmeasured 3.1 ms on device")
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        result = self.call(operation="set", path=str(leaf),
+                           body="# Note\n\nmeasured 3.4 ms on device")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = log.read_text(encoding="utf-8")
+        self.assertIn("superseded current state", history)
+        self.assertIn("measured 3.1 ms on device", history)
+
+    def test_a_line_whose_text_survives_elsewhere_is_not_displaced(self) -> None:
+        self.create("note", body="# Note\n\nalpha\nbeta gamma\nalpha beta gamma delta")
+        leaf = self.local / "nodes" / "note.md"
+        log = self.local / "nodes" / "log" / "note.md"
+        history = log.read_text(encoding="utf-8")
+        result = self.call(operation="set", path=str(leaf),
+                           body="# Note\n\nalpha\nalpha beta gamma delta")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no displaced state.", self.text(result))
+        self.assertEqual(log.read_text(encoding="utf-8"), history)
+
     def test_set_logs_only_the_lines_it_displaces(self) -> None:
         self.create(
             "note",
@@ -2921,6 +2995,37 @@ class MemoryUpdateCommitOpTests(unittest.TestCase):
             operation="create", path=str(self.shared), name="note",
             body=body, summary="Note.", **fields
         )
+
+    def test_a_hand_edit_that_only_rewraps_publishes_no_log(self) -> None:
+        self.create_note(body="# Note\n\n## Alpha\n\nalpha beta\ngamma delta")
+        self.leaf.write_text("# Note\n\n## Alpha\n\nalpha\nbeta gamma delta\n", encoding="utf-8")
+        result = self.call(operation="commit",
+                           commit_message="commit: reflow\n\nRewraps one paragraph.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("superseded current state", self.log.read_text(encoding="utf-8"))
+        files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.origin).stdout
+        self.assertNotIn("nodes/log/note.md", files)
+
+    def test_inserting_a_bullet_between_bullets_publishes_no_log(self) -> None:
+        self.create_note(body="# Note\n\n- one\n- two")
+        self.leaf.write_text("# Note\n\n- one\n- added\n- two\n", encoding="utf-8")
+        result = self.call(operation="commit",
+                           commit_message="commit: bullet\n\nAdds one bullet.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("superseded current state", self.log.read_text(encoding="utf-8"))
+        files = git_run("show", "--name-only", "--format=", "HEAD", cwd=self.origin).stdout
+        self.assertNotIn("nodes/log/note.md", files)
+
+    def test_a_deleted_line_is_logged_under_its_section(self) -> None:
+        self.create_note(body="# Note\n\n## Alpha\n\ndrop this\n\n## Beta\n\nkeep this")
+        self.leaf.write_text("# Note\n\n## Alpha\n\n## Beta\n\nkeep this\n", encoding="utf-8")
+        result = self.call(operation="commit",
+                           commit_message="commit: drop\n\nDrops one line.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = self.log.read_text(encoding="utf-8")
+        self.assertIn("superseded current state", logged)
+        self.assertIn("### Alpha\n\ndrop this", logged)
+        self.assertNotIn("keep this", logged)
 
     def test_a_hand_edit_moves_displaced_lines_into_the_log_and_publishes(self) -> None:
         self.create_note(body="alpha\nbeta\ngamma")

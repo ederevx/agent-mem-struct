@@ -326,8 +326,9 @@ The bridge maps Pi events onto the hook's event vocabulary:
   declared shared root is published. Every other operation requires `path`;
   one sent without it is a `bad-request`. It stages only that target set,
   never the whole index, and derives the displaced state from Git: for a dirty
-  active leaf whose paired log is not itself dirty, the lines the edit dropped
-  are appended to the paired log before the commit. A write that lands in the
+  active leaf whose paired log is not itself dirty, the lines whose text the
+  edit removed or rewrote are appended to the paired log before the commit. A
+  write that lands in the
   declared shared root is then committed and pushed by
   `rm_commit.CommitPublisher`, which stages only the
   paths the mutation wrote, commits the supplied `commit_message` exactly as
